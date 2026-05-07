@@ -768,6 +768,8 @@ def _distinct_accessory_policy(
         "locus": "SELECT",
         "is_dependency": True,
         "required": False,
+        "identity_role": "accessory",
+        "runtime_policy": "branch_accessory",
         "policy": "conditional_target_distinct",
         "guards": [
             "target_sql_has_distinct",
@@ -937,6 +939,8 @@ def _target_ranking_accessory_policies(
                 "locus": "ORDER_BY",
                 "is_dependency": True,
                 "required": False,
+                "identity_role": "accessory",
+                "runtime_policy": "branch_accessory",
                 "policy": "target_ranking_contract",
                 "guards": [
                     "target_sql_order_by_differs_from_source_sql",
@@ -953,6 +957,8 @@ def _target_ranking_accessory_policies(
                 "locus": "LIMIT",
                 "is_dependency": True,
                 "required": False,
+                "identity_role": "accessory",
+                "runtime_policy": "branch_accessory",
                 "policy": "target_ranking_contract",
                 "guards": [
                     "target_sql_limit_required_by_ranking_contract",
@@ -983,6 +989,8 @@ def _target_ranking_accessory_policies(
                 "locus": "WHERE",
                 "is_dependency": True,
                 "required": False,
+                "identity_role": "accessory",
+                "runtime_policy": "branch_accessory",
                 "policy": "source_extreme_predicate_replaced_by_target_ranking",
                 "guards": [
                     "source_sql_uses_extreme_predicate_for_target_order_column",
@@ -1168,6 +1176,8 @@ def _target_predicate_accessory_policy(
         "locus": "WHERE",
         "is_dependency": True,
         "required": False,
+        "identity_role": "accessory",
+        "runtime_policy": "branch_accessory",
         "policy": "target_only_predicate_constraint",
         "guards": [
             "target_sql_predicate_absent_from_source_sql",
@@ -1178,6 +1188,7 @@ def _target_predicate_accessory_policy(
 
 
 def _op_audit_payload(op: CanonicalRepairOp, step: Dict[str, Any]) -> Dict[str, Any]:
+    args = _payload(op.arguments)
     return {
         "op_id": op.op_id,
         "op_type": op.op_type,
@@ -1186,9 +1197,29 @@ def _op_audit_payload(op: CanonicalRepairOp, step: Dict[str, Any]) -> Dict[str, 
         "supporting_case_ids": list(op.supporting_case_ids or []),
         "required": bool(step.get("required", True)),
         "is_dependency": bool(step.get("is_dependency") or False),
+        "identity_role": str(args.get("identity_role") or "core"),
+        "runtime_policy": str(args.get("runtime_policy") or "required"),
         "extraction_source": str(step.get("extraction_source") or ""),
         "origin": str(step.get("origin") or ""),
     }
+
+
+def _op_identity_metadata(
+    *,
+    op_type: str,
+    effect_candidates: List[Any],
+) -> Dict[str, str]:
+    accessory_axes = {
+        str(_payload(effect).get("axis") or "")
+        for effect in effect_candidates or []
+        if str(_payload(effect).get("role") or "").lower() == "accessory"
+    }
+    if (
+        "aggregation_unit_delta" in accessory_axes
+        and str(op_type or "").upper() in {"SELECT_ADD_MODIFIER", "SELECT_ENFORCE_DISTINCT"}
+    ):
+        return {"identity_role": "accessory", "runtime_policy": "branch_accessory"}
+    return {"identity_role": "core", "runtime_policy": "required"}
 
 
 class RepairProgramNormalizer:
@@ -1291,6 +1322,10 @@ class RepairProgramNormalizer:
                 source_output_refs=source_output_refs,
                 target_output_refs=target_output_refs,
             )
+            identity_metadata = _op_identity_metadata(
+                op_type=op_type,
+                effect_candidates=effect_candidates,
+            )
             invariants = self._derive_invariants(
                 shape=shape,
                 source_graph=source_graph,
@@ -1343,6 +1378,7 @@ class RepairProgramNormalizer:
                     "target_equality_relations": list(target_graph.get("equality_relations") or []),
                     "step_slots": _slot_signature(step),
                     "step_arguments": _payload(step.get("arguments")),
+                    **identity_metadata,
                     "accessory_policies": [
                         policy
                         for policy in [
@@ -1388,6 +1424,8 @@ class RepairProgramNormalizer:
                         "supporting_case_ids": [str(error_instance.case_id)],
                         "required": False,
                         "is_dependency": True,
+                        "identity_role": "accessory",
+                        "runtime_policy": str(policy.get("runtime_policy") or "branch_accessory"),
                         "extraction_source": "case_inferred_from_target_sql",
                         "origin": "case_extracted",
                     }

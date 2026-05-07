@@ -1121,34 +1121,48 @@ def _required_slot_keys(insight: Dict[str, Any], source_or_target: str) -> set[s
 
 
 def _insight_constraint_blockers(insights: Sequence[Dict[str, Any]]) -> List[str]:
-    blockers: List[str] = []
-    target_preferences = _normalized_statement_set(insights, "target_preference")
-    # target_preference is the case-local target contract. If the extractor
-    # emits different stable target contracts for the same interface key, code
-    # must fail closed instead of merging by the broad axis.
-    if len(target_preferences) > 1:
-        blockers.append(
-            "insight_target_preference_conflict:" + "|".join(sorted(target_preferences)[:6])
-        )
+    _ = insights
+    # Slot names, target-preference wording, and preserve-invariant phrasing are
+    # case-local natural language. Treating their string overlap as code-side
+    # conflicts over-splits strong patterns before the semantic judge can decide
+    # whether the differences are core or branch/accessory constraints.
+    return []
 
-    for side in ("source", "target", "preserve"):
-        slot_sets = [_required_slot_keys(insight, side) for insight in insights]
-        populated = [values for values in slot_sets if values]
-        if len(populated) >= 2 and not set.intersection(*populated):
-            blockers.append(f"insight_{side}_slot_conflict")
 
-    preserve_sets = [
-        {
-            _normalize_insight_key(item)
-            for item in (insight.get("preserve_invariants") or [])
-            if _normalize_insight_key(item)
-        }
-        for insight in insights
-    ]
-    populated_preserve = [values for values in preserve_sets if values]
-    if len(populated_preserve) >= 2 and not set.intersection(*populated_preserve):
-        blockers.append("insight_preserve_invariant_conflict")
-    return blockers
+def _prompt_string_list(values: Any, *, limit: int = 8) -> List[str]:
+    if values is None:
+        raw: List[Any] = []
+    elif isinstance(values, str):
+        raw = [values]
+    elif isinstance(values, (list, tuple, set)):
+        raw = list(values)
+    else:
+        raw = [values]
+    out: List[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text:
+            out.append(_truncate_text(text, 220))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _prompt_dict_list(values: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+    if isinstance(values, dict):
+        raw: List[Any] = [values]
+    elif isinstance(values, (list, tuple)):
+        raw = list(values)
+    else:
+        raw = []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        payload = _payload(item)
+        if payload:
+            out.append(payload)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _merge_insight_rows(
@@ -1220,17 +1234,17 @@ def _compact_insight_for_judge(
                 key: _payload(slot).get(key)
                 for key in ("name", "kind", "source_or_target", "required", "allowed_role_families", "description")
             }
-            for slot in (insight.get("binding_slots") or [])[:8]
+            for slot in _prompt_dict_list(insight.get("binding_slots"), limit=8)
             if _payload(slot)
         ],
-        "preserve_invariants": [
-            _truncate_text(item, 220) for item in (insight.get("preserve_invariants") or [])[:8]
-        ],
-        "negative_guards": [
-            _truncate_text(item, 220) for item in (insight.get("negative_guards") or [])[:8]
-        ],
+        "preserve_invariants": _prompt_string_list(
+            insight.get("preserve_invariants"), limit=8
+        ),
+        "negative_guards": _prompt_string_list(insight.get("negative_guards"), limit=8),
         "axis_links": [
-            _payload(item) for item in (insight.get("axis_links") or [])[:8] if _payload(item)
+            _payload(item)
+            for item in _prompt_dict_list(insight.get("axis_links"), limit=8)
+            if _payload(item)
         ],
         "evidence": _payload(insight.get("evidence")),
     }
@@ -1245,6 +1259,8 @@ def _repair_program_summary_for_judge(op: CanonicalRepairOp) -> Dict[str, Any]:
         "op_type": op.op_type,
         "locus": op.locus,
         "lowering_family": _lowering_family(op.op_type, op.locus),
+        "identity_role": args.get("identity_role"),
+        "runtime_policy": args.get("runtime_policy"),
         "is_dependency": bool(shared_signature.get("is_dependency") or False),
         "required": bool(shared_signature.get("required", True)),
         "role_delta": _payload(signature.get("role_delta")),
@@ -1543,10 +1559,6 @@ def _shared_repair_insight_from_ops(
         return None, ["missing_insight_interface_key"]
 
     preliminary_blockers: List[str] = []
-    if len(interface_keys) > 1:
-        preliminary_blockers.append(
-            "insight_interface_conflict:" + "|".join(interface_keys[:6])
-        )
     preliminary_blockers.extend(_insight_constraint_blockers(insights))
 
     try:

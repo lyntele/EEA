@@ -508,10 +508,14 @@ def discover_contrastive_repair_effects(
         )
     source_shape = _graph_shape(source_graph)
     target_shape = _graph_shape(target_graph)
-    if (
-        source_shape.get("has_aggregate") != target_shape.get("has_aggregate")
-        or source_shape.get("has_distinct") != target_shape.get("has_distinct")
-    ):
+    aggregate_changed = source_shape.get("has_aggregate") != target_shape.get("has_aggregate")
+    distinct_changed = source_shape.get("has_distinct") != target_shape.get("has_distinct")
+    if aggregate_changed or distinct_changed:
+        distinct_only_accessory = bool(
+            distinct_changed
+            and not aggregate_changed
+            and any(effect.role == "primary" for effect in effects)
+        )
         add_effect(
             axis="aggregation_unit_delta",
             source_state={"shape": source_shape},
@@ -523,8 +527,12 @@ def discover_contrastive_repair_effects(
                 "source_has_distinct": source_shape.get("has_distinct"),
                 "target_has_distinct": target_shape.get("has_distinct"),
             },
-            role="dependency" if effects else "primary",
-            actionability={"primitive": "CHANGE_GRAIN", "arguments_bindable": "unknown"},
+            role="accessory" if distinct_only_accessory else "dependency" if effects else "primary",
+            actionability={
+                "primitive": "CHANGE_GRAIN",
+                "arguments_bindable": "unknown",
+                "runtime_policy": "branch_accessory" if distinct_only_accessory else "required",
+            },
             evidence={"source": "code_output_shape_aggregate_delta"},
             confidence=0.75,
         )

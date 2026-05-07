@@ -894,11 +894,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 "contract_steps_applied": result.get(
                                     "contract_steps_applied", []
                                 ),
+                                "rewrite_contract": result.get("rewrite_contract", {}),
+                                "prompt_payload_audit": result.get(
+                                    "prompt_payload_audit", {}
+                                ),
                                 "rewrite_realization_origin": rewrite_realization_origin_from_result(
                                     result
                                 ),
                             }
                         )
+                        if result.get("rewrite_contract"):
+                            _dump_json(
+                                output_dir
+                                / "cases"
+                                / f"qid_{case_id}_rewrite_contract_{idx}.json",
+                                result.get("rewrite_contract"),
+                            )
                     except Exception as exc:
                         rewrite_row.update(
                             {

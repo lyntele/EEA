@@ -17,12 +17,12 @@ from method.EEA.rulebook.common.evolution_v2 import (
 from method.EEA.rulebook.common.execution_compare_v2 import _normalize_row_multiset
 from method.EEA.rulebook.common.llm_nodes_v2 import (
     _action_compiler_prompt_payloads,
-    _apply_rewrite_contract_dependencies,
     _compact_case_audit_for_extractor,
     _deterministic_canonical_fallback_actions,
+    _enforce_rewrite_contract_absence_checks,
     _enforce_rewrite_scope,
     _runtime_actions_prompt_payload,
-    _rebind_action_target_aliases_in_select,
+    _rewrite_contract_prompt_payload,
     _reroute_candidate_covers_projection_actions,
     _reroute_candidate_has_missing_relation_for_projection,
     run_action_compiler,
@@ -118,6 +118,13 @@ from method.EEA.rulebook.common.vocabulary_v2 import (
     RiskLevel,
     TargetFamily,
 )
+
+
+def _apply_rewrite_contract_dependencies(*_args, **_kwargs):
+    pytest.skip(
+        "Post-LLM deterministic dependency rewriting was removed; rewrite "
+        "tests should assert contract payloads or fail-closed validation."
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -2783,87 +2790,6 @@ def test_reroute_dependency_requires_missing_relation_for_projection_target() ->
     )
 
 
-def test_rebind_action_target_aliases_in_select_is_action_bound_and_fail_safe() -> None:
-    actions = [
-        {
-            "primitive": "ADD_SELECT_SLOT",
-            "allowed_edit_scope": ["SELECT"],
-            "arguments": {
-                "target_output_refs": [
-                    {"table": "beta", "column": "beta_code", "slot_index": 1}
-                ],
-                "target_columns": [
-                    {"target_table": "beta", "target_column": "beta_code"}
-                ],
-            },
-        },
-        {
-            "primitive": "REPLACE_SELECT_SLOT",
-            "allowed_edit_scope": ["SELECT"],
-            "arguments": {
-                "target_output_refs": [
-                    {"table": "beta", "column": "beta_id", "slot_index": 0}
-                ],
-                "target_columns": [
-                    {"target_table": "beta", "target_column": "beta_id"}
-                ],
-            },
-        },
-    ]
-
-    rebound, notes = _rebind_action_target_aliases_in_select(
-        rewrite_sql=(
-            "SELECT beta.beta_id, beta.beta_code, gamma.gamma_code, "
-            "'beta.beta_code', (SELECT beta.beta_code FROM beta) "
-            "FROM alpha a JOIN beta b ON a.beta_id = b.beta_id "
-            "JOIN gamma g ON g.gamma_id = a.gamma_id"
-        ),
-        actions=actions,
-    )
-
-    assert "b.beta_id, b.beta_code" in rebound
-    assert "gamma.gamma_code" in rebound
-    assert "'beta.beta_code'" in rebound
-    assert "(SELECT beta.beta_code FROM beta)" in rebound
-    assert notes
-
-    self_join_sql = (
-        "SELECT beta.beta_code FROM beta b1 "
-        "JOIN beta b2 ON b1.beta_id = b2.beta_id"
-    )
-    unchanged, self_join_notes = _rebind_action_target_aliases_in_select(
-        rewrite_sql=self_join_sql,
-        actions=actions,
-    )
-    assert unchanged == self_join_sql
-    assert self_join_notes == []
-
-    unaliased_sql = "SELECT beta.beta_code FROM beta"
-    unchanged, unaliased_notes = _rebind_action_target_aliases_in_select(
-        rewrite_sql=unaliased_sql,
-        actions=actions,
-    )
-    assert unchanged == unaliased_sql
-    assert unaliased_notes == []
-
-    no_select_scope, no_scope_notes = _rebind_action_target_aliases_in_select(
-        rewrite_sql="SELECT beta.beta_code FROM beta b",
-        actions=[
-            {
-                "primitive": "ADD_SELECT_SLOT",
-                "allowed_edit_scope": ["WHERE"],
-                "arguments": {
-                    "target_columns": [
-                        {"target_table": "beta", "target_column": "beta_code"}
-                    ]
-                },
-            }
-        ],
-    )
-    assert no_select_scope == "SELECT beta.beta_code FROM beta b"
-    assert no_scope_notes == []
-
-
 def _compiler_runtime_case(sql: str) -> RuntimeCaseView:
     return RuntimeCaseView(
         db_id="toy",
@@ -4525,6 +4451,77 @@ def test_memory_schema_tables_recurse_into_action_contract() -> None:
     ]
 
 
+def test_rewrite_contract_payload_binds_select_drop_and_join_dependency() -> None:
+    sql = (
+        "SELECT DISTINCT a1.element, a2.element FROM bond b "
+        "JOIN connected c ON b.bond_id = c.bond_id "
+        "JOIN atom a1 ON c.atom_id = a1.atom_id "
+        "JOIN atom a2 ON c.atom_id2 = a2.atom_id "
+        "WHERE b.bond_type = '#'"
+    )
+    contract = _rewrite_contract_prompt_payload(
+        actions=[
+            {
+                "action_id": "a1",
+                "primitive": "DROP_SELECT_SLOT",
+                "allowed_edit_scope": ["SELECT", "JOIN"],
+                "selected_candidate_id": "c1",
+                "arguments": {
+                    "from_exprs": ["a2.element"],
+                    "drop_count": 1,
+                    "repair_program": [
+                        {
+                            "step_id": "dep1",
+                            "op": "JOIN_DROP_TABLE",
+                            "required": True,
+                            "is_dependency": True,
+                        }
+                    ],
+                },
+            }
+        ],
+        current_sql=sql,
+        natural_language_hint="Remove the extra output side.",
+    )
+
+    assert contract["schema_version"] == "rewrite-contract-v1"
+    assert contract["allowed_scopes"] == ["JOIN", "SELECT"]
+    assert contract["primary_edits"][0]["bound_expressions"] == ["a2.element"]
+    join_blocks = contract["dependency_edits"][0]["bound_join_blocks"]
+    assert join_blocks[0]["table"] == "atom"
+    assert join_blocks[0]["alias"] == "a2"
+    assert join_blocks[0]["sql"] == "JOIN atom a2 ON c.atom_id2 = a2.atom_id"
+    assert join_blocks[0]["external_reference_found"] is False
+    absence_texts = {row["text"] for row in contract["required_absence_checks"]}
+    assert "a2.element" in absence_texts
+    assert "JOIN atom a2 ON c.atom_id2 = a2.atom_id" in absence_texts
+
+
+def test_rewrite_contract_absence_checks_fail_closed_without_sql_patch() -> None:
+    original_sql = "SELECT a1.element, a2.element FROM atom a1 JOIN atom a2 ON a1.id = a2.id"
+    rewrite_sql, traces, notes = _enforce_rewrite_contract_absence_checks(
+        original_sql=original_sql,
+        rewrite_sql=original_sql,
+        rewrite_contract={
+            "required_absence_checks": [
+                {"action_id": "a1", "text": "a2.element", "scope": "SELECT"}
+            ]
+        },
+        traces=[
+            {
+                "action_id": "a1",
+                "realized": True,
+                "edits": [{"location": "SELECT", "edit_kind": "remove"}],
+            }
+        ],
+        contract_steps_applied=[],
+    )
+
+    assert rewrite_sql == original_sql
+    assert traces[0]["realized"] is False
+    assert notes == ["rewrite_contract_absence_failed:a1:a2.element"]
+
+
 def test_rewrite_contract_dependency_applies_distinct_only_when_explicit() -> None:
     actions = [
         {
@@ -5279,7 +5276,7 @@ def test_rewrite_contract_dependency_skips_reroute_without_rebuild_scope() -> No
     assert contract_steps == []
 
 
-def test_rewrite_scope_enforcement_restores_select_for_join_only_action() -> None:
+def test_rewrite_scope_enforcement_fails_closed_for_out_of_scope_edit() -> None:
     rewrite_sql, traces, contract_steps = _enforce_rewrite_scope(
         original_sql="SELECT a.name FROM a WHERE a.id = 1",
         rewrite_sql="SELECT b.name FROM a JOIN b ON a.id = b.a_id WHERE a.id = 1",
@@ -5303,10 +5300,10 @@ def test_rewrite_scope_enforcement_restores_select_for_join_only_action() -> Non
         contract_steps_applied=[],
     )
 
-    assert rewrite_sql == "SELECT a.name FROM a JOIN b ON a.id = b.a_id WHERE a.id = 1"
-    assert traces[0]["realized"] is True
-    assert [edit["location"] for edit in traces[0]["edits"]] == ["JOIN"]
-    assert contract_steps
+    assert rewrite_sql == "SELECT a.name FROM a WHERE a.id = 1"
+    assert traces[0]["realized"] is False
+    assert traces[0]["scope_violation"] is True
+    assert "scope_enforced_fail_closed" in " ".join(contract_steps)
 
 
 def _pair_output_singleton(case_id: str = "206") -> GroupSummary:

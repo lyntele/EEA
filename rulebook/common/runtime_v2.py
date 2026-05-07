@@ -3386,6 +3386,8 @@ def rewrite_one_candidate(
         ],
         "dependency_repairs_applied": list(rewrite_result["dependency_repairs_applied"]),
         "contract_steps_applied": list(rewrite_result.get("contract_steps_applied") or []),
+        "rewrite_contract": rewrite_result.get("rewrite_contract") or {},
+        "prompt_payload_audit": rewrite_result.get("prompt_payload_audit") or {},
     }
 
 

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -65,6 +66,42 @@ def _json_dump(obj: Any) -> str:
         return json.dumps(obj, ensure_ascii=False, indent=2, default=str)
     except Exception as exc:
         raise RuntimeError(f"Failed to serialize object for prompt: {exc}") from exc
+
+
+def _string_list(value: Any, *, limit: int = 12) -> List[str]:
+    if value is None:
+        raw: List[Any] = []
+    elif isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        raw = [value]
+    out: List[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _dict_list(value: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+    if isinstance(value, dict):
+        raw: List[Any] = [value]
+    elif isinstance(value, (list, tuple)):
+        raw = list(value)
+    else:
+        raw = []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        payload = _payload_for_prompt(item)
+        if isinstance(payload, dict) and payload:
+            out.append(payload)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _call_llm_json(
@@ -193,6 +230,8 @@ def _compact_canonical_op_for_compiler(op: Any) -> Dict[str, Any]:
     return {
         "op_id": payload.get("op_id"),
         "lowering_family": _canonical_lowering_family_from_op(payload),
+        "identity_role": args.get("identity_role") or payload.get("identity_role"),
+        "runtime_policy": args.get("runtime_policy") or payload.get("runtime_policy"),
         "output_shape_delta": (
             args.get("output_shape_delta")
             or shared_arguments.get("output_shape_delta")
@@ -201,6 +240,35 @@ def _compact_canonical_op_for_compiler(op: Any) -> Dict[str, Any]:
         "target_invariants": list(shared_arguments.get("target_invariants") or [])[:12],
         "unresolved_variation_axes": list(
             shared_arguments.get("unresolved_variation_axes") or []
+        ),
+    }
+
+
+def _compact_program_envelope_summary(envelope: Any) -> Dict[str, Any]:
+    payload = _payload_for_prompt(envelope)
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    action_bundle = payload.get("action_bundle") if isinstance(payload.get("action_bundle"), dict) else {}
+    target_contract = (
+        payload.get("target_effect_contract")
+        if isinstance(payload.get("target_effect_contract"), dict)
+        else {}
+    )
+    return {
+        "schema_version": payload.get("schema_version"),
+        "source_antipattern_count": len(payload.get("source_antipatterns") or []),
+        "target_effect_count": len(payload.get("target_effects") or []),
+        "lowering_branch_count": len(payload.get("lowering_branches") or []),
+        "runtime_branch_count": len(payload.get("runtime_branches") or []),
+        "action_bundle_op_count": len(action_bundle.get("ops") or []),
+        "target_invariants": _string_list(
+            payload.get("target_invariants") or target_contract.get("target_invariants"),
+            limit=12,
+        ),
+        "required_role_slots": _string_list(payload.get("required_role_slots"), limit=12),
+        "negative_guards": _string_list(payload.get("negative_guards"), limit=12),
+        "repair_insight_signature": _compact_repair_insight_signature(
+            payload.get("repair_insight_signature")
         ),
     }
 
@@ -215,15 +283,19 @@ def _compact_synthesized_program_for_compiler(program: Any) -> Dict[str, Any]:
             _compact_canonical_op_for_compiler(op)
             for op in (payload.get("ops") or [])
         ],
-        "target_invariants": list(payload.get("target_invariants") or [])[:12],
-        "unresolved_variation_axes": list(payload.get("unresolved_variation_axes") or []),
-        "shared_invariants": list(payload.get("shared_invariants") or [])[:12],
+        "target_invariants": _string_list(payload.get("target_invariants"), limit=12),
+        "unresolved_variation_axes": _string_list(
+            payload.get("unresolved_variation_axes"), limit=12
+        ),
+        "shared_invariants": _string_list(payload.get("shared_invariants"), limit=12),
         "repair_insight_signature": _compact_repair_insight_signature(
             payload.get("repair_insight_signature")
             or _payload_for_prompt(payload.get("program_envelope") or {}).get("repair_insight_signature")
         ),
-        "program_envelope": _compact_prompt_payload(payload.get("program_envelope") or {}),
-        "unsupported_ops": list(payload.get("unsupported_ops") or [])[:12],
+        "program_envelope_summary": _compact_program_envelope_summary(
+            payload.get("program_envelope") or {}
+        ),
+        "unsupported_ops": _string_list(payload.get("unsupported_ops"), limit=12),
     }
 
 
@@ -236,10 +308,10 @@ def _compact_repair_insight_signature(insight: Any) -> Dict[str, Any]:
         "source_misread": _short_text(payload.get("source_misread"), 320),
         "target_preference": _short_text(payload.get("target_preference"), 320),
         "repair_interface": _short_text(payload.get("repair_interface"), 320),
-        "binding_slots": list(payload.get("binding_slots") or [])[:8],
-        "preserve_invariants": list(payload.get("preserve_invariants") or [])[:10],
-        "negative_guards": list(payload.get("negative_guards") or [])[:10],
-        "axis_links": list(payload.get("axis_links") or [])[:8],
+        "binding_slots": _dict_list(payload.get("binding_slots"), limit=8),
+        "preserve_invariants": _string_list(payload.get("preserve_invariants"), limit=10),
+        "negative_guards": _string_list(payload.get("negative_guards"), limit=10),
+        "axis_links": _dict_list(payload.get("axis_links"), limit=8),
         "confidence": payload.get("confidence"),
     }
 
@@ -623,14 +695,16 @@ def _compact_trigger_contract_for_compiler(contract: Any) -> Dict[str, Any]:
     return {
         "schema_version": payload.get("schema_version"),
         "max_actions": payload.get("max_actions"),
-        "required_signals": list(payload.get("required_signals") or [])[:20],
-        "decisive_pred_signals": list(payload.get("decisive_pred_signals") or [])[:20],
-        "negative_signals": list(payload.get("negative_signals") or [])[:20],
+        "required_signals": _string_list(payload.get("required_signals"), limit=20),
+        "decisive_pred_signals": _string_list(payload.get("decisive_pred_signals"), limit=20),
+        "negative_signals": _string_list(payload.get("negative_signals"), limit=20),
         "variant_required_signal_sets": [
-            list(signal_set or [])[:12]
+            _string_list(signal_set, limit=12)
             for signal_set in (payload.get("variant_required_signal_sets") or [])[:6]
         ],
-        "canonical_discriminants": list(payload.get("canonical_discriminants") or [])[:20],
+        "canonical_discriminants": _string_list(
+            payload.get("canonical_discriminants"), limit=20
+        ),
         "trigger_policy": {
             "allow_out_of_variant_generalization": (
                 (payload.get("trigger_policy") or {}).get("allow_out_of_variant_generalization")
@@ -654,13 +728,17 @@ def _compact_trigger_contract_for_compiler(contract: Any) -> Dict[str, Any]:
             "target_family": action.get("target_family"),
             "output_shape_delta": action.get("output_shape_delta") or {},
             "answer_unit_contract": action.get("answer_unit_contract") or {},
-            "slot_kinds": list(action.get("slot_kinds") or [])[:12],
+            "slot_kinds": _string_list(action.get("slot_kinds"), limit=12),
             "selection_policy": action.get("selection_policy"),
             "compiler_deterministic": action.get("compiler_deterministic"),
-            "lowering_families": list(action.get("lowering_families") or [])[:12],
-            "required_role_slots": list(action.get("required_role_slots") or [])[:12],
-            "required_target_invariants": list(action.get("required_target_invariants") or [])[:12],
-            "program_envelope": _compact_prompt_payload(action.get("program_envelope") or {}),
+            "lowering_families": _string_list(action.get("lowering_families"), limit=12),
+            "required_role_slots": _string_list(action.get("required_role_slots"), limit=12),
+            "required_target_invariants": _string_list(
+                action.get("required_target_invariants"), limit=12
+            ),
+            "program_envelope_summary": _compact_program_envelope_summary(
+                action.get("program_envelope") or {}
+            ),
         },
     }
 
@@ -751,17 +829,9 @@ def _memory_objects_prompt_payload(
                         instantiation.get("synthesized_program")
                     ),
                 },
-                "trigger_contract": _compact_trigger_contract_for_compiler(
-                    payload.get("trigger_contract") or {}
-                ),
-                "trigger_signature": _compact_trigger_signature_for_compiler(
-                    payload.get("trigger_signature") or {}
-                ),
+                "trigger_contract_omitted_from_compiler_prompt": True,
+                "trigger_signature_omitted_from_compiler_prompt": True,
                 "trigger_match_summary": trigger_audits.get(str(group_id or ""), {}),
-                "guardrails": [
-                    _compact_guardrail_payload(guard)
-                    for guard in (payload.get("guardrails") or [])[:12]
-                ],
                 "repair_insight_signature": _compact_repair_insight_signature(
                     (payload.get("formation_signals") or {}).get("repair_insight_signature")
                     or ((payload.get("trigger_contract") or {}).get("action_contract") or {}).get("repair_insight_signature")
@@ -949,6 +1019,295 @@ def _compact_repair_program_steps_for_runtime_prompt(steps: Any) -> List[Dict[st
                 "arguments": safe_arguments,
             }
         )
+    return rows
+
+
+def _normalize_rewrite_expr(expr: Any) -> str:
+    text = str(expr or "").strip()
+    text = re.split(r"\s+as\s+", text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip("`\"[]").lower()
+
+
+def _aliases_from_exprs(exprs: List[Any]) -> Set[str]:
+    aliases: Set[str] = set()
+    for expr in exprs or []:
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_$]*)\s*\.", str(expr or ""))
+        if match:
+            aliases.add(match.group(1).lower())
+    return aliases
+
+
+def _top_level_join_blocks(sql: str) -> List[Dict[str, Any]]:
+    text = str(sql or "")
+    pattern = re.compile(
+        r"\s+JOIN\s+(?P<table>[A-Za-z_][A-Za-z0-9_$\.]*)(?:\s+(?:AS\s+)?(?P<alias>[A-Za-z_][A-Za-z0-9_$]*))?\s+ON\s+.*?(?=\s+(?:JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b|$)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    blocks: List[Dict[str, Any]] = []
+    for match in pattern.finditer(text):
+        table = str(match.group("table") or "").strip()
+        alias = str(match.group("alias") or table.split(".")[-1]).strip()
+        if not table:
+            continue
+        blocks.append(
+            {
+                "table": table,
+                "alias": alias,
+                "sql": match.group(0).strip(),
+                "span": [match.start(), match.end()],
+            }
+        )
+    return blocks
+
+
+def _alias_referenced_outside_span(
+    sql: str,
+    alias: str,
+    span: List[int],
+    *,
+    dropped_select_exprs: Optional[List[str]] = None,
+) -> bool:
+    if not alias or len(span) != 2:
+        return False
+    text = str(sql or "")
+    dropped = {
+        _normalize_rewrite_expr(expr)
+        for expr in (dropped_select_exprs or [])
+        if _normalize_rewrite_expr(expr)
+    }
+    for expr in _selected_exprs(text):
+        if _normalize_rewrite_expr(expr) in dropped:
+            continue
+        if re.search(rf"\b{re.escape(alias)}\s*\.", expr, flags=re.IGNORECASE):
+            return True
+    outside = text[: int(span[0])] + text[int(span[1]) :]
+    bounds = _selected_clause_bounds(outside)
+    if bounds:
+        outside = outside[: bounds[0]] + outside[bounds[1] :]
+    return bool(re.search(rf"\b{re.escape(alias)}\s*\.", outside, flags=re.IGNORECASE))
+
+
+def _bound_join_blocks_for_aliases(
+    sql: str,
+    aliases: Set[str],
+    *,
+    dropped_select_exprs: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    wanted = {alias.lower() for alias in aliases if alias}
+    for block in _top_level_join_blocks(sql):
+        alias = str(block.get("alias") or "").lower()
+        table_tail = str(block.get("table") or "").split(".")[-1].lower()
+        if alias not in wanted and table_tail not in wanted:
+            continue
+        span = list(block.get("span") or [])
+        rows.append(
+            {
+                "table": block.get("table"),
+                "alias": block.get("alias"),
+                "sql": block.get("sql"),
+                "external_reference_found": _alias_referenced_outside_span(
+                    sql,
+                    alias,
+                    span,
+                    dropped_select_exprs=dropped_select_exprs,
+                ),
+                "external_reference_policy": (
+                    "References inside this JOIN block's own ON clause are not "
+                    "external dependencies; fail only if the alias is referenced "
+                    "outside the block after applying primary edits."
+                ),
+            }
+        )
+    return rows
+
+
+def _selected_clause_bounds(sql: str) -> Optional[tuple[int, int]]:
+    match = re.search(
+        r"\bselect\b\s+(?:distinct\s+)?(.+?)\s+\bfrom\b",
+        str(sql or ""),
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    return match.span(1)
+
+
+def _rewrite_contract_prompt_payload(
+    *,
+    actions: List[Any],
+    current_sql: str,
+    natural_language_hint: str = "",
+) -> Dict[str, Any]:
+    contract: Dict[str, Any] = {
+        "schema_version": "rewrite-contract-v1",
+        "boundary": (
+            "Rewrite is an executor. Triggering, memory selection, branch "
+            "selection, candidate selection, and argument binding are already done."
+        ),
+        "current_sql_must_be_rewritten": True,
+        "primary_edits": [],
+        "dependency_edits": [],
+        "allowed_scopes": [],
+        "required_absence_checks": [],
+        "preserve_constraints": [
+            "Preserve predicates, literals, grouping, ordering, and joins unless an edit below explicitly changes them.",
+        ],
+        "failure_conditions": [
+            "A required edit target is absent from current_sql.",
+            "Applying an edit would touch a scope not listed in allowed_scopes.",
+            "Applying an edit would violate preserve_constraints.",
+        ],
+        "natural_language_hint": _short_text(natural_language_hint, 320),
+    }
+    allowed_scopes: Set[str] = set()
+    selected_exprs = _selected_exprs(current_sql)
+    normalized_current_exprs = {
+        _normalize_rewrite_expr(expr): expr for expr in selected_exprs if _normalize_rewrite_expr(expr)
+    }
+    for action in actions or []:
+        payload = _payload_for_prompt(action)
+        if not isinstance(payload, dict):
+            continue
+        action_id = str(payload.get("action_id") or "")
+        primitive = _enum_name(payload.get("primitive"))
+        args = _payload_for_prompt(payload.get("arguments") or {})
+        if not isinstance(args, dict):
+            args = {}
+        scopes = {
+            _enum_name(scope)
+            for scope in (payload.get("allowed_edit_scope") or args.get("required_edit_scopes") or [])
+            if _enum_name(scope)
+        }
+        allowed_scopes.update(scopes)
+        if primitive == "DROP_SELECT_SLOT":
+            from_exprs = [
+                str(expr).strip()
+                for expr in (args.get("from_exprs") or [args.get("from_expr")])
+                if str(expr or "").strip()
+            ]
+            bound_exprs = [
+                normalized_current_exprs.get(_normalize_rewrite_expr(expr), str(expr).strip())
+                for expr in from_exprs
+                if _normalize_rewrite_expr(expr)
+            ]
+            contract["primary_edits"].append(
+                {
+                    "action_id": action_id,
+                    "primitive": primitive,
+                    "edit": "remove_select_expressions",
+                    "scope": "SELECT",
+                    "required": True,
+                    "bound_expressions": bound_exprs,
+                    "expected_drop_count": args.get("drop_count") or len(bound_exprs),
+                    "selected_candidate_id": payload.get("selected_candidate_id"),
+                    "binding_status": "bound" if bound_exprs else "unbound",
+                }
+            )
+            for expr in bound_exprs:
+                contract["required_absence_checks"].append(
+                    {
+                        "action_id": action_id,
+                        "scope": "SELECT",
+                        "text": expr,
+                        "reason": "removed select expression must not remain in rewrite_sql",
+                    }
+                )
+            aliases = _aliases_from_exprs(bound_exprs or from_exprs)
+            for step in args.get("repair_program") or []:
+                step_payload = _payload_for_prompt(step)
+                if not isinstance(step_payload, dict):
+                    continue
+                op = str(step_payload.get("op") or "").strip().upper()
+                if op in {"JOIN_DROP", "JOIN_DROP_TABLE", "DROP_JOIN", "DROP_JOIN_TABLE"}:
+                    join_blocks = _bound_join_blocks_for_aliases(
+                        current_sql,
+                        aliases,
+                        dropped_select_exprs=bound_exprs or from_exprs,
+                    )
+                    contract["dependency_edits"].append(
+                        {
+                            "action_id": action_id,
+                            "step_id": step_payload.get("step_id"),
+                            "op": op,
+                            "edit": "remove_join_blocks",
+                            "scope": "JOIN",
+                            "required": bool(step_payload.get("required", True)),
+                            "bound_join_blocks": join_blocks,
+                            "binding_status": "bound" if join_blocks else "unbound",
+                        }
+                    )
+                    for block in join_blocks:
+                        if str(block.get("sql") or ""):
+                            contract["required_absence_checks"].append(
+                                {
+                                    "action_id": action_id,
+                                    "scope": "JOIN",
+                                    "text": block.get("sql"),
+                                    "reason": "removed join block must not remain in rewrite_sql",
+                                }
+                            )
+                else:
+                    contract["dependency_edits"].append(
+                        {
+                            "action_id": action_id,
+                            "step_id": step_payload.get("step_id"),
+                            "op": op,
+                            "edit": "apply_explicit_dependency_step",
+                            "scope": step_payload.get("locus"),
+                            "required": bool(step_payload.get("required", True)),
+                            "arguments": _payload_for_prompt(step_payload.get("arguments") or {}),
+                            "binding_status": "provided_by_action_contract",
+                        }
+                    )
+        else:
+            contract["primary_edits"].append(
+                {
+                    "action_id": action_id,
+                    "primitive": primitive,
+                    "edit": "apply_bound_action_arguments",
+                    "required": True,
+                    "arguments": _compact_action_candidate_arguments(args),
+                    "selected_candidate_id": payload.get("selected_candidate_id"),
+                    "binding_status": "provided_by_action_contract",
+                }
+            )
+    contract["allowed_scopes"] = sorted(allowed_scopes)
+    return contract
+
+
+def _rewrite_schema_context_prompt_payload(
+    *,
+    local_schema_view: Any,
+    rewrite_contract: Dict[str, Any],
+) -> Dict[str, Any]:
+    _ = local_schema_view
+    tables: Set[str] = set()
+    aliases: Set[str] = set()
+    for edit in rewrite_contract.get("dependency_edits") or []:
+        for block in edit.get("bound_join_blocks") or []:
+            if str(block.get("table") or ""):
+                tables.add(str(block.get("table")))
+            if str(block.get("alias") or ""):
+                aliases.add(str(block.get("alias")))
+    return {
+        "policy": "minimal_bound_context",
+        "reason": "Rewrite contract is bound to current SQL; full schema is omitted unless an edit needs new schema objects.",
+        "referenced_tables": sorted(tables),
+        "referenced_aliases": sorted(aliases),
+    }
+
+
+def _prompt_payload_audit(payloads: Dict[str, Any]) -> Dict[str, Any]:
+    rows: Dict[str, Any] = {}
+    for name, payload in payloads.items():
+        text = _json_dump_prompt(payload)
+        rows[name] = {
+            "chars": len(text),
+            "top_level_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+            "sha1": hashlib.sha1(text.encode("utf-8")).hexdigest()[:12],
+        }
     return rows
 
 
@@ -1375,43 +1734,6 @@ def _action_bound_select_target_refs(actions: List[Any]) -> List[Dict[str, str]]
             seen.add(key)
             refs.append({"table": table, "column": column})
     return refs
-
-
-def _rebind_action_target_aliases_in_select(
-    *,
-    rewrite_sql: Optional[str],
-    actions: List[Any],
-) -> tuple[Optional[str], List[str]]:
-    if not rewrite_sql:
-        return rewrite_sql, []
-    split = _split_top_level_select_clause(rewrite_sql)
-    if not split:
-        return rewrite_sql, []
-    prefix, select_clause, rest = split
-    table_to_alias = _unique_top_level_table_alias_map(rewrite_sql)
-    if not table_to_alias:
-        return rewrite_sql, []
-    changed_refs: List[str] = []
-    for ref in _action_bound_select_target_refs(actions):
-        table = ref["table"]
-        column = ref["column"]
-        alias = table_to_alias.get(table.lower())
-        if not alias:
-            continue
-        select_clause, changed = _replace_qualified_ref_outside_quotes_and_subqueries(
-            text=select_clause,
-            qualifier=table,
-            column=column,
-            replacement_qualifier=alias,
-        )
-        if changed:
-            changed_refs.append(f"{table}.{column}->{alias}.{column}")
-    if not changed_refs:
-        return rewrite_sql, []
-    return (
-        f"{prefix}{select_clause}{rest}",
-        ["ALIAS_REBIND target SELECT qualifiers: " + ",".join(changed_refs)],
-    )
 
 
 def _split_top_level_where(sql: str) -> Optional[tuple[str, str, str]]:
@@ -2081,157 +2403,6 @@ def _rewrite_reroute_fact_from_target_edges(sql: str, actions: List[Any]) -> Opt
     return rewritten
 
 
-def _apply_rewrite_contract_dependencies(
-    *,
-    rewrite_sql: Optional[str],
-    actions: List[Any],
-    contract_steps_applied: List[str],
-    dependency_repairs_applied: List[str],
-) -> tuple[Optional[str], List[str], List[str]]:
-    """Apply deterministic dependency steps that were explicitly learned.
-
-    This is not an error-type trigger. It only executes concrete repair-program
-    steps already selected by the compiler and bounded to the rewrite action.
-    """
-    if not rewrite_sql:
-        return rewrite_sql, contract_steps_applied, dependency_repairs_applied
-    rerouted = _rewrite_reroute_fact_from_target_edges(rewrite_sql, actions)
-    if rerouted and rerouted != rewrite_sql:
-        rewrite_sql = rerouted
-        note = "REROUTE_FACT target relation edges applied from action contract"
-        if note not in contract_steps_applied:
-            contract_steps_applied.append(note)
-    distinct_steps = _contract_dependency_steps(actions, "SELECT_ENFORCE_DISTINCT")
-    if distinct_steps:
-        if not _has_bound_select_repair(actions) or not _select_has_visible_duplicate_risk(rewrite_sql):
-            note = "SELECT_ENFORCE_DISTINCT not applied: guard_not_bound_or_no_visible_duplicate_risk"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        elif re.search(r"\bselect\s+distinct\b", rewrite_sql, flags=re.IGNORECASE):
-            note = "SELECT_ENFORCE_DISTINCT already present"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        else:
-            rewrite_sql = re.sub(
-                r"\bselect\b",
-                "SELECT DISTINCT",
-                rewrite_sql,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-            note = "SELECT_ENFORCE_DISTINCT applied from explicit repair_program dependency"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-
-    where_steps = _contract_dependency_steps(actions, "WHERE_ADD_CONDITION")
-    if where_steps:
-        if not _action_has_allowed_scope(actions, "WHERE"):
-            note = "WHERE_ADD_CONDITION not applied: where_scope_not_allowed"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        else:
-            applied = 0
-            for row in _target_predicate_rows_from_steps(where_steps):
-                rewrite_sql = _rewrite_unbound_target_predicate_refs(rewrite_sql, row)
-                predicate = _render_target_predicate_for_sql(row, rewrite_sql)
-                if not predicate or _predicate_already_present(rewrite_sql, predicate):
-                    continue
-                rewrite_sql = _insert_where_predicate(rewrite_sql, predicate)
-                applied += 1
-            note = (
-                f"WHERE_ADD_CONDITION applied {applied} predicate(s) from explicit repair_program dependency"
-                if applied
-                else "WHERE_ADD_CONDITION not applied: no bindable new predicate"
-            )
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-
-    drop_ranking_steps = _contract_dependency_steps(actions, "WHERE_DROP_RANKING_PREDICATE")
-    if drop_ranking_steps:
-        if not _action_has_allowed_scope(actions, "WHERE"):
-            note = "WHERE_DROP_RANKING_PREDICATE not applied: where_scope_not_allowed"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        else:
-            rewrite_sql, dropped = _drop_source_ranking_predicates(
-                rewrite_sql,
-                _source_ranking_predicate_rows_from_steps(drop_ranking_steps),
-            )
-            note = (
-                f"WHERE_DROP_RANKING_PREDICATE dropped {dropped} source ranking predicate(s)"
-                if dropped
-                else "WHERE_DROP_RANKING_PREDICATE not applied: no matching source ranking predicate"
-            )
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-
-    order_steps = _contract_dependency_steps(actions, "ORDER_BY_APPLY")
-    if order_steps:
-        if not _action_has_allowed_scope(actions, "ORDER_BY"):
-            note = "ORDER_BY_APPLY not applied: order_by_scope_not_allowed"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        else:
-            rewrite_sql, applied = _apply_target_order_by(
-                rewrite_sql,
-                _target_order_rows_from_steps(order_steps),
-            )
-            note = (
-                f"ORDER_BY_APPLY applied {applied} expression(s) from explicit repair_program dependency"
-                if applied
-                else "ORDER_BY_APPLY not applied: no bindable target order expression"
-            )
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-
-    limit_steps = _contract_dependency_steps(actions, "LIMIT_APPLY")
-    if limit_steps:
-        if not _action_has_allowed_scope(actions, "LIMIT"):
-            note = "LIMIT_APPLY not applied: limit_scope_not_allowed"
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-        else:
-            target_limit = _target_limit_from_steps(limit_steps)
-            if target_limit is None:
-                note = "LIMIT_APPLY not applied: no target limit"
-            else:
-                rewrite_sql, applied = _apply_target_limit(rewrite_sql, target_limit)
-                note = (
-                    f"LIMIT_APPLY applied LIMIT {target_limit} from explicit repair_program dependency"
-                    if applied
-                    else "LIMIT_APPLY not applied: invalid target limit"
-                )
-            if note not in contract_steps_applied:
-                contract_steps_applied.append(note)
-    return rewrite_sql, contract_steps_applied, dependency_repairs_applied
-
-
-def _selected_clause_bounds(sql: str) -> Optional[tuple[int, int]]:
-    match = re.search(
-        r"\bselect\b\s+(?:distinct\s+)?(.+?)\s+\bfrom\b",
-        str(sql or ""),
-        re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        return None
-    return match.span(1)
-
-
-def _restore_select_clause(*, original_sql: str, rewrite_sql: str) -> Optional[str]:
-    original_bounds = _selected_clause_bounds(original_sql)
-    rewrite_bounds = _selected_clause_bounds(rewrite_sql)
-    if not original_bounds or not rewrite_bounds:
-        return None
-    original_select = str(original_sql)[original_bounds[0] : original_bounds[1]].strip()
-    if not original_select:
-        return None
-    return (
-        str(rewrite_sql)[: rewrite_bounds[0]]
-        + original_select
-        + str(rewrite_sql)[rewrite_bounds[1] :]
-    )
-
-
 def _trace_action_id(trace: Any) -> str:
     if isinstance(trace, dict):
         return str(trace.get("action_id") or "")
@@ -2306,60 +2477,44 @@ def _enforce_rewrite_scope(
         return rewrite_sql, traces, contract_steps_applied
 
     allowed_by_action = _allowed_scopes_by_action(actions)
-    sanitized_sql = rewrite_sql
     updated_traces: List[Any] = []
-    fail_closed = False
+    fail_reasons: List[str] = []
 
     for trace in traces or []:
         action_id = _trace_action_id(trace)
         allowed = allowed_by_action.get(action_id, set())
-        kept_edits: List[Any] = []
         removed_locations: List[str] = []
         for edit in _trace_edits(trace):
             location = _edit_location(edit)
             if allowed and location and location not in allowed:
                 removed_locations.append(location)
-                if location == "SELECT":
-                    restored = _restore_select_clause(
-                        original_sql=original_sql,
-                        rewrite_sql=sanitized_sql,
-                    )
-                    if restored is None:
-                        fail_closed = True
-                    else:
-                        sanitized_sql = restored
-                else:
-                    fail_closed = True
-                continue
-            kept_edits.append(edit)
 
         if removed_locations:
+            fail_reasons.append(
+                f"{action_id or 'unknown'}:out_of_scope="
+                + ",".join(sorted(set(removed_locations)))
+            )
             note = (
                 _trace_notes(trace)
-                + " | scope_enforced: removed out-of-scope edits "
+                + " | scope_enforced: fail closed on out-of-scope edits "
                 + ",".join(sorted(set(removed_locations)))
             ).strip(" |")
             trace = _copy_trace(
                 trace,
                 {
-                    "edits": kept_edits,
-                    "realized": bool(kept_edits) and _trace_realized(trace),
-                    "scope_violation": fail_closed,
+                    "realized": False,
+                    "scope_violation": True,
                     "notes": note,
                 },
             )
-            contract_note = (
-                "scope_enforced: restored C0 SELECT for out-of-scope SELECT edit"
-                if not fail_closed
-                else "scope_enforced: fail closed on out-of-scope edit"
-            )
-            if contract_note not in contract_steps_applied:
-                contract_steps_applied.append(contract_note)
         updated_traces.append(trace)
 
-    if fail_closed:
-        return None, updated_traces, contract_steps_applied
-    return sanitized_sql, updated_traces, contract_steps_applied
+    if fail_reasons:
+        note = "scope_enforced_fail_closed:" + "|".join(sorted(set(fail_reasons)))
+        if note not in contract_steps_applied:
+            contract_steps_applied.append(note)
+        return original_sql, updated_traces, contract_steps_applied
+    return rewrite_sql, updated_traces, contract_steps_applied
 
 
 def _action_payload_map(actions: List[Any]) -> Dict[str, Dict[str, Any]]:
@@ -2507,6 +2662,65 @@ def _fail_closed_rewrite_contract(
         return rewrite_sql, updated_traces, contract_steps_applied
 
     note = "rewrite_contract_fail_closed:" + "|".join(sorted(set(fail_reasons)))
+    if note not in contract_steps_applied:
+        contract_steps_applied.append(note)
+    return original_sql, updated_traces, contract_steps_applied
+
+
+def _enforce_rewrite_contract_absence_checks(
+    *,
+    original_sql: str,
+    rewrite_sql: Optional[str],
+    rewrite_contract: Dict[str, Any],
+    traces: List[Any],
+    contract_steps_applied: List[str],
+) -> tuple[Optional[str], List[Any], List[str]]:
+    if not rewrite_sql:
+        return rewrite_sql, traces, contract_steps_applied
+    failures: List[Dict[str, str]] = []
+    lowered = str(rewrite_sql).lower()
+    for check in rewrite_contract.get("required_absence_checks") or []:
+        payload = _payload_for_prompt(check)
+        text = str(payload.get("text") or "").strip()
+        if text and text.lower() in lowered:
+            failures.append(
+                {
+                    "action_id": str(payload.get("action_id") or ""),
+                    "text": text,
+                }
+            )
+    if not failures:
+        return rewrite_sql, traces, contract_steps_applied
+    note = "rewrite_contract_absence_failed:" + "|".join(
+        f"{item['action_id']}:{item['text']}" for item in failures[:6]
+    )
+    failed_action_ids = {item["action_id"] for item in failures if item["action_id"]}
+    updated_traces: List[Any] = []
+    for trace in traces or []:
+        action_id = _trace_action_id(trace)
+        if action_id in failed_action_ids:
+            updated_traces.append(
+                _copy_trace(
+                    trace,
+                    {
+                        "realized": False,
+                        "notes": (_trace_notes(trace) + " | " + note).strip(" |"),
+                    },
+                )
+            )
+        else:
+            updated_traces.append(trace)
+    if not updated_traces:
+        for action_id in sorted(failed_action_ids):
+            updated_traces.append(
+                {
+                    "action_id": action_id,
+                    "realized": False,
+                    "edits": [],
+                    "scope_violation": False,
+                    "notes": note,
+                }
+            )
     if note not in contract_steps_applied:
         contract_steps_applied.append(note)
     return original_sql, updated_traces, contract_steps_applied
@@ -3646,22 +3860,18 @@ def run_error_instance_extractor(
                 repair_interface=str(insight_raw.get("repair_interface") or "").strip(),
                 binding_slots=[
                     dict(item)
-                    for item in (insight_raw.get("binding_slots") or [])
+                    for item in _dict_list(insight_raw.get("binding_slots"), limit=12)
                     if isinstance(item, dict)
                 ],
-                preserve_invariants=[
-                    str(item).strip()
-                    for item in (insight_raw.get("preserve_invariants") or [])
-                    if str(item).strip()
-                ],
-                negative_guards=[
-                    str(item).strip()
-                    for item in (insight_raw.get("negative_guards") or [])
-                    if str(item).strip()
-                ],
+                preserve_invariants=_string_list(
+                    insight_raw.get("preserve_invariants"), limit=20
+                ),
+                negative_guards=_string_list(
+                    insight_raw.get("negative_guards"), limit=20
+                ),
                 axis_links=[
                     dict(item)
-                    for item in (insight_raw.get("axis_links") or [])
+                    for item in _dict_list(insight_raw.get("axis_links"), limit=12)
                     if isinstance(item, dict)
                 ],
                 evidence=dict(insight_raw.get("evidence") or {}),
@@ -3999,21 +4209,43 @@ def run_memory_rewrite(
             "notes": "no actions; passthrough",
         }
 
-    actions_payload = _runtime_actions_prompt_payload(actions)
+    rewrite_contract = _rewrite_contract_prompt_payload(
+        actions=actions,
+        current_sql=c0_top1_sql,
+        natural_language_hint=natural_language_hint or "",
+    )
+    schema_context = _rewrite_schema_context_prompt_payload(
+        local_schema_view=local_schema_view,
+        rewrite_contract=rewrite_contract,
+    )
+    prompt_audit = _prompt_payload_audit(
+        {
+            "rewrite_contract": rewrite_contract,
+            "schema_context": schema_context,
+        }
+    )
 
     prompt = build_memory_rewrite_prompt(
         question=question,
         evidence=evidence or "",
         c0_top1_sql=c0_top1_sql,
-        actions_json=_json_dump_prompt(actions_payload),
-        local_schema_view_json=_json_dump_prompt(local_schema_view),
+        rewrite_contract_json=_json_dump_prompt(rewrite_contract),
+        schema_context_json=_json_dump_prompt(schema_context),
         natural_language_hint=natural_language_hint or "",
     )
 
     raw: Dict[str, Any] = _call_llm_json(
         prompt,
         stage="memory_rewrite",
-        trace_context={"action_count": len(actions or [])},
+        trace_context={
+            "action_count": len(actions or []),
+            "selected_candidate_ids": [
+                str(_payload_for_prompt(action).get("selected_candidate_id") or "")
+                for action in actions or []
+                if isinstance(_payload_for_prompt(action), dict)
+            ],
+            "rewrite_contract_audit": prompt_audit,
+        },
     )  # type: ignore[assignment]
 
     # realization traces 反序列化
@@ -4053,21 +4285,6 @@ def run_memory_rewrite(
     ) or None  # 空串 → None，让上层"空则 failure"语义生效
     contract_steps_applied = list(raw.get("contract_steps_applied") or [])
     dependency_repairs_applied = list(raw.get("dependency_repairs_applied") or [])
-    _rewrite_sql, contract_steps_applied, dependency_repairs_applied = (
-        _apply_rewrite_contract_dependencies(
-            rewrite_sql=_rewrite_sql,
-            actions=actions,
-            contract_steps_applied=contract_steps_applied,
-            dependency_repairs_applied=dependency_repairs_applied,
-        )
-    )
-    _rewrite_sql, alias_rebind_notes = _rebind_action_target_aliases_in_select(
-        rewrite_sql=_rewrite_sql,
-        actions=actions,
-    )
-    for note in alias_rebind_notes:
-        if note not in contract_steps_applied:
-            contract_steps_applied.append(note)
     _rewrite_sql, traces, contract_steps_applied = _enforce_rewrite_scope(
         original_sql=c0_top1_sql,
         rewrite_sql=_rewrite_sql,
@@ -4082,10 +4299,19 @@ def run_memory_rewrite(
         traces=traces,
         contract_steps_applied=contract_steps_applied,
     )
+    _rewrite_sql, traces, contract_steps_applied = _enforce_rewrite_contract_absence_checks(
+        original_sql=c0_top1_sql,
+        rewrite_sql=_rewrite_sql,
+        rewrite_contract=rewrite_contract,
+        traces=traces,
+        contract_steps_applied=contract_steps_applied,
+    )
     return {
         "rewrite_sql": _rewrite_sql,
         "action_realization_traces": traces,
         "contract_steps_applied": contract_steps_applied,
+        "rewrite_contract": rewrite_contract,
+        "prompt_payload_audit": prompt_audit,
         # Legacy output key retained for old log readers. The current prompt
         # records explicit repair_program steps under contract_steps_applied.
         "dependency_repairs_applied": dependency_repairs_applied,

@@ -571,3 +571,59 @@ env PYTHONPATH=/data/liuyining/ace4sql \
 - 构建侧需要把 case-local insight 区分为“核心修复偏差”和“附属实现条件”。例如 DISTINCT 应从修复轨迹保留为 branch/action accessory，而不应阻止 206/249 合并。
 - pattern admission 应允许同一核心程序下存在 accessory action variation，但 runtime branch selection 必须在新案例上重新判定是否需要 DISTINCT。
 - ActionCompiler prompt 要做硬预算与内容审查，优先检查为什么单个 singleton 触发也会生成 17 万字符 prompt。
+
+### T-20260507-02：rewrite contract 与 prompt 精简
+
+背景：
+
+- 在 `branch_runtime_smoke_toxicology_20260507_v7` 中，q253 已经正确触发 `grp-sing-toxicology-249`，ActionCompiler 也选出了删除冗余输出侧的动作。
+- 但旧 `memory_rewrite` prompt 仍把动作、完整 schema 上下文和较多审计信息混在一起交给 LLM，LLM 返回了未修改 SQL，并把“删除 `a2` 的 JOIN”误判为不安全。
+- 这说明当前主要问题不是 q253 的触发，而是 rewrite 阶段的职责边界不清：LLM 同时被要求理解 pattern、选择动作、判断依赖、改 SQL，容易拒绝已经被前序阶段绑定好的编辑。
+
+本轮修改：
+
+- 新增 `rewrite_contract`：runtime 在调用 rewrite 前，把已选 actions 编译成一个小合同，明确说明触发、记忆选择、branch 选择、候选动作选择和参数绑定都已经完成。
+- `memory_rewrite` prompt 改成只接收 `S0 + rewrite_contract + minimal schema_context`，不再接收完整 actions JSON 和完整 local schema。
+- 对 `DROP_SELECT_SLOT`，合同会绑定当前 SQL 中要删除的 SELECT 表达式，并根据该表达式 alias 绑定可删除 JOIN block；例如 q253 绑定：
+  - 删除 `a2.element`
+  - 删除 `JOIN atom a2 ON c.atom_id2 = a2.atom_id`
+  - 标记 `a2` 在删除 SELECT 后没有外部引用
+- 增加 `required_absence_checks`：如果 LLM 声称完成删除，但 rewrite_sql 中仍包含被删除文本，则代码 fail-closed 回退原 SQL。
+- 增加 `prompt_payload_audit`：记录 rewrite prompt 中各 payload 的字符数、顶层 key 和 sha1，便于后续定位 token 膨胀。
+- `ActionCompiler` prompt 删除不必要的 full trigger contract / full trigger signature / full guardrails / full program envelope，只保留触发后的匹配摘要、核心接口、候选动作和压缩 program summary。
+- 把 DISTINCT、target-only predicate、ranking 等从 root pattern 身份中降为 `branch_accessory`，用于后续 branch/action 选择，不再把同一核心错误强行拆成不同 pattern。
+
+重要边界修正：
+
+- 本轮删除了 rewrite 后的确定性 SQL 修补路径。
+- 代码不再在 LLM 返回后直接执行 `SELECT_ENFORCE_DISTINCT`、补 WHERE、重建 join route 或自动 alias rebind。
+- 现在代码只负责生成合同和校验合同是否真实落地；如果 LLM 没执行合同，系统回退原 SQL，不由代码替 LLM 改 SQL。
+- scope guard 也改成 fail-closed，不再“恢复局部 SELECT 后继续保留部分 rewrite”。
+
+真实 probe：
+
+- 输出目录：`outputs/rewrite_contract_q253_probe_20260507_r2`
+- q253 的 rewrite 结果：
+
+```sql
+SELECT DISTINCT a1.element
+FROM bond b
+JOIN connected c ON b.bond_id = c.bond_id
+JOIN atom a1 ON c.atom_id = a1.atom_id
+WHERE b.bond_type = '#'
+```
+
+- 这条 probe 说明新的 rewrite_contract prompt 可以让 LLM 正确执行删除冗余输出侧和冗余 JOIN 的合同。
+- 但 trace 中 `edit_kind` 仍为空字符串，虽然 SQL 和 absence checks 通过；后续如果要依赖 trace 做更强审计，需要让 prompt 或 parser 更严格。
+
+prompt 规模观察：
+
+- q253 rewrite payload 从旧 prompt 约 `12703 chars` 降到新 prompt 约 `4325 chars`。
+- q253 `rewrite_contract` JSON 约 `2158 chars`，`schema_context` 约 `241 chars`。
+- ActionCompiler 的 memory objects payload 已去掉完整 trigger/guard/program envelope，但 candidate sets 仍可能偏大，后续 token 膨胀优先查候选动作集合与 schema summary。
+
+未解决问题：
+
+- 本轮没有解决 pattern runtime usable / formal promotion 不稳定的问题。
+- `outputs/rewrite_contract_online_toxicology_206_249_253_20260507` 的在线短序列在 q206 的上游 LLM 调用阶段卡住，未形成有效在线结论；这不是 rewrite_contract 的结果。
+- 后续需要继续把触发、pattern admission、branch matching 单独验证，避免把 rewrite 成败和构建成败混在一起分析。

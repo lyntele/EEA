@@ -24,9 +24,9 @@ Inputs:
 1. runtime_case_view: runtime-visible signals for the case, including a compact
    current-SQL role graph derived only from C0 top-1 and schema
 2. memory_objects: compact matched singleton/family/pattern contracts, each with
-   only the runtime-needed core interface, canonical instantiation program,
-   trigger signature/contract, trigger match summary, and guardrails. Legacy
-   source-case natural-language templates are intentionally omitted.
+   the runtime-needed core interface, canonical instantiation summary, trigger
+   match summary, and repair insight. Trigger contracts and legacy source-case
+   templates are intentionally omitted because matching already happened.
 3. candidate_sets: **pre-enumerated** candidate summaries grouped by primitive.
    `selected_candidate_id` is authoritative; hidden full candidate arguments stay in code.
    Every candidate already carries code-side checks such as:
@@ -103,8 +103,8 @@ E. Every action must include:
    - source_group_id / source_group_type
    - primitive (ActionPrimitive enum)
    - arguments (copy the visible selected-candidate summary; do not invent any
-     field omitted from the prompt. Runtime will restore the full code-side
-     candidate arguments from selected_candidate_id.)
+     field omitted from the prompt. Runtime will turn this selected candidate
+     into a smaller rewrite_contract before SQL rewrite.)
    - selected_candidate_id (the selected candidate_id)
    - rationale_short (one sentence)
    - priority (0.0-1.0, higher = higher priority)

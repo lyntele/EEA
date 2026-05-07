@@ -575,7 +575,63 @@ def _operation_signature(payload: Dict[str, Any]) -> Dict[str, Any]:
     return _model_dump(args.get("operation_signature") or args.get("shared_signature") or {})
 
 
-def _program_core_signature(group: GroupSummary) -> Tuple[Tuple[str, str, str], ...]:
+def _primary_effect_core_signature(ir: Dict[str, Any]) -> Tuple[Tuple[str, ...], ...]:
+    """Pattern identity from primary contrastive effects, not accessory edits.
+
+    The same stable bias can have different branch/accessory policies
+    (deduplicate, ranking, target-only predicate, route cleanup). Those policies
+    are still available to the compiler, but they must not split the root
+    pattern identity when the primary source->target effect is the same.
+    """
+    repair_effect_signature = _model_dump(ir.get("repair_effect_signature") or {})
+    rows: Set[Tuple[str, ...]] = set()
+    for effect in repair_effect_signature.get("effect_candidates") or []:
+        payload = _model_dump(effect)
+        role = str(payload.get("role") or "primary").strip().lower()
+        if role not in {"primary", "core"}:
+            continue
+        axis = str(payload.get("axis") or "").strip()
+        if not axis:
+            continue
+        delta = _model_dump(payload.get("delta") or {})
+        kind = str(delta.get("kind") or "").strip()
+        if axis == "output_shape_delta":
+            rows.add(
+                (
+                    "effect",
+                    axis,
+                    kind,
+                    str(delta.get("arity_direction") or ""),
+                    f"{delta.get('source_arity')}->{delta.get('target_arity')}",
+                    f"subset={bool(delta.get('target_is_subset_of_source'))}",
+                )
+            )
+            continue
+        if axis in {"aggregation_unit_delta", "grain_delta"}:
+            rows.add(
+                (
+                    "effect",
+                    axis,
+                    kind,
+                    f"aggregate={delta.get('source_has_aggregate')}->{delta.get('target_has_aggregate')}",
+                    f"distinct={delta.get('source_has_distinct')}->{delta.get('target_has_distinct')}",
+                    str(delta.get("arity_direction") or ""),
+                )
+            )
+            continue
+        rows.add(
+            (
+                "effect",
+                axis,
+                kind,
+                str(delta.get("arity_direction") or ""),
+                str(delta.get("direction") or ""),
+            )
+        )
+    return tuple(sorted(rows))
+
+
+def _program_core_signature(group: GroupSummary) -> Tuple[Tuple[str, ...], ...]:
     """Core executable repair package learned from this case.
 
     This is a mechanism-level guard: broad semantic similarity is not enough if
@@ -584,9 +640,18 @@ def _program_core_signature(group: GroupSummary) -> Tuple[Tuple[str, str, str], 
     """
     signals = _signal_payload(group)
     ir = dict((signals.get("canonical_repair_ir") or {}) or {})
+    effect_signature = _primary_effect_core_signature(ir)
+    if effect_signature:
+        return effect_signature
     counts: Counter[Tuple[str, str, str]] = Counter()
     for op in ir.get("program_ops") or []:
         payload = _model_dump(op)
+        args = _model_dump(payload.get("arguments") or {})
+        identity_role = str(
+            args.get("identity_role") or payload.get("identity_role") or "core"
+        ).strip().lower()
+        if identity_role in {"accessory", "dependency", "branch", "noise"}:
+            continue
         signature = _operation_signature(payload)
         is_dependency = bool(signature.get("is_dependency") or payload.get("is_dependency") or False)
         required = bool(signature.get("required", payload.get("required", True)))
@@ -648,8 +713,8 @@ def _program_dependency_signature(group: GroupSummary, *, required_only: bool) -
 
 def _core_signature_buckets(
     groups: Sequence[GroupSummary],
-) -> Dict[Tuple[Tuple[str, str, str], ...], List[GroupSummary]]:
-    buckets: Dict[Tuple[Tuple[str, str, str], ...], List[GroupSummary]] = defaultdict(list)
+) -> Dict[Tuple[Tuple[str, ...], ...], List[GroupSummary]]:
+    buckets: Dict[Tuple[Tuple[str, ...], ...], List[GroupSummary]] = defaultdict(list)
     for group in groups:
         buckets[_program_core_signature(group)].append(group)
     return buckets

@@ -32,8 +32,16 @@ Definitions:
   correct it, which invariants must be preserved, and when not to apply it.
 - shared insight: one answer-blind repair interface that explains every member
   card without losing a member's required preserve invariant or negative guard.
+- core repair insight: the stable source->target mistake that decides whether
+  members belong to the same reusable pattern.
+- branch/accessory constraint: a member-local condition learned from its own
+  repair trace, such as deduplicating the repaired output, applying target-only
+  ordering, or preserving/removing a supporting route after the same core repair.
+  These constraints may require separate runtime branches; they are not by
+  themselves a conflict when the core repair insight is shared.
 - compatible: all cards can be summarized by one shared repair interface; wording
-  differences and different table/column names are allowed.
+  differences, different table/column names, and branch/accessory differences
+  are allowed if one core repair insight covers every member.
 - partial: cards point to the same broad experience, but a reusable repair
   interface still has unresolved axes or member-specific branches; safe only as
   offline family evidence, not as a direct runtime pattern.
@@ -45,6 +53,10 @@ Positive examples:
   preserving the same filter scope. Card B says pred outputs a paired entity and
   target keeps one answer unit, with different table/column names. Compatible:
   shared interface is "drop extra paired output side preserving scope".
+- Card A adds deduplication after dropping the extra output side, while Card B
+  only drops the extra output side. Compatible if the shared core is the same;
+  report deduplication as a branch/accessory check that code must preserve or
+  select later.
 - Card A says pred selects a proxy/display slot and target uses a canonical
   answer slot under the same predicates. Card B says the same with different
   schema identifiers. Compatible if source/target slot roles align and no
