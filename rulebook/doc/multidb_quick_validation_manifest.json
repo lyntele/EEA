@@ -1,0 +1,34 @@
+{
+  "name": "multidb_quick_validation_v1",
+  "purpose": "Three-database quick validation for contract trigger, compiler, rewrite, and execution feedback. Total cases: 34. All databases use formal v2 singleton libraries.",
+  "bird_db_root": "/data/liuyining/ace4sql/bench/bird/dev/dev_databases",
+  "deepeye_root": "/data/liuyining/ace4sql/method/deepeye/DeepEye-SQL",
+  "ace_root": "/data/liuyining/ace4sql",
+  "max_selected": 1,
+  "databases": [
+    {
+      "db_id": "toxicology",
+      "description": "Strong structural cases plus false-trigger guards: pair output collapse, numerator scope, storage direction, negation, and already-correct guards.",
+      "library_json": "/data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/workspace/rulebook_runs/toxicology_diag20_v2_gate_20260427_0445_k8/final_library.json",
+      "work_root": "/data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/workspace/rulebook_runs/toxicology_diag20_v2_gate_20260427_0445_k8/.state/work",
+      "case_ids": [214, 217, 218, 221, 239, 249, 252, 253, 285, 298, 307, 317],
+      "rewrite_case_ids": [249, 253, 285, 298, 307, 317]
+    },
+    {
+      "db_id": "california_schools",
+      "description": "Low-grade FRPM pattern, canonical school-side slot cases, business-column routing, and singleton/noise guards.",
+      "library_json": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/multidb_formal_v2_libraries/california_schools/library.json",
+      "work_root": "/data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/workspace/rulebook_runs/rulebook_single_db_california_schools_full_c24_current_20260414_161050/.state/work",
+      "case_ids": [16, 23, 25, 32, 37, 51, 65, 74, 81, 87],
+      "rewrite_case_ids": [23, 51, 74, 81, 87]
+    },
+    {
+      "db_id": "financial",
+      "description": "ID output contract, config-vs-transaction routing, premature DISTINCT/count issues, role anchor, joint extrema, and singleton/noise guards.",
+      "library_json": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/multidb_formal_v2_libraries/financial/library.json",
+      "work_root": "/data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/workspace/rulebook_runs/rulebook_single_db_financial_full_c24_current_20260414_161050/.state/work",
+      "case_ids": [94, 101, 135, 141, 142, 150, 169, 173, 180, 182, 189, 193],
+      "rewrite_case_ids": [135, 142, 150, 173, 180, 182]
+    }
+  ]
+}
