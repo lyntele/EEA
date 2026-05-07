@@ -60,10 +60,18 @@ def _payload(value: Any) -> Any:
     return value
 
 
-def _parse_case_ids(raw: str) -> Optional[set[str]]:
+def _parse_case_ids(raw: str) -> Optional[List[str]]:
     if not raw.strip():
         return None
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for part in raw.split(","):
+        case_id = part.strip()
+        if not case_id or case_id in seen:
+            continue
+        seen.add(case_id)
+        ordered.append(case_id)
+    return ordered
 
 
 def _case_sort_key(path: Path) -> int:
@@ -422,6 +430,12 @@ def _summary_payload(
             "strict_contract_policy": args.strict_contract_policy,
             "max_cases": args.max_cases,
             "case_ids": args.case_ids,
+            "case_id_order_effective": list(
+                getattr(args, "case_id_order_effective", []) or []
+            ),
+            "missing_requested_case_ids": list(
+                getattr(args, "missing_requested_case_ids", []) or []
+            ),
         },
         "strict_contract_issues": strict_issues,
         "family_reports": list(family_reports),
@@ -653,11 +667,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     wanted = _parse_case_ids(args.case_ids)
-    case_dirs = sorted(work_root.glob("qid_*"), key=_case_sort_key)
+    all_case_dirs = sorted(work_root.glob("qid_*"), key=_case_sort_key)
     if wanted is not None:
-        case_dirs = [path for path in case_dirs if path.name.split("_")[-1] in wanted]
+        by_case_id = {path.name.split("_")[-1]: path for path in all_case_dirs}
+        case_dirs = [by_case_id[case_id] for case_id in wanted if case_id in by_case_id]
+        args.missing_requested_case_ids = [
+            case_id for case_id in wanted if case_id not in by_case_id
+        ]
+    else:
+        case_dirs = all_case_dirs
+        args.missing_requested_case_ids = []
     if args.max_cases > 0:
         case_dirs = case_dirs[: args.max_cases]
+    args.case_id_order_effective = [path.name.split("_")[-1] for path in case_dirs]
 
     rows: List[Dict[str, Any]] = []
     family_events: List[Dict[str, Any]] = []
@@ -909,7 +931,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 else (str(best_rewrite.get("rewrite_status")) if best_rewrite else "not_run")
             )
             c0_status = str(row.get("c0_status") or pred_status)
-            final_status = "equivalent" if _is_equivalent(c0_status) else best_rewrite_status
+            final_status = (
+                "equivalent"
+                if _is_equivalent(c0_status)
+                else best_rewrite_status
+                if best_rewrite is not None
+                else c0_status
+            )
             final_unknown_reason = ""
             if _is_equivalent(c0_status):
                 final_unknown_reason = ""

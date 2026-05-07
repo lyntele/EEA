@@ -496,3 +496,78 @@ python cli/evaluate_manual_pattern_trigger_loo_v2.py \
 - `253` 累计后，local evolve 继续运行，库内有 2 个 family、3 个 singleton。
 - 用该前缀库测试 q268，runtime 返回 `ready`，匹配 `grp-pat-toxicology-206-249-b5991530`，并产出删除冗余 `a2.element` 的 hint。
 - 当前三例前缀仍未稳定升为 formal pattern，而是 runtime family；这属于 pattern admission / formal promotion 的下一阶段，不再是“累计后只看当前 singleton”或“evolution 丢掉 pattern candidate”的更新语义问题。
+
+### T-20260507-01：branch runtime 后真实短序列验证
+
+背景：
+
+- 按用户要求恢复本地 API key 后，使用真实 Qwen3/OpenRouter 配置跑 toxicology 强 pattern 小序列。
+- 目标不是全库性能，而是验证“新案例逐个进入后，206/249 是否能积累出可触发记忆，253 是否能稳定触发并修对”，同时混入 221/252 作为干扰。
+
+先发现的测试脚本问题：
+
+- `run_online_e2e_validation_v2.py` 之前把 `--case_ids` 解析成 `set`，再按 qid 数字排序。
+- 因此传入 `206,249,253,221,252` 时，实际顺序会被改写，破坏在线累计测试语义。
+- 已修复为保留用户输入顺序，并在 `summary.json.config.case_id_order_effective` 和 `missing_requested_case_ids` 中记录真实执行顺序和缺失 qid。
+
+运行命令摘要：
+
+```bash
+env PYTHONPATH=/data/liuyining/ace4sql \
+  EEA_LLM_TRACE_PATH=outputs/branch_runtime_smoke_toxicology_20260507_v6/llm_trace.jsonl \
+  RULEBOOK_LLM_HARD_TIMEOUT_SECONDS=120 \
+  python cli/run_online_e2e_validation_v2.py \
+  --db_id toxicology \
+  --work_root /data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/workspace/rulebook_runs/rulebook_single_db_toxicology_full_v2stack_phase15e_20260426_052756_retry/.state/work \
+  --output_dir outputs/branch_runtime_smoke_toxicology_20260507_v6 \
+  --case_ids 206,249,253,221,252 \
+  --family_runtime_policy replay_gated \
+  --promotion_interval 1 \
+  --promotion_min_support 2 \
+  --max_neighbor_edges 5 \
+  --strict_contract_policy continue \
+  --save_library_snapshots
+```
+
+结果摘要：
+
+- 有效执行顺序：`206 -> 249 -> 253 -> 221 -> 252`，无缺失 qid。
+- `total_cases = 5`
+- `baseline_equivalent_count = 0`
+- `final_equivalent_count = 1`
+- `net_improvement = +1`
+- `improved_cases = [253]`
+- `regression_cases = []`
+- `ready_cases = 1`
+- `triggered_cases = 1`
+- 最终库：`patterns = 0, experience_families = 0, singletons = 4`
+
+逐题结论：
+
+- `206`：无记忆可触发，最终错误，积累为 singleton。
+- `249`：无记忆可触发，最终错误，积累为 singleton。
+- `253`：触发 `grp-sing-toxicology-249`，rewrite 成功，最终等价。
+- `221`：未触发，最终错误，积累为 singleton。
+- `252`：未触发，最终错误，积累为 singleton。
+
+关键诊断：
+
+- 206/249 没有形成 pattern，瓶颈发生在构建阶段，不是 runtime branch trigger。
+- `local_evolve_after_qid_249.json` 中，206/249 的边被判为 `case_local_insight_conflict`，虽然粗召回理由包括 `shared_action_lowering_family / shared_effect_axis / shared_output_shape_delta`。
+- 具体原因来自 case-local insight 抽取不稳定：
+- 206 被描述成 “drop extra output column and distinctify”，程序包含 `SELECT_DROP_SLOT + SELECT_ADD_MODIFIER(DISTINCT)`。
+- 249 被描述成 “drop extra output side preserving scope”，程序只包含 `SELECT_DROP_SLOT`。
+- 两者实际共享核心偏差是“模型把 bond 的两个端点都输出为两列，而 gold 偏好保留 canonical atom-side 的一列”，但 DISTINCT 被抽成了核心差异，导致强正例被拆散。
+- 253 能修对说明 runtime singleton 触发和 action compiler/rewrite 链路可工作，但这不是目标中的 formal pattern 收益。
+
+性能诊断：
+
+- 多数 case 的 `wrong_case_auditor` 约 7-8k chars，`error_instance_extractor` 约 22-23k chars。
+- `253` 的 `action_compiler` prompt 达到 `171,789 chars`，明显异常膨胀。
+- 这说明 compiler 阶段仍传入了过大的 schema/candidate/memory payload；后续必须精简为候选相关的必要 schema summary 和已选 memory contract，否则全库在线会越跑越慢且 token 成本过高。
+
+下一步方向：
+
+- 构建侧需要把 case-local insight 区分为“核心修复偏差”和“附属实现条件”。例如 DISTINCT 应从修复轨迹保留为 branch/action accessory，而不应阻止 206/249 合并。
+- pattern admission 应允许同一核心程序下存在 accessory action variation，但 runtime branch selection 必须在新案例上重新判定是否需要 DISTINCT。
+- ActionCompiler prompt 要做硬预算与内容审查，优先检查为什么单个 singleton 触发也会生成 17 万字符 prompt。
