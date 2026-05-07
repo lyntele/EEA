@@ -680,3 +680,23 @@ prompt 规模观察：
 - wrong59 这类长序列中，每轮 local evolve 的 pair 数应明显低于 active singleton 全量两两组合。
 - pattern admission 的 prompt 不应再出现 6-14 万字符级别输入。
 - 这轮修改不改变“什么是可合并 pattern”的核心语义，只减少候选枚举和 LLM 输入膨胀；如果后续仍低触发，应继续看 trigger/branch 匹配本身，而不是先怀疑 rewrite。
+
+补充诊断输出：
+
+- EEA formation report 新增 `retrieval_audit`，用于定位每轮 local evolve 的候选召回效果：
+  - 当前 focus case / focus singleton 是谁。
+  - focus card 的 effect core、delta axes、shape key、lowering families、repair insight interface。
+  - focus 生成了哪些 retrieval keys。
+  - 每个 key 命中了哪些历史 peer singleton。
+  - 哪些 pair 被召回、召回理由是什么、是否进入 score、score 后被什么 blocker 挡住。
+  - focus 完全没召回时记录 `unrecalled_focus_summary`。
+- DeepEye adapter 会把该审计单独落到每个 case 目录的 `eea_retrieval_audit.json`，同时保留在 `eea_evolution_detail.json` 内。
+- DeepEye adapter 另新增 `eea_update_timing.json`，记录：
+  - `accumulate_seconds`
+  - `local_evolve_seconds`
+  - `diagnostic_write_seconds`
+  - `total_update_seconds`
+- 后续判断低触发时优先按三段定位：
+  - `eea_retrieval_audit.json` 无候选：信号召回问题。
+  - 有候选但 blocker 多：pair score / shared program / admission 问题。
+  - 有 pattern 但 runtime 不触发：trigger / branch matching / compiler 问题。

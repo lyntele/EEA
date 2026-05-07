@@ -364,6 +364,26 @@ def _retrieval_keys_for_card(card: Dict[str, Any]) -> Set[Tuple[str, str]]:
     return keys
 
 
+def _retrieval_key_label(key: Tuple[str, str]) -> str:
+    return f"{key[0]}::{key[1]}"
+
+
+def _retrieval_key_reason(key: Tuple[str, str]) -> str:
+    payload = str(key[1] if len(key) > 1 else "")
+    return payload.split(":", 1)[0] if ":" in payload else payload
+
+
+def _build_retrieval_index(
+    groups: Sequence[GroupSummary],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[Tuple[str, str], Set[str]]]:
+    cards_by_id = {group.group_id: _evolution_card(group) for group in groups}
+    buckets: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+    for group_id, card in cards_by_id.items():
+        for key in _retrieval_keys_for_card(card):
+            buckets[key].add(group_id)
+    return cards_by_id, buckets
+
+
 def _candidate_pair_keys(
     groups: Sequence[GroupSummary],
     *,
@@ -376,11 +396,7 @@ def _candidate_pair_keys(
     pairs.  The index uses case-derived abstract signals, not fixed DB/table
     vocabularies.
     """
-    cards_by_id = {group.group_id: _evolution_card(group) for group in groups}
-    buckets: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
-    for group_id, card in cards_by_id.items():
-        for key in _retrieval_keys_for_card(card):
-            buckets[key].add(group_id)
+    cards_by_id, buckets = _build_retrieval_index(groups)
 
     focus_ids = {str(case_id) for case_id in (focus_case_ids or set()) if str(case_id)}
     if focus_ids:
@@ -412,6 +428,115 @@ def _candidate_pair_keys(
                     candidates.add((left_id, right_id))
 
     return sorted(candidates)
+
+
+def _retrieval_reasons_for_pair(
+    left_id: str,
+    right_id: str,
+    *,
+    cards_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    left_keys = _retrieval_keys_for_card(cards_by_id.get(left_id, {}))
+    right_keys = _retrieval_keys_for_card(cards_by_id.get(right_id, {}))
+    return sorted({_retrieval_key_reason(key) for key in (left_keys & right_keys) if key})
+
+
+def _retrieval_audit(
+    groups: Sequence[GroupSummary],
+    *,
+    focus_case_ids: Optional[Set[str]],
+    candidate_keys: Sequence[Tuple[str, str]],
+    pair_scores: Dict[Tuple[str, str], PairScore],
+) -> Dict[str, Any]:
+    cards_by_id, buckets = _build_retrieval_index(groups)
+    focus_ids = {str(case_id) for case_id in (focus_case_ids or set()) if str(case_id)}
+    focus_group_ids = {
+        group.group_id
+        for group in groups
+        if {str(case_id) for case_id in group.case_ids or []} & focus_ids
+    } if focus_ids else set(cards_by_id)
+    bucket_hits_by_focus: Dict[str, List[Dict[str, Any]]] = {}
+    retrieval_keys_by_focus: Dict[str, List[str]] = {}
+    for group_id in sorted(focus_group_ids):
+        keys = sorted(_retrieval_keys_for_card(cards_by_id.get(group_id, {})))
+        retrieval_keys_by_focus[group_id] = [_retrieval_key_label(key) for key in keys]
+        rows: List[Dict[str, Any]] = []
+        for key in keys:
+            peers = sorted(peer_id for peer_id in buckets.get(key, set()) if peer_id != group_id)
+            if peers:
+                rows.append(
+                    {
+                        "key": _retrieval_key_label(key),
+                        "reason": _retrieval_key_reason(key),
+                        "peer_group_ids": peers[:80],
+                        "peer_count": len(peers),
+                    }
+                )
+        bucket_hits_by_focus[group_id] = rows
+
+    retrieved_pairs: List[Dict[str, Any]] = []
+    for left_id, right_id in candidate_keys:
+        pair = pair_scores.get(tuple(sorted((left_id, right_id))))
+        left_card = cards_by_id.get(left_id, {})
+        right_card = cards_by_id.get(right_id, {})
+        row = {
+            "left_group_id": left_id,
+            "right_group_id": right_id,
+            "left_case_ids": list(left_card.get("case_ids") or []),
+            "right_case_ids": list(right_card.get("case_ids") or []),
+            "retrieval_reasons": _retrieval_reasons_for_pair(
+                left_id,
+                right_id,
+                cards_by_id=cards_by_id,
+            ),
+            "score_status": "scored" if pair is not None else "not_scored",
+        }
+        if pair is not None:
+            row.update(
+                {
+                    "accepted": bool(pair.accepted),
+                    "semantic_relation": pair.semantic_relation,
+                    "score": pair.score,
+                    "program_compatible": bool(pair.program_compatible),
+                    "program_blockers": list(pair.program_blockers or [])[:12],
+                    "failure_taxonomy": list(pair.failure_taxonomy or [])[:12],
+                    "broad_retrieval_reasons": list(pair.broad_retrieval_reasons or [])[:12],
+                }
+            )
+        retrieved_pairs.append(row)
+
+    unrecalled_focus_summary = []
+    retrieved_focus_ids = {
+        group_id
+        for left_id, right_id in candidate_keys
+        for group_id in (left_id, right_id)
+        if group_id in focus_group_ids
+    }
+    for group_id in sorted(focus_group_ids - retrieved_focus_ids):
+        unrecalled_focus_summary.append(
+            {
+                "focus_group_id": group_id,
+                "case_ids": list(cards_by_id.get(group_id, {}).get("case_ids") or []),
+                "retrieved_peer_count": 0,
+                "reason": "no_shared_retrieval_key",
+            }
+        )
+
+    return {
+        "schema_version": "formation-retrieval-audit-v1",
+        "retrieval_mode": "focus_case_ids" if focus_ids else "all_indexed_candidates",
+        "focus_case_ids": sorted(focus_ids),
+        "focus_group_ids": sorted(focus_group_ids),
+        "active_singleton_count": len(groups),
+        "candidate_pair_count": len(candidate_keys),
+        "scored_pair_count": len(pair_scores),
+        "focus_cards": [cards_by_id[group_id] for group_id in sorted(focus_group_ids)],
+        "retrieval_keys_by_focus_group": retrieval_keys_by_focus,
+        "bucket_hits_by_focus_group": bucket_hits_by_focus,
+        "retrieved_pairs": retrieved_pairs[:240],
+        "retrieved_pair_count": len(retrieved_pairs),
+        "unrecalled_focus_summary": unrecalled_focus_summary,
+    }
 
 
 def _shape_broad_overlap(left_shape: Dict[str, Any], right_shape: Dict[str, Any]) -> bool:
@@ -2712,6 +2837,12 @@ def form_offline_families(
         else:
             rejected_edges.append(pair)
 
+    retrieval_audit = _retrieval_audit(
+        active_singletons,
+        focus_case_ids=focus_case_ids if focus_case_ids else None,
+        candidate_keys=candidate_keys,
+        pair_scores=pair_scores,
+    )
     accepted_edges = sorted(accepted_edges, key=lambda pair: pair.score, reverse=True)
     pattern_candidates, pattern_admission_reports = _build_pattern_admission_candidates(
         active_singletons,
@@ -2852,6 +2983,7 @@ def form_offline_families(
             "conservative_pattern_admission; core_program_signature splits "
             "large candidates before formal admission; insight slicer is disabled"
         ),
+        "retrieval_audit": retrieval_audit,
         "core_signature_branch_coverage": [
             {
                 "component_case_ids": report.get("component_case_ids"),
