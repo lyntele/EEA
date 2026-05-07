@@ -37,6 +37,8 @@ from .signal_summary_v2 import (
     apply_delta_structural_override,
     build_formation_signals,
     build_trigger_contract,
+    compact_canonical_repair_ir_for_memory,
+    compact_synthesized_program_for_memory,
 )
 from .shared_program_synthesizer_v2 import (
     coverage_for_singleton_program,
@@ -297,9 +299,11 @@ def error_instance_to_singleton(
         runtime_case_view=runtime_case_view,
         formation_signals=formation_signals,
     )
-    formation_signals["canonical_repair_ir"] = error_instance.canonical_repair_ir.model_dump(
-        mode="json"
-    ) if error_instance.canonical_repair_ir is not None else None
+    formation_signals["canonical_repair_ir"] = (
+        compact_canonical_repair_ir_for_memory(error_instance.canonical_repair_ir)
+        if error_instance.canonical_repair_ir is not None
+        else None
+    )
     formation_signals["repair_insight_signature"] = (
         error_instance.repair_insight_signature.model_dump(mode="json")
         if error_instance.repair_insight_signature is not None
@@ -316,7 +320,9 @@ def error_instance_to_singleton(
         else None
     )
     if singleton_program is not None:
-        formation_signals["synthesized_program"] = singleton_program.model_dump(mode="json")
+        formation_signals["synthesized_program"] = compact_synthesized_program_for_memory(
+            singleton_program
+        )
     if singleton_coverage is not None:
         formation_signals["program_coverage"] = singleton_coverage.model_dump(mode="json")
 

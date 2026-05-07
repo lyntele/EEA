@@ -627,3 +627,56 @@ prompt 规模观察：
 - 本轮没有解决 pattern runtime usable / formal promotion 不稳定的问题。
 - `outputs/rewrite_contract_online_toxicology_206_249_253_20260507` 的在线短序列在 q206 的上游 LLM 调用阶段卡住，未形成有效在线结论；这不是 rewrite_contract 的结果。
 - 后续需要继续把触发、pattern admission、branch matching 单独验证，避免把 rewrite 成败和构建成败混在一起分析。
+
+### T-20260507-03：online evolution 膨胀与低触发诊断修复
+
+背景：
+
+- DeepEye 端的 wrong59 冷启动 run `toxicology_wrong59_postsel_v1_qwen3next_quick_20260507_r3` 到 19/59 时仍然 `ready=0/no_match=19`，且越跑越慢。
+- LLM trace 显示慢点不在 rewrite：已完成 case 没有进入 rewrite，`rewrite attempted=0`。
+- 主要调用集中在离线更新后的演化阶段：`shared_insight_judge=48`、`pattern_admission_judge=12`。
+- 最大 prompt 来自 `pattern_admission_judge`，单次输入达到约 6-14 万字符；典型原因是把多个 singleton 的完整 canonical IR、synthesized program、trigger contract、pair context 一起塞进 admission prompt。
+
+本轮判断：
+
+- 问题不是“需要更多真实测试用例”，而是当前在线演化实现和理想流程有偏差：每个新错例进入后确实会触发局部 evolve，但 evolve 内部对 active singletons 的候选 pair 和 admission prompt 没有在线预算边界。
+- 当前应保留“逐例进入，每例后整体更新”的流程，但整体更新不等于每轮把全库所有 singleton 做全量两两 LLM 审查。
+- 正确边界是：代码先用 case-derived 的抽象信号产生高召回候选 pair；只有候选 pair 才进入共享程序/语义判断；pattern admission 只看代表性 compact cards 和关系统计，不看完整历史 payload。
+
+本轮修改：
+
+- `family_formation_v2` 新增 compact `evolution_card`，只包含：
+  - `db_id`
+  - `case_ids`
+  - primary effect core
+  - delta axes
+  - output shape direction/grain/subset
+  - canonical lowering families
+  - repair insight interface
+- pair cache key 改为基于 compact card，不再 hash 完整 `formation_signals` 和完整 `trigger_contract`。
+- 在线 evolve 有 `focus_case_ids` 时，只比较新进入 case 对应 singleton 与索引召回的历史候选；不再每轮全库 O(n^2) 打分。
+- 无 focus 的 final/offline evolve 仍会在抽象索引桶内产生全部候选 pair，但不会枚举完全无共享抽象信号的 pair。
+- pattern admission case card 改为 compact view：
+  - 保留 stable bias frame、effect、shape delta、core/dependency signature、repair insight 和 program core。
+  - 删除每个 op 中巨大的 `operation_signature` 全量结构，只保留 op_type/locus/lowering/is_dependency/required/role_delta/slot_signature/invariants。
+- pair decision context 改为“关系计数 + 每类少量代表 pair + covered/uncovered case ids”，不再为了覆盖每个 case 额外加入大量 pair payload。
+- pattern admission 增加 prompt budget：超过预算时只采样前几个 case card，并把全量 case ids、sampled ids 和 sampling policy 写入 summary，避免因为大 component 造成 10 万字符级 prompt。
+- 审查后补充修正：超预算采样不再简单取最早 qid，而是优先覆盖 representative pair 涉及的 case，再用稳定顺序补齐，避免长序列里新进入 case 或关键边完全不在 LLM 可见证据中。
+- `signal_summary_v2` 新增 memory compaction：
+  - formation_signals 中的 `canonical_repair_ir` 改为 compact IR。
+  - formation_signals 中的 `synthesized_program` 改为 compact executable program，保留 ops/envelope 必要字段，但压缩 role refs、effect/insight、branch/accessory 信息。
+  - trigger_contract.action_contract 不再重复保存完整 `canonical_repair_ir`、完整 `synthesized_program`、完整 `program_envelope`，改为 summary 字段。
+- `repair_program_normalizer_v2` 中每个 canonical op 的 `role_refs` 只挂 output-side refs；predicate/join raw refs 不再复制到每个 op，相关信息保留在 operation signature 的 delta 摘要中。
+
+只读 sanity：
+
+- `py_compile` 通过：`family_formation_v2.py`、`signal_summary_v2.py`、`accumulate_v2.py`、`repair_program_normalizer_v2.py`。
+- 用 r3 已有 `.state/library_latest.json` 中第一个 singleton 做只读验证：
+  - compact canonical IR 可被 `CanonicalRepairIR` 校验，示例体积约 `65989 -> 36562 bytes`。
+  - compact synthesized program 可被 `CanonicalRepairProgram` 校验，示例体积约 `88583 -> 68681 bytes`。
+
+预期影响：
+
+- wrong59 这类长序列中，每轮 local evolve 的 pair 数应明显低于 active singleton 全量两两组合。
+- pattern admission 的 prompt 不应再出现 6-14 万字符级别输入。
+- 这轮修改不改变“什么是可合并 pattern”的核心语义，只减少候选枚举和 LLM 输入膨胀；如果后续仍低触发，应继续看 trigger/branch 匹配本身，而不是先怀疑 rewrite。

@@ -1305,9 +1305,13 @@ class RepairProgramNormalizer:
         repair_effect_signature["effect_candidates"] = [
             effect.model_dump(mode="json") for effect in effect_candidates
         ]
-        role_refs = role_refs_from_graph(source_graph, sections=("output_refs", "predicate_refs", "join_refs"))
+        # Each op only needs the answer-side refs needed for binding and
+        # lowering. Predicate/join graph refs stay in the op signatures where
+        # they are summarized as deltas; attaching all raw refs to every op
+        # makes online libraries grow quadratically across repeated updates.
+        role_refs = role_refs_from_graph(source_graph, sections=("output_refs",))
         target_role_refs = role_refs_from_graph(target_graph, sections=("output_refs",))
-        all_role_refs = role_refs + target_role_refs
+        all_role_refs = (role_refs + target_role_refs)[:16]
 
         ops: List[CanonicalRepairOp] = []
         core_ops: List[Dict[str, Any]] = []

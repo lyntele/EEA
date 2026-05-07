@@ -31,7 +31,10 @@ from .data_structures_v2 import (
     RepairSkeletonStructural,
     TriggerSignature,
 )
-from .signal_summary_v2 import build_trigger_contract
+from .signal_summary_v2 import (
+    build_trigger_contract,
+    compact_synthesized_program_for_memory,
+)
 from .shared_program_synthesizer_v2 import (
     canonical_op_lowering_family,
     repair_program_steps_from_canonical_program,
@@ -56,6 +59,11 @@ from .vocabulary_v2 import (
 
 
 _PAIR_SCORE_CACHE: Dict[str, "PairScore"] = {}
+ONLINE_EVOLUTION_MAX_CANDIDATES_PER_FOCUS = 48
+PATTERN_ADMISSION_PROMPT_BUDGET_CHARS = 24000
+PATTERN_ADMISSION_MAX_GROUP_CARDS = 4
+PATTERN_ADMISSION_PAIR_PER_RELATION_LIMIT = 2
+PATTERN_ADMISSION_COMPACT_PAIR_PER_RELATION_LIMIT = 1
 
 
 def _model_dump(obj: Any) -> Dict[str, Any]:
@@ -137,6 +145,13 @@ def _group_repair_program(group: GroupSummary) -> List[Dict[str, Any]]:
 
 def _canonical_payload(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _short_text(value: Any, *, limit: int = 320) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
 
 
 def _repair_step_key(step: Dict[str, Any]) -> Tuple[str, str, str, bool, bool, str, str, str]:
@@ -287,6 +302,116 @@ def _canonical_lowering_families(group: GroupSummary) -> Set[str]:
         if family:
             families.add(str(family))
     return families
+
+
+def _shape_retrieval_key(group: GroupSummary) -> Tuple[str, ...]:
+    shape = _enrich_shape_delta(_shape_delta(group))
+    return (
+        str(shape.get("operation") or ""),
+        str(shape.get("arity_direction") or ""),
+        str(shape.get("current_grain") or ""),
+        str(shape.get("target_grain") or ""),
+        f"subset={bool(shape.get('target_is_subset_of_source'))}",
+    )
+
+
+def _primary_effect_rows(group: GroupSummary) -> Tuple[Tuple[str, ...], ...]:
+    signals = _signal_payload(group)
+    ir = dict((signals.get("canonical_repair_ir") or {}) or {})
+    return _primary_effect_core_signature(ir)
+
+
+def _evolution_card(group: GroupSummary) -> Dict[str, Any]:
+    """Small immutable card used for cache keys and candidate indexing.
+
+    It deliberately excludes full SQL traces, role graphs, trigger contracts,
+    and canonical op arguments.  Those heavy objects are only loaded after a
+    pair passes broad retrieval and needs semantic/program review.
+    """
+    return {
+        "group_id": group.group_id,
+        "version": int(group.version or 0),
+        "case_ids": [str(case_id) for case_id in group.case_ids or []],
+        "db_id": group.db_id,
+        "effect_core": [list(item) for item in _primary_effect_rows(group)],
+        "delta_axes": sorted(_signal_axes(group)),
+        "shape_key": list(_shape_retrieval_key(group)),
+        "lowering_families": sorted(_canonical_lowering_families(group)),
+        "repair_insight_interface": _repair_insight_interface_key(group),
+    }
+
+
+def _retrieval_keys_for_card(card: Dict[str, Any]) -> Set[Tuple[str, str]]:
+    keys: Set[Tuple[str, str]] = set()
+    db_id = str(card.get("db_id") or "")
+    for effect in card.get("effect_core") or []:
+        effect_key = _canonical_payload(effect)
+        if effect_key:
+            keys.add((db_id, f"effect:{effect_key}"))
+
+    axes = [str(axis) for axis in card.get("delta_axes") or [] if str(axis)]
+    shape_key = tuple(str(item) for item in card.get("shape_key") or [])
+    shape_family = "|".join(shape_key[:5])
+    for axis in axes:
+        if shape_family:
+            keys.add((db_id, f"axis_shape:{axis}|{shape_family}"))
+        for family in card.get("lowering_families") or []:
+            keys.add((db_id, f"axis_lowering:{axis}|{family}"))
+
+    interface = str(card.get("repair_insight_interface") or "").strip()
+    if interface:
+        keys.add((db_id, f"insight:{interface}"))
+    return keys
+
+
+def _candidate_pair_keys(
+    groups: Sequence[GroupSummary],
+    *,
+    focus_case_ids: Optional[Set[str]] = None,
+) -> List[Tuple[str, str]]:
+    """Return high-recall candidate pairs without O(n^2) full enumeration.
+
+    Online evolution only needs pairs involving the newly accumulated case(s);
+    final offline evolution passes no focus ids and gets all indexed candidate
+    pairs.  The index uses case-derived abstract signals, not fixed DB/table
+    vocabularies.
+    """
+    cards_by_id = {group.group_id: _evolution_card(group) for group in groups}
+    buckets: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+    for group_id, card in cards_by_id.items():
+        for key in _retrieval_keys_for_card(card):
+            buckets[key].add(group_id)
+
+    focus_ids = {str(case_id) for case_id in (focus_case_ids or set()) if str(case_id)}
+    if focus_ids:
+        focus_group_ids = {
+            group.group_id
+            for group in groups
+            if {str(case_id) for case_id in group.case_ids or []} & focus_ids
+        }
+    else:
+        focus_group_ids = {group.group_id for group in groups}
+
+    candidates: Set[Tuple[str, str]] = set()
+    if focus_ids:
+        for group_id in sorted(focus_group_ids):
+            peer_scores: Counter[str] = Counter()
+            for key in _retrieval_keys_for_card(cards_by_id.get(group_id, {})):
+                for peer_id in buckets.get(key, set()):
+                    if peer_id != group_id:
+                        peer_scores[peer_id] += 1
+            for peer_id, _count in peer_scores.most_common(
+                ONLINE_EVOLUTION_MAX_CANDIDATES_PER_FOCUS
+            ):
+                candidates.add(tuple(sorted((group_id, peer_id))))
+    else:
+        for members in buckets.values():
+            ordered = sorted(members)
+            for index, left_id in enumerate(ordered):
+                for right_id in ordered[index + 1 :]:
+                    candidates.add((left_id, right_id))
+
+    return sorted(candidates)
 
 
 def _shape_broad_overlap(left_shape: Dict[str, Any], right_shape: Dict[str, Any]) -> bool:
@@ -821,20 +946,8 @@ def _has_substantive_target_contract(invariants: Sequence[Any]) -> bool:
 
 def _pair_score_cache_key(left: GroupSummary, right: GroupSummary) -> str:
     payload = {
-        "left": {
-            "group_id": left.group_id,
-            "version": int(left.version or 0),
-            "case_ids": list(left.case_ids or []),
-            "formation_signals": _signal_payload(left),
-            "trigger_contract": _model_dump(getattr(left, "trigger_contract", None)),
-        },
-        "right": {
-            "group_id": right.group_id,
-            "version": int(right.version or 0),
-            "case_ids": list(right.case_ids or []),
-            "formation_signals": _signal_payload(right),
-            "trigger_contract": _model_dump(getattr(right, "trigger_contract", None)),
-        },
+        "left": _evolution_card(left),
+        "right": _evolution_card(right),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -1234,7 +1347,7 @@ def _build_family(
         "member_signals": member_signal_summaries,
         "repair_program": merged_repair_program,
         "synthesized_program": (
-            synthesized_program.model_dump(mode="json")
+            compact_synthesized_program_for_memory(synthesized_program)
             if synthesized_program is not None
             else None
         ),
@@ -1505,10 +1618,13 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
     signals = _signal_payload(group)
     ir = dict((signals.get("canonical_repair_ir") or {}) or {})
     insight = dict((signals.get("repair_insight_signature") or {}) or {})
-    program_ops = []
-    for op in (ir.get("program_ops") or [])[:8]:
+    program_core = []
+    for op in (ir.get("program_ops") or [])[:6]:
         payload = _model_dump(op)
-        program_ops.append(
+        args = _model_dump(payload.get("arguments") or {})
+        signature = _model_dump(args.get("operation_signature") or args.get("shared_signature") or {})
+        role_delta = _model_dump(signature.get("role_delta") or {})
+        program_core.append(
             {
                 "op_type": payload.get("op_type"),
                 "locus": payload.get("locus"),
@@ -1516,21 +1632,18 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
                     payload.get("op_type"),
                     payload.get("locus"),
                 ),
-                "invariants": list(payload.get("invariants") or [])[:8],
-                "supporting_case_ids": list(payload.get("supporting_case_ids") or []),
-                "arguments_summary": {
-                    key: value
-                    for key, value in _model_dump(payload.get("arguments") or {}).items()
-                    if key
-                    in {
-                        "output_shape_delta",
-                        "shared_signature",
-                        "operation_signature",
-                        "role_delta",
-                        "predicate_scope_delta",
-                        "grain_delta",
-                    }
+                "is_dependency": bool(signature.get("is_dependency") or payload.get("is_dependency") or False),
+                "required": bool(signature.get("required", payload.get("required", True))),
+                "identity_role": str(args.get("identity_role") or payload.get("identity_role") or ""),
+                "runtime_policy": str(args.get("runtime_policy") or payload.get("runtime_policy") or ""),
+                "role_delta": {
+                    "arity_direction": role_delta.get("arity_direction"),
+                    "target_output_subset_of_source": role_delta.get("target_output_subset_of_source"),
+                    "source_output_roles": list(role_delta.get("source_output_roles") or [])[:6],
+                    "target_output_roles": list(role_delta.get("target_output_roles") or [])[:6],
                 },
+                "slot_signature": list(signature.get("slot_signature") or args.get("step_slots") or [])[:6],
+                "invariants": [_short_text(item, limit=120) for item in list(payload.get("invariants") or [])[:6]],
             }
         )
     effects = []
@@ -1562,16 +1675,16 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
             list(item) for item in _program_dependency_signature(group, required_only=False)
         ],
         "repair_insight": {
-            "interface_key": insight.get("interface_key"),
-            "source_misread": insight.get("source_misread"),
-            "target_preference": insight.get("target_preference"),
-            "repair_interface": insight.get("repair_interface"),
+            "interface_key": _short_text(insight.get("interface_key"), limit=220),
+            "source_misread": _short_text(insight.get("source_misread"), limit=220),
+            "target_preference": _short_text(insight.get("target_preference"), limit=220),
+            "repair_interface": _short_text(insight.get("repair_interface"), limit=220),
             "binding_slots": list(insight.get("binding_slots") or [])[:8],
             "preserve_invariants": list(insight.get("preserve_invariants") or [])[:8],
             "negative_guards": list(insight.get("negative_guards") or [])[:8],
             "axis_links": list(insight.get("axis_links") or [])[:8],
         },
-        "program_ops": program_ops,
+        "program_core": program_core,
         "effects": effects[:8],
     }
 
@@ -1642,7 +1755,7 @@ def _dedupe_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
 def _pair_decision_context(
     pairs: Sequence[PairScore],
     *,
-    per_relation_limit: int = 3,
+    per_relation_limit: int = PATTERN_ADMISSION_PAIR_PER_RELATION_LIMIT,
 ) -> Dict[str, Any]:
     """Compact pair context for LLM admission and reports.
 
@@ -1696,36 +1809,68 @@ def _pair_decision_context(
         for pair in pairs
         for case_id in [*pair.left_case_ids, *pair.right_case_ids]
     }
-    for case_id in sorted(all_case_ids - covered_case_ids, key=_case_id_sort_key):
-        candidates = [
-            pair
-            for pair in pairs
-            if case_id
-            in (
-                {str(item) for item in pair.left_case_ids}
-                | {str(item) for item in pair.right_case_ids}
-            )
-        ]
-        if not candidates:
-            continue
-        add_pair(
-            sorted(
-                candidates,
-                key=lambda pair: (
-                    -float(pair.score or 0.0),
-                    tuple(pair.left_case_ids),
-                    tuple(pair.right_case_ids),
-                ),
-            )[0]
-        )
     return {
         "schema_version": "pair-decision-context-v1",
         "pair_count": len(list(pairs or [])),
         "semantic_relation_counts": relation_counts,
+        "covered_case_ids": sorted(covered_case_ids, key=_case_id_sort_key),
+        "uncovered_case_ids": sorted(all_case_ids - covered_case_ids, key=_case_id_sort_key),
         "representative_pairs": [
             _pattern_pair_decision(pair, include_blockers=False) for pair in selected
         ],
     }
+
+
+def _case_card_case_ids(card: Dict[str, Any]) -> Set[str]:
+    return {str(case_id) for case_id in (card.get("case_ids") or []) if str(case_id)}
+
+
+def _sample_pattern_case_cards(
+    cards: Sequence[Dict[str, Any]],
+    pair_context: Dict[str, Any],
+    *,
+    max_cards: int,
+) -> List[Dict[str, Any]]:
+    """Budgeted admission sample that preserves representative-edge evidence."""
+    sorted_cards = sorted(
+        list(cards or []),
+        key=lambda card: _case_id_sort_key((card.get("case_ids") or [""])[0]),
+    )
+    selected: List[Dict[str, Any]] = []
+    selected_ids: Set[int] = set()
+
+    def add_card(card: Dict[str, Any]) -> None:
+        if len(selected) >= max_cards:
+            return
+        identity = id(card)
+        if identity in selected_ids:
+            return
+        selected_ids.add(identity)
+        selected.append(card)
+
+    priority_case_ids: List[str] = []
+    for pair in pair_context.get("representative_pairs") or []:
+        payload = _model_dump(pair)
+        for side in ("left_case_ids", "right_case_ids"):
+            for case_id in payload.get(side) or []:
+                text = str(case_id)
+                if text and text not in priority_case_ids:
+                    priority_case_ids.append(text)
+
+    for case_id in priority_case_ids:
+        for card in sorted_cards:
+            if case_id in _case_card_case_ids(card):
+                add_card(card)
+                break
+        if len(selected) >= max_cards:
+            break
+
+    for card in sorted_cards:
+        add_card(card)
+        if len(selected) >= max_cards:
+            break
+
+    return selected
 
 
 def _slicer_pair_decisions(pairs: Sequence[PairScore]) -> List[Dict[str, Any]]:
@@ -1914,21 +2059,56 @@ def _call_pattern_admission_judge(
     from .llm_utils_v2 import call_llm
     from .prompts_v2.pattern_admission_judge import build_pattern_admission_judge_prompt
 
+    def build_prompt(
+        cards: Sequence[Dict[str, Any]],
+        pair_context: Dict[str, Any],
+        summary: Dict[str, Any],
+        *,
+        compact: bool = False,
+    ) -> str:
+        dumps_kwargs = (
+            {"ensure_ascii": False, "default": str, "separators": (",", ":")}
+            if compact
+            else {"ensure_ascii": False, "indent": 2, "default": str}
+        )
+        return build_pattern_admission_judge_prompt(
+            case_cards_json=json.dumps(list(cards), **dumps_kwargs),
+            pair_semantic_decisions_json=json.dumps(pair_context, **dumps_kwargs),
+            component_summary_json=json.dumps(summary, **dumps_kwargs),
+        )
+
     prompt = build_pattern_admission_judge_prompt(
         case_cards_json=json.dumps(case_cards, ensure_ascii=False, indent=2, default=str),
-        pair_semantic_decisions_json=json.dumps(
-            pair_decision_context,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ),
-        component_summary_json=json.dumps(
-            component_summary,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ),
+        pair_semantic_decisions_json=json.dumps(pair_decision_context, ensure_ascii=False, indent=2, default=str),
+        component_summary_json=json.dumps(component_summary, ensure_ascii=False, indent=2, default=str),
     )
+    sampled_case_ids: List[str] = []
+    if len(prompt) > PATTERN_ADMISSION_PROMPT_BUDGET_CHARS:
+        compact_pair_decision_context = _pair_decision_context(
+            member_pair_scores,
+            per_relation_limit=PATTERN_ADMISSION_COMPACT_PAIR_PER_RELATION_LIMIT,
+        )
+        sampled_cards = _sample_pattern_case_cards(
+            case_cards,
+            compact_pair_decision_context,
+            max_cards=PATTERN_ADMISSION_MAX_GROUP_CARDS,
+        )
+        sampled_case_ids = [
+            str(case_id)
+            for card in sampled_cards
+            for case_id in (card.get("case_ids") or [])
+        ]
+        compact_summary = dict(component_summary)
+        compact_summary["all_case_ids"] = component_summary.get("case_ids", [])
+        compact_summary["sampled_case_ids"] = sampled_case_ids
+        compact_summary["sampling_policy"] = (
+            "case_cards_sampled_from_representative_pairs_for_prompt_budget; "
+            "full ids remain in component summary"
+        )
+        pair_decision_context = compact_pair_decision_context
+        component_summary = compact_summary
+        case_cards = sampled_cards
+        prompt = build_prompt(case_cards, pair_decision_context, component_summary, compact=True)
     raw = call_llm(
         prompt,
         expect_json=True,
@@ -1940,6 +2120,8 @@ def _call_pattern_admission_judge(
             "representative_pair_count": len(
                 pair_decision_context.get("representative_pairs") or []
             ),
+            "prompt_chars": len(prompt),
+            "sampled_case_ids": sampled_case_ids,
         },
     )
     response = dict(raw) if isinstance(raw, dict) else {}
@@ -2513,16 +2695,22 @@ def form_offline_families(
     pair_scores: Dict[Tuple[str, str], PairScore] = {}
     accepted_edges: List[PairScore] = []
     rejected_edges: List[PairScore] = []
-    for i, left in enumerate(active_singletons):
-        scores_for_left: List[PairScore] = []
-        for j in range(i + 1, len(active_singletons)):
-            right = active_singletons[j]
-            pair = score_pair(left, right)
-            key = tuple(sorted((left.group_id, right.group_id)))
-            pair_scores[key] = pair
-            scores_for_left.append(pair)
-        accepted_edges.extend([pair for pair in scores_for_left if pair.accepted])
-        rejected_edges.extend([pair for pair in scores_for_left if not pair.accepted])
+    candidate_keys = _candidate_pair_keys(
+        active_singletons,
+        focus_case_ids=focus_case_ids if focus_case_ids else None,
+    )
+    for left_id, right_id in candidate_keys:
+        left = by_id.get(left_id)
+        right = by_id.get(right_id)
+        if left is None or right is None:
+            continue
+        pair = score_pair(left, right)
+        key = tuple(sorted((left.group_id, right.group_id)))
+        pair_scores[key] = pair
+        if pair.accepted:
+            accepted_edges.append(pair)
+        else:
+            rejected_edges.append(pair)
 
     accepted_edges = sorted(accepted_edges, key=lambda pair: pair.score, reverse=True)
     pattern_candidates, pattern_admission_reports = _build_pattern_admission_candidates(
@@ -2633,6 +2821,8 @@ def form_offline_families(
             "passthrough_active_singletons": len(passthrough_active_singletons),
             "archived_singletons": len(archived_singletons),
             "focus_case_ids": sorted(focus_case_ids),
+            "candidate_pair_count": len(candidate_keys),
+            "scored_pair_count": len(pair_scores),
         },
         "output_counts": {
             "patterns": len(output_library.patterns),
@@ -2648,6 +2838,7 @@ def form_offline_families(
         "thresholds": {
             "legacy_overlap_decision_signals": "disabled",
             "max_neighbor_edges": max_neighbor_edges,
+            "online_max_candidates_per_focus": ONLINE_EVOLUTION_MAX_CANDIDATES_PER_FOCUS,
             "accepted_policy": (
                 "strict_singleton_to_pattern_only; case-local insight, "
                 "effect candidates, and canonical repair programs are required"

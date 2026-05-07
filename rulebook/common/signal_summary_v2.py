@@ -34,6 +34,268 @@ def _payload(obj: Any) -> Dict[str, Any]:
     return dict(getattr(obj, "__dict__", {}) or {})
 
 
+def _compact_role_ref(ref: Any) -> Dict[str, Any]:
+    payload = _payload(ref)
+    keep = {
+        "ref_id",
+        "source",
+        "table",
+        "column",
+        "expression",
+        "slot_index",
+        "sql_role",
+        "column_role",
+        "path_role",
+        "direct_role_path",
+        "derived_role_path",
+        "role_side_group",
+        "side_key",
+        "relation_role",
+    }
+    return {key: payload.get(key) for key in keep if payload.get(key) is not None}
+
+
+def _compact_role_refs(values: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for value in values or []:
+        payload = _compact_role_ref(value)
+        if not payload:
+            continue
+        key = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(payload)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _compact_relation_rows(values: Any, *, limit: int = 16) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for value in values or []:
+        payload = _payload(value)
+        if payload:
+            rows.append(payload)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _compact_effect_signature(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    if not payload:
+        return {}
+    return {
+        "effect_candidates": [
+            {
+                "effect_id": _payload(item).get("effect_id"),
+                "axis": _payload(item).get("axis"),
+                "role": _payload(item).get("role"),
+                "delta": _payload(_payload(item).get("delta")),
+                "triggerability": _payload(_payload(item).get("triggerability")),
+                "actionability": _payload(_payload(item).get("actionability")),
+            }
+            for item in (payload.get("effect_candidates") or [])[:8]
+            if _payload(item).get("axis")
+        ],
+        "output_effect": _payload(payload.get("output_effect")),
+        "relation_effect": _payload(payload.get("relation_effect")),
+        "predicate_scope_effect": _payload(payload.get("predicate_scope_effect")),
+        "grain_effect": _payload(payload.get("grain_effect")),
+        "field_binding_effect": _payload(payload.get("field_binding_effect")),
+        "ranking_effect": _payload(payload.get("ranking_effect")),
+    }
+
+
+def _compact_insight_signature(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    if not payload:
+        return {}
+    return {
+        "schema_version": payload.get("schema_version"),
+        "interface_key": payload.get("interface_key"),
+        "source_misread": payload.get("source_misread"),
+        "target_preference": payload.get("target_preference"),
+        "repair_interface": payload.get("repair_interface"),
+        "binding_slots": list(payload.get("binding_slots") or [])[:8],
+        "preserve_invariants": list(payload.get("preserve_invariants") or [])[:8],
+        "negative_guards": list(payload.get("negative_guards") or [])[:8],
+        "axis_links": list(payload.get("axis_links") or [])[:8],
+        "confidence": payload.get("confidence"),
+    }
+
+
+def _compact_op_arguments(arguments: Any) -> Dict[str, Any]:
+    args = _payload(arguments)
+    signature = _payload(args.get("operation_signature") or args.get("shared_signature"))
+    compact_signature = {
+        key: signature.get(key)
+        for key in (
+            "step_op",
+            "locus",
+            "is_dependency",
+            "required",
+            "slot_signature",
+            "role_delta",
+            "output_path_delta",
+            "relation_delta",
+            "predicate_scope_delta",
+            "grain_delta",
+        )
+        if signature.get(key) is not None
+    }
+    return {
+        "source_step_id": args.get("source_step_id"),
+        "source_op": args.get("source_op"),
+        "repair_locus": args.get("repair_locus"),
+        "operation_signature": compact_signature,
+        "output_shape_delta": _payload(args.get("output_shape_delta")),
+        "source_output_shape": _payload(args.get("source_output_shape")),
+        "target_output_shape": _payload(args.get("target_output_shape")),
+        "source_output_roles": list(args.get("source_output_roles") or [])[:8],
+        "target_output_roles": list(args.get("target_output_roles") or [])[:8],
+        "source_output_refs": _compact_role_refs(args.get("source_output_refs") or [], limit=8),
+        "target_output_refs": _compact_role_refs(args.get("target_output_refs") or [], limit=8),
+        "table_set_delta": _payload(args.get("table_set_delta")),
+        "predicate_delta": _payload(args.get("predicate_delta")),
+        "repair_effect_signature": _compact_effect_signature(args.get("repair_effect_signature")),
+        "repair_insight_signature": _compact_insight_signature(args.get("repair_insight_signature")),
+        "target_invariants": list(args.get("target_invariants") or [])[:12],
+        "source_equality_relations": _compact_relation_rows(args.get("source_equality_relations"), limit=12),
+        "target_equality_relations": _compact_relation_rows(args.get("target_equality_relations"), limit=12),
+        "step_slots": list(args.get("step_slots") or [])[:8],
+        "step_arguments": _payload(args.get("step_arguments")),
+        "identity_role": args.get("identity_role"),
+        "runtime_policy": args.get("runtime_policy"),
+        "effect_axis": args.get("effect_axis"),
+        "accessory_policies": list(args.get("accessory_policies") or [])[:8],
+    }
+
+
+def _compact_canonical_op(op: Any) -> Dict[str, Any]:
+    payload = _payload(op)
+    if not payload:
+        return {}
+    return {
+        "op_id": payload.get("op_id"),
+        "op_type": payload.get("op_type"),
+        "locus": payload.get("locus"),
+        "role_refs": _compact_role_refs(payload.get("role_refs") or [], limit=12),
+        "arguments": _compact_op_arguments(payload.get("arguments") or {}),
+        "invariants": list(payload.get("invariants") or [])[:12],
+        "source_step_ids": list(payload.get("source_step_ids") or [])[:8],
+        "supporting_case_ids": list(payload.get("supporting_case_ids") or [])[:16],
+        "confidence": payload.get("confidence", 1.0),
+    }
+
+
+def compact_canonical_repair_ir_for_memory(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    if not payload:
+        return {}
+    return {
+        "schema_version": payload.get("schema_version") or "canonical-repair-ir-v0",
+        "db_id": payload.get("db_id") or "",
+        "case_id": str(payload.get("case_id") or ""),
+        "source_role_graph": {
+            "output_shape": _payload(_payload(payload.get("source_role_graph")).get("output_shape")),
+        },
+        "target_role_graph": {
+            "output_shape": _payload(_payload(payload.get("target_role_graph")).get("output_shape")),
+        },
+        "program_ops": [
+            compact_op for op in (payload.get("program_ops") or []) if (compact_op := _compact_canonical_op(op))
+        ],
+        "core_ops": list(payload.get("core_ops") or [])[:12],
+        "accessory_ops": list(payload.get("accessory_ops") or [])[:12],
+        "repair_effect_signature": _compact_effect_signature(payload.get("repair_effect_signature")),
+        "repair_insight_signature": _compact_insight_signature(payload.get("repair_insight_signature")),
+        "target_invariants": list(payload.get("target_invariants") or [])[:16],
+        "invariants": list(payload.get("invariants") or [])[:16],
+        "unresolved_variation_axes": list(payload.get("unresolved_variation_axes") or [])[:16],
+        "normalizer_warnings": list(payload.get("normalizer_warnings") or [])[:16],
+    }
+
+
+def compact_synthesized_program_for_contract(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    if not payload:
+        return {}
+    envelope = _payload(payload.get("program_envelope"))
+    return {
+        "schema_version": payload.get("schema_version"),
+        "program_id": payload.get("program_id"),
+        "program_type": payload.get("program_type"),
+        "op_count": len(payload.get("ops") or []),
+        "core_op_count": len(payload.get("core_ops") or []),
+        "accessory_op_count": len(payload.get("accessory_ops") or []),
+        "lowering_families": sorted(
+            {
+                str(_payload(op).get("op_type") or "")
+                for op in (payload.get("ops") or [])
+                if _payload(op)
+            }
+        ),
+        "repair_effect_signature": _compact_effect_signature(payload.get("repair_effect_signature")),
+        "repair_insight_signature": _compact_insight_signature(payload.get("repair_insight_signature")),
+        "target_invariants": list(payload.get("target_invariants") or [])[:16],
+        "unresolved_variation_axes": list(payload.get("unresolved_variation_axes") or [])[:16],
+        "shared_invariants": list(payload.get("shared_invariants") or [])[:16],
+        "synthesized_from_case_ids": list(payload.get("synthesized_from_case_ids") or [])[:32],
+        "program_envelope_summary": {
+            "allowed_action_primitives": list(envelope.get("allowed_action_primitives") or [])[:12],
+            "target_invariant_count": len(envelope.get("target_invariants") or []),
+            "runtime_branch_count": len(envelope.get("runtime_branches") or []),
+            "required_role_slot_count": len(envelope.get("required_role_slots") or []),
+            "unresolved_variation_axes": list(envelope.get("unresolved_variation_axes") or [])[:16],
+        },
+    }
+
+
+def compact_synthesized_program_for_memory(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    if not payload:
+        return {}
+    envelope = _payload(payload.get("program_envelope"))
+    compact_envelope = {
+        "schema_version": envelope.get("schema_version") or "program-envelope-v0",
+        "source_antipatterns": list(envelope.get("source_antipatterns") or [])[:12],
+        "target_effects": list(envelope.get("target_effects") or [])[:12],
+        "target_invariants": list(envelope.get("target_invariants") or [])[:16],
+        "allowed_action_primitives": list(envelope.get("allowed_action_primitives") or [])[:16],
+        "action_envelope": _payload(envelope.get("action_envelope")),
+        "lowering_branches": list(envelope.get("lowering_branches") or [])[:16],
+        "runtime_branches": list(envelope.get("runtime_branches") or [])[:16],
+        "branch_selection_contract": _payload(envelope.get("branch_selection_contract")),
+        "required_role_slots": list(envelope.get("required_role_slots") or [])[:16],
+        "repair_insight_signature": _compact_insight_signature(
+            envelope.get("repair_insight_signature")
+        ),
+        "negative_guards": list(envelope.get("negative_guards") or [])[:16],
+        "unresolved_variation_axes": list(envelope.get("unresolved_variation_axes") or [])[:16],
+    }
+    return {
+        "schema_version": payload.get("schema_version") or "canonical-repair-program-v0",
+        "program_id": payload.get("program_id") or "",
+        "program_type": payload.get("program_type"),
+        "ops": [
+            compact_op for op in (payload.get("ops") or []) if (compact_op := _compact_canonical_op(op))
+        ],
+        "core_ops": list(payload.get("core_ops") or [])[:16],
+        "accessory_ops": list(payload.get("accessory_ops") or [])[:16],
+        "repair_effect_signature": _compact_effect_signature(payload.get("repair_effect_signature")),
+        "repair_insight_signature": _compact_insight_signature(payload.get("repair_insight_signature")),
+        "target_invariants": list(payload.get("target_invariants") or [])[:16],
+        "unresolved_variation_axes": list(payload.get("unresolved_variation_axes") or [])[:16],
+        "program_envelope": compact_envelope,
+        "variables": _payload(payload.get("variables")),
+        "shared_invariants": list(payload.get("shared_invariants") or [])[:16],
+        "synthesized_from_case_ids": list(payload.get("synthesized_from_case_ids") or [])[:32],
+    }
+
+
 def _as_list(values: Any) -> List[str]:
     if values is None:
         return []
@@ -166,7 +428,9 @@ def build_formation_signals(
             for step in (error_payload.get("repair_program") or [])
             if _payload(step)
         ],
-        "canonical_repair_ir": _payload(error_payload.get("canonical_repair_ir")),
+        "canonical_repair_ir": compact_canonical_repair_ir_for_memory(
+            error_payload.get("canonical_repair_ir")
+        ),
     }
 
 
@@ -924,8 +1188,12 @@ def build_trigger_contract(
             "slot_kinds": slot_kinds,
             "max_actions": derived_max_actions,
             "repair_program": repair_program,
-            "canonical_repair_ir": canonical_repair_ir,
-            "synthesized_program": synthesized_program,
+            "canonical_repair_ir_summary": compact_canonical_repair_ir_for_memory(
+                canonical_repair_ir
+            ),
+            "synthesized_program_summary": compact_synthesized_program_for_contract(
+                synthesized_program
+            ),
             "program_coverage": program_coverage,
             "has_synthesized_program": bool(synthesized_program.get("ops")),
             "program_type": synthesized_program.get("program_type"),
@@ -934,7 +1202,9 @@ def build_trigger_contract(
             "lowering_families": lowering_families,
             "required_role_slots": _required_role_slots_from_program(synthesized_program),
             "required_target_invariants": _target_invariants_from_program(synthesized_program),
-            "program_envelope": _payload(synthesized_program.get("program_envelope")),
+            "program_envelope_summary": compact_synthesized_program_for_contract(
+                synthesized_program
+            ).get("program_envelope_summary", {}),
             "repair_insight_signature": repair_insight_signature,
             "rewrite_hint_template": _source_free_rewrite_hint_template(
                 structural=structural,
@@ -950,5 +1220,8 @@ __all__ = [
     "apply_delta_structural_override",
     "build_formation_signals",
     "build_trigger_contract",
+    "compact_canonical_repair_ir_for_memory",
+    "compact_synthesized_program_for_memory",
+    "compact_synthesized_program_for_contract",
     "derive_repair_structural_from_delta",
 ]
