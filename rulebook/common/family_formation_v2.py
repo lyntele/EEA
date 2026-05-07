@@ -1219,9 +1219,50 @@ class _UnionFind:
         return [sorted(values) for values in buckets.values()]
 
 
+def _pair_key(left: GroupSummary, right: GroupSummary) -> Tuple[str, str]:
+    return tuple(sorted((left.group_id, right.group_id)))
+
+
+def _ensure_pair_scores_for_groups(
+    groups: Sequence[GroupSummary],
+    pair_scores: Dict[Tuple[str, str], PairScore],
+) -> int:
+    """Fill the local all-pairs scores required after focus retrieval.
+
+    Focus retrieval deliberately keeps the online candidate set small.  Once a
+    connected component is selected for admission/build/reporting, downstream
+    code needs complete intra-component evidence and must not assume the focus
+    retrieval map already contains every member pair.
+    """
+
+    added = 0
+    for index, left in enumerate(groups):
+        for right in groups[index + 1 :]:
+            key = _pair_key(left, right)
+            if key in pair_scores:
+                continue
+            pair_scores[key] = score_pair(left, right)
+            added += 1
+    return added
+
+
+def _completed_pair_scores_for_groups(
+    groups: Sequence[GroupSummary],
+    pair_scores: Dict[Tuple[str, str], PairScore],
+) -> Dict[Tuple[str, str], PairScore]:
+    _ensure_pair_scores_for_groups(groups, pair_scores)
+    keys = {
+        _pair_key(left, right)
+        for index, left in enumerate(groups)
+        for right in groups[index + 1 :]
+    }
+    return {key: pair_scores[key] for key in keys if key in pair_scores}
+
+
 def _central_member(groups: Sequence[GroupSummary], pair_scores: Dict[Tuple[str, str], PairScore]) -> GroupSummary:
     if len(groups) == 1:
         return groups[0]
+    _ensure_pair_scores_for_groups(groups, pair_scores)
     best = groups[0]
     best_score = -1.0
     for group in groups:
@@ -1229,7 +1270,7 @@ def _central_member(groups: Sequence[GroupSummary], pair_scores: Dict[Tuple[str,
         for other in groups:
             if group.group_id == other.group_id:
                 continue
-            key = tuple(sorted((group.group_id, other.group_id)))
+            key = _pair_key(group, other)
             scores.append(pair_scores[key].score)
         avg = sum(scores) / len(scores) if scores else 0.0
         if avg > best_score:
@@ -1402,6 +1443,7 @@ def _build_family(
     pattern_admission: Optional[Dict[str, Any]] = None,
 ) -> GroupSummary:
     groups = sorted(groups, key=lambda group: int(group.case_ids[0]))
+    pair_scores = _completed_pair_scores_for_groups(groups, pair_scores)
     db_id = groups[0].db_id
     case_ids = sorted(
         [case_id for group in groups for case_id in group.case_ids],
@@ -2258,10 +2300,11 @@ def _member_pair_scores(
     groups: Sequence[GroupSummary],
     pair_scores: Dict[Tuple[str, str], PairScore],
 ) -> List[PairScore]:
+    _ensure_pair_scores_for_groups(groups, pair_scores)
     out: List[PairScore] = []
     for index, left in enumerate(groups):
         for right in groups[index + 1 :]:
-            key = tuple(sorted((left.group_id, right.group_id)))
+            key = _pair_key(left, right)
             pair = pair_scores.get(key)
             if pair is not None:
                 out.append(pair)
@@ -2429,6 +2472,10 @@ def _build_pattern_admission_candidates(
         if len(component) < 2:
             continue
         component_groups_all = [by_id[group_id] for group_id in component if group_id in by_id]
+        component_pair_supplement_count = _ensure_pair_scores_for_groups(
+            component_groups_all,
+            pair_scores,
+        )
         component_pair_scores = _member_pair_scores(component_groups_all, pair_scores)
         available_component_case_ids = {
             str(case_id)
@@ -2446,6 +2493,11 @@ def _build_pattern_admission_candidates(
                     ),
                     "admitted": False,
                     "reason": "split_large_component_by_core_program_signature_for_pattern_admission",
+                    "formation_pair_scope": {
+                        "scope": "component_all_pairs",
+                        "component_pair_count": len(component_pair_scores),
+                        "supplemented_pair_count": component_pair_supplement_count,
+                    },
                     "core_program_signature_buckets": [
                         {
                             "core_program_signature": [list(item) for item in signature],
@@ -2466,6 +2518,10 @@ def _build_pattern_admission_candidates(
         for _, component_groups in core_buckets.items():
             if len(component_groups) < 2:
                 continue
+            member_pair_supplement_count = _ensure_pair_scores_for_groups(
+                component_groups,
+                pair_scores,
+            )
             component_ids = [group.group_id for group in component_groups]
             member_pair_scores = _member_pair_scores(component_groups, pair_scores)
             try:
@@ -2489,6 +2545,11 @@ def _build_pattern_admission_candidates(
                         "admitted": False,
                         "reason": f"pattern_admission_judge_error:{type(exc).__name__}",
                         "error": str(exc),
+                        "formation_pair_scope": {
+                            "scope": "core_bucket_all_pairs",
+                            "component_pair_count": len(member_pair_scores),
+                            "supplemented_pair_count": member_pair_supplement_count,
+                        },
                         "pair_decision_context": _pair_decision_context(member_pair_scores),
                     }
                 )
@@ -2522,7 +2583,12 @@ def _build_pattern_admission_candidates(
             if core_branch_coverage:
                 response = dict(response)
                 response["core_signature_branch_coverage"] = core_branch_coverage
+            admitted_pair_supplement_count = 0
             if admitted and case_key not in seen_case_sets:
+                admitted_pair_supplement_count = _ensure_pair_scores_for_groups(
+                    admitted_groups,
+                    pair_scores,
+                )
                 candidate_pattern = _build_pattern_candidate(
                     admitted_groups,
                     pair_scores,
@@ -2610,6 +2676,14 @@ def _build_pattern_admission_candidates(
                     "negative_guards": response.get("negative_guards") or [],
                     "required_code_checks": response.get("required_code_checks") or [],
                     "reject_reason": response.get("reject_reason"),
+                    "formation_pair_scope": {
+                        "scope": "core_bucket_all_pairs",
+                        "component_pair_count": len(member_pair_scores),
+                        "supplemented_pair_count": member_pair_supplement_count,
+                        "admitted_pair_supplemented_count": (
+                            admitted_pair_supplement_count if admitted else 0
+                        ),
+                    },
                     "judge_reject_reason_before_branch_closure": None,
                     "excluded_case_ids_before_branch_closure": [],
                     "mechanical_branch_closure_override_reason": None,
@@ -2843,6 +2917,7 @@ def form_offline_families(
         candidate_keys=candidate_keys,
         pair_scores=pair_scores,
     )
+    retrieval_scored_pair_count = len(pair_scores)
     accepted_edges = sorted(accepted_edges, key=lambda pair: pair.score, reverse=True)
     pattern_candidates, pattern_admission_reports = _build_pattern_admission_candidates(
         active_singletons,
@@ -2868,6 +2943,17 @@ def form_offline_families(
 
     labels = _manual_labels(manual_groups, library.db_id)
     family_reports: List[Dict[str, Any]] = []
+    complete_pair_scores = list(pair_scores.values())
+    complete_accepted_edges = sorted(
+        [pair for pair in complete_pair_scores if pair.accepted],
+        key=lambda pair: pair.score,
+        reverse=True,
+    )
+    complete_rejected_edges = sorted(
+        [pair for pair in complete_pair_scores if not pair.accepted],
+        key=lambda pair: pair.score,
+        reverse=True,
+    )
 
     pattern_reports = []
     for pattern in pattern_candidates:
@@ -2954,6 +3040,11 @@ def form_offline_families(
             "focus_case_ids": sorted(focus_case_ids),
             "candidate_pair_count": len(candidate_keys),
             "scored_pair_count": len(pair_scores),
+            "retrieval_scored_pair_count": retrieval_scored_pair_count,
+            "formation_supplemented_pair_count": max(
+                0,
+                len(pair_scores) - retrieval_scored_pair_count,
+            ),
         },
         "output_counts": {
             "patterns": len(output_library.patterns),
@@ -2984,6 +3075,18 @@ def form_offline_families(
             "large candidates before formal admission; insight slicer is disabled"
         ),
         "retrieval_audit": retrieval_audit,
+        "formation_audit": {
+            "pair_scope": "retrieval_plus_component_all_pairs",
+            "retrieval_scored_pair_count": retrieval_scored_pair_count,
+            "complete_pair_count": len(pair_scores),
+            "supplemented_pair_count": max(
+                0,
+                len(pair_scores) - retrieval_scored_pair_count,
+            ),
+            "accepted_pair_count": len(complete_accepted_edges),
+            "rejected_pair_count": len(complete_rejected_edges),
+            "failure_taxonomy_counts": _failure_taxonomy_counts(complete_rejected_edges),
+        },
         "core_signature_branch_coverage": [
             {
                 "component_case_ids": report.get("component_case_ids"),
@@ -3011,13 +3114,14 @@ def form_offline_families(
             }
             for group in remaining_singletons
         ],
-        "accepted_edge_context": _pair_decision_context(accepted_edges),
+        "retrieval_accepted_edge_context": _pair_decision_context(accepted_edges),
+        "accepted_edge_context": _pair_decision_context(complete_accepted_edges),
         "component_splits": [],
         "rejected_edge_sample": [
             _pattern_pair_decision(edge, include_blockers=False)
-            for edge in sorted(rejected_edges, key=lambda pair: pair.score, reverse=True)[:200]
+            for edge in complete_rejected_edges[:200]
         ],
-        "failure_taxonomy_counts": _failure_taxonomy_counts(rejected_edges),
+        "failure_taxonomy_counts": _failure_taxonomy_counts(complete_rejected_edges),
         "manual_alignment": _alignment_report(
             predicted_families=[],
             remaining_singletons=remaining_singletons,

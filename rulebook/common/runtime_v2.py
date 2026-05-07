@@ -1046,6 +1046,62 @@ def _program_envelope_applicability(
     return reasons
 
 
+def _is_deferable_instantiation_reason(reason: str) -> bool:
+    reason = str(reason or "")
+    return reason.startswith("required_role_slots_unbound") or reason.startswith(
+        "singleton_requires_unique_action"
+    )
+
+
+def _is_deferable_compiler_dry_run_reason(reason: str) -> bool:
+    reason = str(reason or "")
+    if not reason:
+        return False
+    if _is_deferable_instantiation_reason(reason):
+        return True
+    if reason.startswith("compiler_dry_run_no_candidates:"):
+        return "binder_exception" not in reason and "compiler_exception" not in reason
+    if reason.startswith("compiler_dry_run_missing_required_bundles:"):
+        return True
+    if reason.startswith("branch_binder_no_candidates:"):
+        return "binder_exception" not in reason and "compiler_exception" not in reason
+    if reason.startswith("branch_binder_missing_bundles:"):
+        return True
+    return False
+
+
+def _split_instantiation_failures(
+    reasons: Sequence[str],
+    *,
+    source_trigger_passed: bool,
+) -> Tuple[List[str], List[str]]:
+    hard: List[str] = []
+    deferred: List[str] = []
+    for reason in reasons or []:
+        text = str(reason or "")
+        if source_trigger_passed and _is_deferable_instantiation_reason(text):
+            deferred.append(text)
+        else:
+            hard.append(text)
+    return hard, deferred
+
+
+def _split_compiler_dry_run_failures(
+    reasons: Sequence[str],
+    *,
+    source_trigger_passed: bool,
+) -> Tuple[List[str], List[str]]:
+    hard: List[str] = []
+    deferred: List[str] = []
+    for reason in reasons or []:
+        text = str(reason or "")
+        if source_trigger_passed and _is_deferable_compiler_dry_run_reason(text):
+            deferred.append(text)
+        else:
+            hard.append(text)
+    return hard, deferred
+
+
 def _binder_dry_run_candidates(
     group: GroupSummary,
     case_view: RuntimeCaseView,
@@ -1476,6 +1532,7 @@ def _select_runtime_branch(
         missing = sorted(required - current_signals)
         negative_hits = sorted(negative & current_signals)
         branch_reasons: List[str] = []
+        branch_deferred_reasons: List[str] = []
         if missing:
             branch_reasons.append("branch_required_signals_missed:" + ",".join(missing[:6]))
         if negative_hits:
@@ -1487,7 +1544,12 @@ def _select_runtime_branch(
                 case_view=case_view,
             )
             if not dry_ok:
-                branch_reasons.extend(dry_reasons[:6])
+                hard_reasons, deferred_reasons = _split_compiler_dry_run_failures(
+                    dry_reasons,
+                    source_trigger_passed=True,
+                )
+                branch_reasons.extend(hard_reasons[:6])
+                branch_deferred_reasons.extend(deferred_reasons[:6])
         gate_passed = not branch_reasons
         audit_rows.append(
             {
@@ -1498,6 +1560,7 @@ def _select_runtime_branch(
                 "negative_hits": negative_hits,
                 "bundle_ids": sorted(_runtime_branch_bundle_ids(branch)),
                 "reasons": branch_reasons or ["branch_gate_passed"],
+                "deferred_instantiation_reasons": branch_deferred_reasons,
             }
         )
         if gate_passed:
@@ -1876,6 +1939,8 @@ def _gate_group(
     branch_runtime_usable_count = 0
     dry_run_group = group
     dry_run_contract = contract
+    deferred_instantiation_reasons: List[str] = []
+    compiler_candidate_reasons: List[str] = []
 
     reasons: List[str] = []
     passed = True
@@ -1980,12 +2045,34 @@ def _gate_group(
         )
         binder_dry_run_success = binder_dry_run_success or exact_dry_success
         if not exact_ok:
-            passed = False
-            reasons.append("singleton_canonical_exact_failed")
-            reasons.extend(f"singleton_exact:{item}" for item in exact_reasons[:6])
+            preliminary_source_trigger_passed = bool(
+                variant_required_match
+                or generalized_canonical_gate_passed
+                or exact_dry_success
+                or (required_signals and not required_misses)
+            )
+            hard_exact, deferred_exact = _split_instantiation_failures(
+                exact_reasons,
+                source_trigger_passed=preliminary_source_trigger_passed,
+            )
+            if hard_exact:
+                passed = False
+                reasons.append("singleton_canonical_exact_failed")
+                reasons.extend(f"singleton_exact:{item}" for item in hard_exact[:6])
+            if deferred_exact:
+                deferred_instantiation_reasons.extend(
+                    f"singleton_exact:{item}" for item in deferred_exact
+                )
+                reasons.append("singleton_canonical_exact_deferred_to_compiler")
 
     defer_pattern_applicability_to_branch = bool(
         group.group_type == GroupType.PATTERN and _runtime_branch_rows(group)
+    )
+    source_trigger_passed = bool(
+        variant_required_match
+        or generalized_canonical_gate_passed
+        or binder_dry_run_success
+        or (required_signals and not required_misses)
     )
     applicability_failures = []
     if not defer_pattern_applicability_to_branch:
@@ -1999,8 +2086,16 @@ def _gate_group(
             generalized_canonical_gate_passed=generalized_canonical_gate_passed,
         )
     if applicability_failures:
-        passed = False
-        reasons.extend(applicability_failures[:8])
+        hard_failures, deferred_failures = _split_instantiation_failures(
+            applicability_failures,
+            source_trigger_passed=source_trigger_passed,
+        )
+        if hard_failures:
+            passed = False
+            reasons.extend(hard_failures[:8])
+        if deferred_failures:
+            deferred_instantiation_reasons.extend(deferred_failures)
+            reasons.append("role_slots_deferred_to_compiler")
 
     if (
         decisive_pred_signals
@@ -2056,6 +2151,16 @@ def _gate_group(
         else:
             selected_branch_id = _runtime_branch_id(selected_branch)
             matched_branch_ids = [selected_branch_id] if selected_branch_id else []
+            selected_branch_audit = next(
+                (
+                    row
+                    for row in branch_match_audit
+                    if str(row.get("branch_id") or "") == selected_branch_id
+                ),
+                {},
+            )
+            for item in selected_branch_audit.get("deferred_instantiation_reasons") or []:
+                deferred_instantiation_reasons.append(f"branch:{item}")
             dry_run_group = _filter_group_to_runtime_branch(group, selected_branch)
             dry_run_contract = _group_trigger_contract(dry_run_group)
             branch_slot_overlap = _slot_resolvable_score(dry_run_group, case_view)
@@ -2069,8 +2174,18 @@ def _gate_group(
                 generalized_canonical_gate_passed=True,
             )
             if branch_applicability_failures:
-                passed = False
-                reasons.extend(branch_applicability_failures[:8])
+                hard_failures, deferred_failures = _split_instantiation_failures(
+                    branch_applicability_failures,
+                    source_trigger_passed=True,
+                )
+                if hard_failures:
+                    passed = False
+                    reasons.extend(hard_failures[:8])
+                if deferred_failures:
+                    deferred_instantiation_reasons.extend(
+                        f"branch:{item}" for item in deferred_failures
+                    )
+                    reasons.append("branch_role_slots_deferred_to_compiler")
             reasons.append("runtime_branch_selected:" + selected_branch_id)
 
     if passed:
@@ -2081,8 +2196,20 @@ def _gate_group(
         )
         binder_dry_run_success = binder_dry_run_success or dry_run_ok
         if not dry_run_ok:
-            passed = False
-            reasons.extend(dry_run_reasons[:6])
+            hard_reasons, deferred_reasons = _split_compiler_dry_run_failures(
+                dry_run_reasons,
+                source_trigger_passed=source_trigger_passed,
+            )
+            compiler_candidate_reasons.extend(dry_run_reasons)
+            if deferred_reasons:
+                deferred_instantiation_reasons.extend(
+                    f"compiler:{item}" for item in deferred_reasons
+                )
+            if source_trigger_passed and not hard_reasons:
+                reasons.append("compiler_dry_run_deferred_to_compiler")
+            else:
+                passed = False
+                reasons.extend((hard_reasons or dry_run_reasons)[:6])
         else:
             reasons.append("compiler_dry_run_passed")
 
@@ -2091,6 +2218,22 @@ def _gate_group(
     reasons.append("legacy_tag_overlap_audit_only")
     signal_compat = 1.0 if passed else 0.0
     final_score = float(len(required_hits)) if passed else 0.0
+    hard_gate_reasons = []
+    if not passed:
+        hard_gate_reasons = [
+            reason
+            for reason in reasons
+            if reason
+            and reason not in {
+                "legacy_tag_overlap_audit_only",
+                "variant_required_signals_matched",
+                "singleton_canonical_exact_deferred_to_compiler",
+                "role_slots_deferred_to_compiler",
+                "branch_role_slots_deferred_to_compiler",
+                "compiler_dry_run_deferred_to_compiler",
+            }
+            and not reason.startswith("soft_required_miss:")
+        ]
 
     return TriggerCandidateAudit(
         group_id=group.group_id,
@@ -2117,6 +2260,10 @@ def _gate_group(
         branch_match_audit=branch_match_audit,
         branch_blockers=branch_blockers,
         branch_runtime_usable_count=branch_runtime_usable_count,
+        source_trigger_passed=source_trigger_passed,
+        hard_gate_reasons=hard_gate_reasons,
+        deferred_instantiation_reasons=deferred_instantiation_reasons,
+        compiler_candidate_reasons=compiler_candidate_reasons,
     )
 
 
@@ -2631,11 +2778,28 @@ def build_runtime_rewrite_guard(
 def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
     payload = _payload(audit)
     reasons = [str(item) for item in (payload.get("gate_reasons") or []) if str(item)]
+    hard_reasons = [
+        str(item) for item in (payload.get("hard_gate_reasons") or []) if str(item)
+    ]
+    deferred_reasons = [
+        str(item)
+        for item in (payload.get("deferred_instantiation_reasons") or [])
+        if str(item)
+    ]
+    compiler_reasons = [
+        str(item)
+        for item in (payload.get("compiler_candidate_reasons") or [])
+        if str(item)
+    ]
     return {
         "group_id": str(payload.get("group_id") or ""),
         "group_type": str(payload.get("group_type") or ""),
         "gate_passed": bool(payload.get("gate_passed", False)),
         "top_reasons": reasons[:8],
+        "source_trigger_passed": bool(payload.get("source_trigger_passed", False)),
+        "hard_gate_reasons": hard_reasons[:8],
+        "deferred_instantiation_reasons": deferred_reasons[:8],
+        "compiler_candidate_reasons": compiler_reasons[:8],
         "required_hit_count": len(payload.get("required_signal_hits") or []),
         "required_miss_count": len(payload.get("required_signal_misses") or []),
         "optional_hit_count": len(payload.get("optional_signal_hits") or []),
@@ -2657,7 +2821,7 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
         item = _payload(row)
         if item.get("gate_passed"):
             continue
-        reasons = item.get("gate_reasons") or []
+        reasons = item.get("hard_gate_reasons") or item.get("gate_reasons") or []
         reason = str(reasons[0] if reasons else "unknown")
         blocker_counts[reason] = blocker_counts.get(reason, 0) + 1
     return {
@@ -2901,6 +3065,8 @@ def trigger_memory_objects(
                     update={
                         "gate_passed": False,
                         "gate_reasons": list(audit.gate_reasons) + [selection_reason],
+                        "hard_gate_reasons": list(audit.hard_gate_reasons)
+                        + [selection_reason],
                         "signal_compat": 0.0,
                         "structural_compat": 0.0,
                         "final_score": 0.0,

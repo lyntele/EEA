@@ -700,3 +700,46 @@ prompt 规模观察：
   - `eea_retrieval_audit.json` 无候选：信号召回问题。
   - 有候选但 blocker 多：pair score / shared program / admission 问题。
   - 有 pattern 但 runtime 不触发：trigger / branch matching / compiler 问题。
+
+### T-20260507-04：focus 召回补齐与 runtime 两类信号分层
+
+背景：
+
+- DeepEye 端 run `toxicology14_postsel_v1_qwen3coderflash_20260507_r1` 最终 `ready=0/no_match=14`，没有任何 rewrite。
+- q225 之后 6 个 online update 均报 `KeyError: ('grp-sing-toxicology-211', 'grp-sing-toxicology-223')`。
+- q307 对 q206 的 runtime 审计显示 `variant_required_signals_matched=true`、`binder_dry_run_success=true`，但仍被 `required_role_slots_unbound` 挡成 `no_match`。
+
+本轮判断：
+
+- `KeyError` 是在线加速后 focus pair map 不完整导致的实现问题：focus 召回只算了新 case 相关 pair，但 pattern 构建/报告阶段仍假设 component 内所有 pair 都已存在。
+- q307 漏触发是 runtime 把两类信号混用：source-state 已匹配，但 target/action slot 预绑定失败被当成触发硬门。
+
+本轮修改：
+
+- `family_formation_v2` 保留 focus 召回加速，但新增 component/admitted group 内 all-pairs 局部补齐。
+- `_central_member()`、`_member_pair_scores()`、`_build_family()` 都会先补齐本地 group 内 pair score，不再直接假设 focus `pair_scores` 完整。
+- formation report 增加 `formation_audit` 和 `formation_pair_scope`，区分 retrieval 召回 pair 与 component 内补齐 pair。
+- `runtime_v2` 新增 `source_trigger_passed`、`hard_gate_reasons`、`deferred_instantiation_reasons`、`compiler_candidate_reasons`。
+- `required_role_slots_unbound` 与 singleton 的 `singleton_requires_unique_action` 在 source-state 已通过时降级为 deferred instantiation reason，交给 compiler/rewrite 后续阶段处理。
+- 审查后补充收窄：compiler dry-run 不再整体 deferred，只对白名单中的实例化候选问题延迟；bundle budget 超限、branch ambiguity、exception 等仍保留 hard gate。
+- pattern branch selection 改为先按 branch source signals 选唯一分支；branch binder/bundle 候选问题只进入 branch 的 deferred diagnostics，不再把 source 唯一匹配的 branch 直接挡掉。
+- db/status/runtime_usable/negative signal/source-state mismatch/branch ambiguity/executable contract 缺失仍是 hard gate。
+
+只读 sanity：
+
+- `py_compile` 通过：`family_formation_v2.py`、`runtime_v2.py`、`data_structures_v2.py`。
+- 用 r1 旧库和 q307 真实请求跑 EEA runtime plan，q307 现在选中 `grp-sing-toxicology-206`：
+  - `reason=ready`
+  - `action_count=1`
+  - `primitive=DROP_SELECT_SLOT`
+  - `hint_len=83`
+  - `gate_passed=true`
+  - `source_trigger_passed=true`
+  - `deferred_instantiation_reasons` 包含 `required_role_slots_unbound`
+  - `hard_gate_reasons=[]`
+- 用 r1 旧库中的 q211/q223 singleton 调 `_build_family(..., pair_scores={})`，能自动补齐 pair 并构建成功，不再依赖外部完整 pair map。
+
+预期影响：
+
+- toxicology14 冷启动中 q225 以后不应再因缺少旧 pair score 导致 update error。
+- q307 不应再被 q206 的 role slot 预绑定挡成 `runtime=no_match`；若后续失败，应落在 compiler/no_action、rewrite 或 selection，并有明确诊断。

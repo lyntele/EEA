@@ -1174,6 +1174,10 @@ class TriggerCandidateAudit(BaseModel):
     branch_match_audit: List[Dict[str, Any]] = Field(default_factory=list)
     branch_blockers: List[str] = Field(default_factory=list)
     branch_runtime_usable_count: int = 0
+    source_trigger_passed: bool = False
+    hard_gate_reasons: List[str] = Field(default_factory=list)
+    deferred_instantiation_reasons: List[str] = Field(default_factory=list)
+    compiler_candidate_reasons: List[str] = Field(default_factory=list)
 
 
 class TriggerResult(BaseModel):
