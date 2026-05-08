@@ -566,17 +566,6 @@ Execution comparison utilities.
 
 Shared OpenAI-compatible JSON LLM caller.
 
-### `common/versioning.py`
-
-Compatibility shim for downstream experiment runners that still import
-`detect_git_context` / run-metadata helpers.
-
-### `common/pool_coverage.py`
-
-Compatibility shim for downstream single-db experiment summaries. It keeps
-`build_pool_coverage_report(...)` available without reintroducing the removed
-v1 cluster pipeline.
-
 ### `common/structure_family.py`
 
 Shared SQL AST/structure helper used by v2 and retained parser utilities.
