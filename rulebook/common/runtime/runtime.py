@@ -1459,6 +1459,21 @@ def _filter_group_to_runtime_branch(
     if envelope_payload:
         action_contract["program_envelope"] = envelope_payload
         trigger_contract["action_contract"] = action_contract
+        branch_required = [
+            str(signal)
+            for signal in (branch_payload.get("required_signals") or [])
+            if _is_substantive_hard_signal(str(signal))
+        ]
+        branch_negative = [
+            str(signal)
+            for signal in (branch_payload.get("negative_signals") or [])
+            if str(signal)
+        ]
+        if branch_required:
+            trigger_contract["required_signals"] = sorted(set(branch_required))
+            trigger_contract["decisive_pred_signals"] = sorted(set(branch_required))
+        if branch_negative:
+            trigger_contract["negative_signals"] = sorted(set(branch_negative))
         if bundle_ids:
             trigger_contract["max_actions"] = max(
                 1,
@@ -1746,6 +1761,36 @@ def _runtime_program_type(contract: Dict[str, Any]) -> str:
     return str(synthesized.get("program_type") or "").strip()
 
 
+def _canonical_program_type_from_memory(group: GroupSummary) -> str:
+    signals = _payload(getattr(group, "formation_signals", None))
+    canonical_ir = _payload(signals.get("canonical_repair_ir"))
+    ops = [_payload(op) for op in (canonical_ir.get("program_ops") or []) if _payload(op)]
+    primary_ops = [
+        op
+        for op in ops
+        if not bool(
+            _payload(_payload(op.get("arguments")).get("operation_signature")).get("is_dependency")
+            or op.get("is_dependency")
+        )
+    ]
+    if not primary_ops:
+        primary_ops = ops
+    op_types = {str(op.get("op_type") or "").upper() for op in primary_ops if str(op.get("op_type") or "")}
+    if "SELECT_DROP_SLOT" in op_types:
+        return "select_drop"
+    if "SELECT_REPLACE_SLOT" in op_types:
+        return "select_replace"
+    if "DROP_SIDE" in op_types:
+        return "role_side_selection"
+    if "MOVE_CONDITION" in op_types:
+        return "where_side_edit"
+    if "INSERT_BRIDGE" in op_types:
+        return "join_bridge"
+    if "REROUTE_FACT" in op_types:
+        return "fact_route_reroute"
+    return ""
+
+
 def _dry_run_candidate_signature(candidate: Any) -> Tuple[Any, ...]:
     args = _payload(getattr(candidate, "arguments", None))
     bundle_id = (
@@ -1793,6 +1838,8 @@ def _singleton_canonical_exact_check(
     """
     reasons: List[str] = []
     program_type = _runtime_program_type(contract)
+    if not program_type:
+        program_type = _canonical_program_type_from_memory(singleton)
     if program_type not in {
         "select_drop",
         "select_replace",
@@ -1800,6 +1847,7 @@ def _singleton_canonical_exact_check(
         "role_side_selection",
         "where_side_edit",
         "join_bridge",
+        "fact_route_reroute",
     }:
         reasons.append("unsupported_singleton_program_type")
 
@@ -1936,6 +1984,9 @@ def _gate_group(
     variant_required_match = bool(variant_required_signal_sets) and any(
         signal_set <= current_signals for signal_set in variant_required_signal_sets
     )
+    defer_pattern_contract_to_branch = bool(
+        group.group_type == GroupType.PATTERN and _runtime_branch_rows(group)
+    )
     binder_dry_run_success = False
     generalized_canonical_gate_passed = False
     pattern_soft_required_signal_deferred = False
@@ -1961,8 +2012,11 @@ def _gate_group(
         passed = False
         reasons.append("runtime_usable_false")
     elif not is_contract_runtime_executable(contract):
-        passed = False
-        reasons.append("invalid_or_empty_trigger_contract")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_top_contract_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("invalid_or_empty_trigger_contract")
     if str(group.status.value if hasattr(group.status, "value") else group.status) != "active":
         passed = False
         reasons.append("status_not_active")
@@ -1981,13 +2035,22 @@ def _gate_group(
         reasons.append("negative_contract_signal_hit")
 
     if raw_variant_required_signal_sets and not variant_required_signal_sets:
-        passed = False
-        reasons.append("variant_required_signals_non_substantive")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_variant_contract_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("variant_required_signals_non_substantive")
     if not required_signals and not variant_required_signal_sets:
-        passed = False
-        reasons.append("trigger_contract_missing_required_signals")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_top_required_signals_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("trigger_contract_missing_required_signals")
     elif required_misses:
-        if group.group_type == GroupType.PATTERN and has_synthesized_program:
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_top_required_signals_deferred_to_branch")
+            reasons.extend(f"top_required_miss:{item}" for item in required_misses[:6])
+        elif group.group_type == GroupType.PATTERN and has_synthesized_program:
             pattern_soft_required_signal_deferred = True
             reasons.append("pattern_required_contract_signals_soft_missed")
             reasons.extend(f"soft_required_miss:{item}" for item in required_misses[:6])
@@ -2016,7 +2079,9 @@ def _gate_group(
         allow_generalized = bool(
             trigger_policy.get("allow_out_of_variant_generalization", False)
         )
-        if not allow_generalized:
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_variant_signals_deferred_to_branch")
+        elif not allow_generalized:
             passed = False
             reasons.append("variant_required_signals_missed")
         elif not has_synthesized_program:
@@ -2074,9 +2139,7 @@ def _gate_group(
                 )
                 reasons.append("singleton_canonical_exact_deferred_to_compiler")
 
-    defer_pattern_applicability_to_branch = bool(
-        group.group_type == GroupType.PATTERN and _runtime_branch_rows(group)
-    )
+    defer_pattern_applicability_to_branch = defer_pattern_contract_to_branch
     source_trigger_passed = bool(
         variant_required_match
         or generalized_canonical_gate_passed
@@ -2112,18 +2175,27 @@ def _gate_group(
         and not variant_required_match
         and not generalized_canonical_gate_passed
     ):
-        passed = False
-        reasons.append("decisive_pred_signal_missed")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("decisive_pred_signal_missed")
     elif not decisive_pred_signals and not variant_required_match and not generalized_canonical_gate_passed:
-        passed = False
-        reasons.append("trigger_contract_missing_decisive_pred_signal")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("trigger_contract_missing_decisive_pred_signal")
 
     if group.group_type == GroupType.PATTERN and not has_synthesized_program:
         passed = False
         reasons.append("runtime_group_missing_synthesized_program")
     if not _contract_has_executable_program(contract):
-        passed = False
-        reasons.append("runtime_group_missing_executable_repair_contract")
+        if defer_pattern_contract_to_branch:
+            reasons.append("pattern_executable_contract_deferred_to_branch")
+        else:
+            passed = False
+            reasons.append("runtime_group_missing_executable_repair_contract")
     if group.group_type == GroupType.SINGLETON and int(contract.get("max_actions") or 1) > 1:
         passed = False
         reasons.append("singleton_contract_max_actions_gt_one")
@@ -2140,8 +2212,11 @@ def _gate_group(
             and not variant_required_match
             and not generalized_canonical_gate_passed
         ):
-            passed = False
-            reasons.append("runtime_group_missing_decisive_optional_signal_hit")
+            if defer_pattern_contract_to_branch:
+                reasons.append("pattern_decisive_optional_signal_deferred_to_branch")
+            else:
+                passed = False
+                reasons.append("runtime_group_missing_decisive_optional_signal_hit")
 
     if passed and group.group_type == GroupType.PATTERN:
         (
@@ -2172,6 +2247,7 @@ def _gate_group(
                 deferred_instantiation_reasons.append(f"branch:{item}")
             dry_run_group = _filter_group_to_runtime_branch(group, selected_branch)
             dry_run_contract = _group_trigger_contract(dry_run_group)
+            source_trigger_passed = True
             branch_slot_overlap = _slot_resolvable_score(dry_run_group, case_view)
             branch_applicability_failures = _program_envelope_applicability(
                 contract=dry_run_contract,
@@ -2240,8 +2316,16 @@ def _gate_group(
                 "role_slots_deferred_to_compiler",
                 "branch_role_slots_deferred_to_compiler",
                 "compiler_dry_run_deferred_to_compiler",
+                "pattern_top_contract_deferred_to_branch",
+                "pattern_variant_contract_deferred_to_branch",
+                "pattern_top_required_signals_deferred_to_branch",
+                "pattern_variant_signals_deferred_to_branch",
+                "pattern_decisive_pred_signal_deferred_to_branch",
+                "pattern_executable_contract_deferred_to_branch",
+                "pattern_decisive_optional_signal_deferred_to_branch",
             }
             and not reason.startswith("soft_required_miss:")
+            and not reason.startswith("top_required_miss:")
         ]
 
     return TriggerCandidateAudit(
@@ -2742,6 +2826,21 @@ def _select_compatible_groups(
         for item in passed
         if item[0].group_type == GroupType.PATTERN
     ]
+    non_pattern_passed = [
+        item
+        for item in passed
+        if item[0].group_type != GroupType.PATTERN
+    ]
+
+    def _singleton_fallback(reason: str) -> Optional[Tuple[List[GroupSummary], str, Dict[str, Any]]]:
+        if not non_pattern_passed:
+            return None
+        selected = [non_pattern_passed[0][0]]
+        audit["resolution"] = "singleton_top1_after_pattern_ambiguity"
+        audit["selected_group_ids"] = [str(selected[0].group_id)]
+        audit["fallback_reason"] = reason
+        return selected, "", audit
+
     selection_pool = shared_passed or passed
     audit["selection_pool_group_ids"] = [str(group.group_id) for group, _audit in selection_pool]
     audit["selection_pool_kind"] = "pattern" if shared_passed else "singleton_or_mixed"
@@ -2761,8 +2860,22 @@ def _select_compatible_groups(
                 case_view=case_view,
                 audit=audit,
             )
+            if reason == "ambiguous_current_transform" and not shared_passed:
+                selected = [selection_pool[0][0]]
+                audit["resolution"] = "singleton_top1_current_transform_fallback"
+                audit["selected_group_ids"] = [str(selected[0].group_id)]
+                audit["fallback_reason"] = reason
+                return selected, "", audit
+            if shared_passed and reason == "ambiguous_current_transform":
+                fallback = _singleton_fallback(reason)
+                if fallback is not None:
+                    return fallback
             return selected, reason, audit
         audit["resolution"] = "root_bias_conflict"
+        if shared_passed:
+            fallback = _singleton_fallback("conflicting_root_bias_contracts")
+            if fallback is not None:
+                return fallback
         return [], "conflicting_root_bias_contracts", audit
     bucket_items = next(iter(buckets.values()))
     if len(bucket_items) > 1:
@@ -2772,6 +2885,16 @@ def _select_compatible_groups(
             case_view=case_view,
             audit=audit,
         )
+        if reason == "ambiguous_current_transform" and not shared_passed:
+            selected = [bucket_items[0][0]]
+            audit["resolution"] = "singleton_top1_current_transform_fallback"
+            audit["selected_group_ids"] = [str(selected[0].group_id)]
+            audit["fallback_reason"] = reason
+            return selected, "", audit
+        if shared_passed and reason == "ambiguous_current_transform":
+            fallback = _singleton_fallback(reason)
+            if fallback is not None:
+                return fallback
         return selected, reason, audit
     selected = [group for group, _audit in bucket_items[: max(1, max_selected)]]
     audit["resolution"] = "single_action_contract_bucket"
@@ -2823,6 +2946,27 @@ def _action_argument_text(args: Dict[str, Any], keys: Sequence[str]) -> str:
     return "; ".join(values)
 
 
+def _dependency_action_text(args: Dict[str, Any]) -> str:
+    notes: List[str] = []
+    for step in args.get("repair_program") or []:
+        row = _payload(step)
+        if not bool(row.get("is_dependency") or False):
+            continue
+        op = str(row.get("op") or "").upper()
+        locus = str(row.get("locus") or "").upper()
+        if "DISTINCT" in op:
+            notes.append("also preserve/enforce DISTINCT exactly when required by the action")
+        elif locus == "JOIN":
+            notes.append("also apply the dependent JOIN cleanup carried by the action")
+    cleanup_edits = [str(item) for item in (args.get("cleanup_edits") or []) if str(item)]
+    if cleanup_edits:
+        notes.append("also remove dependent cleanup edit ids=" + ",".join(cleanup_edits[:4]))
+    preserve = [str(item) for item in (args.get("preserve_invariants") or []) if str(item)]
+    if preserve:
+        notes.append("preserve invariants=" + ",".join(preserve[:6]))
+    return " ".join(dict.fromkeys(notes))
+
+
 def _render_action_repair_brief(actions: Sequence[Any]) -> str:
     parts: List[str] = []
     for action in actions or []:
@@ -2841,7 +2985,16 @@ def _render_action_repair_brief(actions: Sequence[Any]) -> str:
             parts.append(f"Remove only the side selected by the action. {detail}".strip())
         elif primitive in {"INSERT_BRIDGE", "REROUTE_FACT"}:
             detail = _action_argument_text(args, ("target_relation_edges", "target_output_refs"))
-            parts.append(f"Use the action's bound join path or fact route. {detail}".strip())
+            preserve = ""
+            if bool(args.get("answer_unit_preserve")):
+                preserve = (
+                    " Preserve the current answer unit, SELECT/COUNT expression, "
+                    "and aggregation grain unless another selected action explicitly changes them."
+                )
+            dependency = _dependency_action_text(args)
+            parts.append(
+                f"Use the action's bound join path or fact route. {detail}.{preserve} {dependency}".strip()
+            )
         elif primitive == "MOVE_CONDITION":
             detail = _action_argument_text(args, ("predicate_ref", "from_scope", "to_scope"))
             parts.append(f"Move the bound predicate to the target scope selected by the action. {detail}".strip())
@@ -2915,7 +3068,11 @@ def _action_required_scopes(action: Any) -> List[str]:
         row = _payload(step)
         if bool(row.get("is_dependency") or False):
             _append_scope(scopes, row.get("locus"))
-    if _action_primitive_name(action) == "REROUTE_FACT" and args.get("target_output_refs"):
+    if (
+        _action_primitive_name(action) == "REROUTE_FACT"
+        and args.get("target_output_refs")
+        and not bool(args.get("answer_unit_preserve"))
+    ):
         _append_scope(scopes, "SELECT")
     return scopes
 

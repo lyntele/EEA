@@ -895,3 +895,90 @@ TODO / 自检项：
 
 - focus18 中 `ambiguous_current_transform` 不应再因为少数不同 transform 把可用同心子集全部挡掉。
 - pattern 应能进入 runtime 观测路径；若仍 no_match，可从 replay/runtime audit 直接看到是 source signal、branch 缺失、binder dry-run 还是 compiler action 缺失。
+
+## 2026-05-08 主路径闭合修复：closure、branch materialization、action invariant
+
+背景：
+
+- r5 已能把 RoleGraph 局部修复从 singleton 迁移到 `249/253/268/277/285/302/307`，但真正起作用的仍主要是 singleton，不是 formal pattern/branch。
+- 核心断点明确为：admission LLM 产出的 `branch_specs` 写在审计字段，promotion/runtime 实际读取的是 `program_envelope.runtime_branches`，两者没有同步。
+- 同时 `_pair_supports_root_membership` 把 `direct_merge_veto` / `core_program_signature_conflict` 这种否定语义 pair 也作为 root closure 证据，导致 `198-338` 这类跨 misconception 的大 root。
+
+本次改动：
+
+- DeepEye `eea_contract_adapter` 不再过滤 EEA replay 诊断字段，`eea_promotion_replay_rows.jsonl` 将透传 `rewrite_enabled_reason`、`trigger_blocker_counts`、`top_candidate_reasons`、`replay_trigger_diagnostics`、`memory_selection_audit`、branch/bundle 选择字段。
+- root closure 收紧：
+  - `compatible` 仍可闭包。
+  - `direct_merge_veto` 与 `core_program_signature_conflict` 不再作为 root membership 正证据。
+  - `partial` 只有在两侧共享 primary repair locus 时才可闭包。
+- admission branch materialization：
+  - `_build_pattern_candidate` 后把 `formation_signals.pattern_admission.branch_specs` 转写到 `synthesized_program.program_envelope.runtime_branches`。
+  - materialized branch 只复用已有 synthesized program/runtime branch 的 executable bundle；如果没有可执行 bundle，只记录 `admission_branch_no_executable_bundle`，不发明动作。
+  - trigger contract 的 `action_contract.program_envelope` 同步更新，promotion/runtime 读取同一份 runtime branch 对象。
+- action invariant：
+  - `REROUTE_FACT` 候选在 output arity/grain 不变时标记 `answer_unit_preserve`，并带 `preserve_select_projection`、`preserve_aggregation_grain`。
+  - rewrite brief 对 route 修复明确要求保留当前 SELECT/COUNT 与 aggregation grain，除非另一个 selected action 显式修改。
+  - dependency repair steps 中的 DISTINCT/JOIN cleanup 会进入 rewrite brief，不再只靠 LLM 自己推断。
+- 追加修复：
+  - focus18 首轮中 q253 被 `ambiguous_current_transform` 挡住，原因是 singleton 候选池也要求至少两个 memory 共享同一 current transform。
+  - 该约束对 pattern 合理，但对高精度 singleton 迁移过严；现在仅在非 pattern 候选池中允许 top1 singleton fallback，pattern 仍保持严格 branch/transform 选择。
+  - focus18 完整实验发现仍有 `runtime_branch_replay_gated` 但 `runtime_branches=[]` 的矛盾状态。
+  - promotion 决策改为按 actual runtime branch rows 判断 branch 可用性；无 branch 时显式返回 `runtime_branch_contract_missing`，不能进入 branch-gated 状态。
+  - branch replay 全部 `runtime_usable_false` 的原因是 branch-scoped memory 只裁剪了 envelope，未把 selected branch 的 required/negative signals 同步到 trigger contract 顶层。
+  - `_filter_group_to_runtime_branch` 现在会把 branch required signals 写入 `required_signals` 和 `decisive_pred_signals`，branch replay 才能真实测试 branch/compiler，而不是在 contract executable gate 提前失败。
+
+预期验证：
+
+- focus18 不能再生成把 RoleGraph 与 source-route 大量混合的 16-case root。
+- final library 中通过 branch replay 的 pattern 不应再出现 `runtime_branch_replay_gated` 但 `runtime_branches=[]`。
+- r5 已有 RoleGraph 收益应保持；source-route 失败应能通过 replay rows 明确定位到 branch、compiler 或 rewrite。
+- `q335` 类 route 修复不得把 answer unit 从 molecule count 拉成 bond count；`q302` 类 DISTINCT 依赖应在 action/hint 中可见。
+
+### 2026-05-08 追加：branch-first runtime gate 校正
+
+验证现象：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260508_142851` 完整跑完：
+  - `baseline_correct=0/18`
+  - `enhanced_correct=7/18`
+  - 改善题：`249/253/268/277/285/302/307`
+  - 退化题：无
+  - runtime：`ready=7`，`no_match=11`
+- replay row 诊断已透传，`branch_member_replay` 从 r4/r5 的几乎全 no-match 变为：
+  - `ready=240`
+  - `passthrough_no_match=56`
+  - no-match 主因集中为 `source_antipattern_output_subset_not_present`
+- final library 已能生成 runtime branches，但在线收益仍主要来自 singleton：
+  - runtime 触发的 7 个 case 均匹配 `grp-sing-*`
+  - pattern 虽然有 branch，但 runtime gate 仍先按 pattern 顶层 trigger contract 做硬判断，导致 branch 没机会参与选择。
+
+确认的问题：
+
+- 带 `runtime_branches` 的 pattern 语义应是：
+  - pattern 顶层只表示共同偏差/root bias，不能作为最终实例化入口。
+  - branch 才是可执行修复动作入口，应由 branch required/negative signals 和 branch dry-run 决定是否触发。
+- 旧实现顺序相反：
+  - `_gate_group` 先要求 pattern 顶层 `trigger_contract` 可执行、required signals 命中、decisive signals 命中。
+  - 只有顶层通过后才进入 `_select_runtime_branch`。
+  - 因此很多 pattern 被 `invalid_or_empty_trigger_contract`、`trigger_contract_missing_required_signals`、`runtime_group_missing_decisive_optional_signal_hit` 提前挡掉。
+
+本次修正：
+
+- 对带 `runtime_branches` 的 pattern，顶层 trigger contract 不再作为硬拦截：
+  - 顶层 executable/required/variant/decisive/optional 缺失改为审计原因：`pattern_*_deferred_to_branch`。
+  - 是否触发交给 `_select_runtime_branch`，它继续检查 branch required signals、negative signals 和 branch dry-run。
+  - branch 选中后，将 `source_trigger_passed=True`，后续 compiler dry-run 以 branch-scoped memory 为准。
+- 为避免多个模糊 pattern 把可用 singleton 挡死：
+  - pattern 候选池若因 `ambiguous_current_transform` 或 root-bias 冲突无法唯一选择，而存在通过 gate 的 singleton，则回退到 top1 singleton。
+  - 这不是降低 pattern 安全阈值，而是防止未稳定的 pattern 影响已验证 singleton 收益。
+- hard gate 诊断中过滤 `pattern_*_deferred_to_branch` 审计原因，避免把“交给 branch 判断”的正常路径误报为 blocker。
+
+局部 probe：
+
+- 用 `142851/final_library.json` 对 `q249` 重新跑 `prepare_rewrite_plan`：
+  - 多个 pattern branch 可通过，但互相 transform 不一致。
+  - selection 正确回退到 `grp-sing-toxicology-206`，`reason=ready`。
+- 用同一库 probe `q335/q338/q306`：
+  - 仍 `passthrough_no_match`。
+  - 主要原因已经不是 pattern 顶层 contract，而是相关 source-route branch 本身没有可用 required signals / executable branch。
+  - 这说明 source-route 仍需要后续改 branch admission/materialization 或 action 表达，不应继续放宽顶层 trigger。

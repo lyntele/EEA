@@ -2420,7 +2420,25 @@ def _case_ids_for_group(group: GroupSummary) -> Set[str]:
     return {str(case_id) for case_id in (group.case_ids or []) if str(case_id)}
 
 
-def _pair_supports_root_membership(pair: PairScore) -> bool:
+def _primary_repair_loci(group: GroupSummary) -> Set[str]:
+    loci = {
+        str(row[1]).upper()
+        for row in _program_core_signature(group)
+        if len(row) > 1 and str(row[1]).strip()
+    }
+    if loci:
+        return loci
+    structural = group.core_interface.repair_skeleton_prototype.structural
+    locus = str(getattr(structural.locus, "value", structural.locus) or "").upper()
+    return {locus} if locus else set()
+
+
+def _pair_supports_root_membership(
+    pair: PairScore,
+    *,
+    left: GroupSummary,
+    right: GroupSummary,
+) -> bool:
     """Whether a pair is enough to keep a case inside a root-pattern review.
 
     This is not a merge decision.  It only says the pair shares enough
@@ -2432,12 +2450,14 @@ def _pair_supports_root_membership(pair: PairScore) -> bool:
         return False
     if not pair.broad_retrieval_reasons:
         return False
-    return str(pair.semantic_relation or "") in {
-        "compatible",
-        "partial",
-        "direct_merge_veto",
-        "core_program_signature_conflict",
-    }
+    relation = str(pair.semantic_relation or "")
+    if relation == "compatible":
+        return True
+    if relation != "partial":
+        return False
+    left_loci = _primary_repair_loci(left)
+    right_loci = _primary_repair_loci(right)
+    return bool(left_loci and right_loci and left_loci & right_loci)
 
 
 def _root_membership_closure(
@@ -2510,7 +2530,7 @@ def _root_membership_closure(
                 if _is_absolute_conflict(pair.veto_reason):
                     hard_conflicts.append(str(pair.veto_reason))
                     continue
-                if _pair_supports_root_membership(pair):
+                if _pair_supports_root_membership(pair, left=group, right=seed):
                     supporting_pairs.append(pair)
             if supporting_pairs:
                 accepted |= group_case_ids
@@ -2648,6 +2668,223 @@ def _branch_specs_covering_cases(
     return branch_specs, sorted(set(added), key=_case_id_sort_key)
 
 
+def _branch_spec_required_signals(
+    *,
+    branch_groups: Sequence[GroupSummary],
+) -> List[str]:
+    if not branch_groups:
+        return []
+    signal_sets = []
+    for group in branch_groups:
+        signals = {
+            signal
+            for signal in _manifest_tags(group)
+            if str(signal).startswith("pred.")
+        }
+        if signals:
+            signal_sets.append(signals)
+    if not signal_sets:
+        return []
+    common = set.intersection(*signal_sets)
+    return sorted(common)
+
+
+def _merge_branch_rows_for_admission_spec(
+    *,
+    spec: Dict[str, Any],
+    branch_groups: Sequence[GroupSummary],
+    existing_rows: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    case_ids = sorted(
+        {str(case_id) for case_id in (spec.get("case_ids") or []) if str(case_id)},
+        key=_case_id_sort_key,
+    )
+    case_id_set = set(case_ids)
+    matched = [
+        dict(row)
+        for row in existing_rows
+        if case_id_set
+        and (
+            case_id_set
+            & {str(item) for item in (row.get("support_case_ids") or []) if str(item)}
+        )
+    ]
+    if not matched and len(existing_rows) == 1:
+        matched = [dict(existing_rows[0])]
+
+    digest_payload = {
+        "branch_id": spec.get("branch_id"),
+        "case_ids": case_ids,
+        "core_program_signature": spec.get("core_program_signature") or [],
+    }
+    branch_id = str(spec.get("branch_id") or "").strip() or (
+        "adm-br:" + hashlib.sha1(_canonical_payload(digest_payload).encode("utf-8")).hexdigest()[:12]
+    )
+    row: Dict[str, Any] = {
+        "schema_version": "runtime-branch-contract-v1",
+        "branch_id": branch_id,
+        "support_case_ids": case_ids,
+        "admission_branch_spec": spec,
+        "admission_origin": str(spec.get("origin") or "pattern_admission"),
+        "runtime_usable": False,
+        "runtime_blockers": ["branch_not_replay_validated"],
+        "replay_metrics": {},
+    }
+    if not matched:
+        row.update(
+            {
+                "bundle_ids": [],
+                "bundled_op_ids": [],
+                "cleanup_op_ids": [],
+                "required_signals": _branch_spec_required_signals(
+                    branch_groups=branch_groups
+                ),
+                "negative_signals": [],
+                "required_role_slots": [],
+                "allowed_primitives": [],
+                "allowed_edit_scope": [],
+                "preserve_constraints": list(spec.get("preserve_constraints") or []),
+                "source_antipatterns": [],
+                "target_effects": [],
+                "target_invariants": [],
+                "negative_guards": [
+                    {
+                        "kind": "admission_branch_without_executable_bundle",
+                        "branch_id": branch_id,
+                    }
+                ],
+                "effect_kind": "",
+                "lowering_family": "",
+                "runtime_blockers": ["admission_branch_no_executable_bundle"],
+            }
+        )
+        return row
+
+    def merge_list(key: str) -> List[Any]:
+        out: List[Any] = []
+        seen: Set[str] = set()
+        for source in [*matched, spec]:
+            for item in source.get(key) or []:
+                marker = _canonical_payload(item)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                out.append(item)
+        return out
+
+    required = set(merge_list("required_signals"))
+    required.update(_branch_spec_required_signals(branch_groups=branch_groups))
+    row.update(
+        {
+            "bundle_ids": [str(item) for item in merge_list("bundle_ids") if str(item)],
+            "bundled_op_ids": [
+                str(item) for item in merge_list("bundled_op_ids") if str(item)
+            ],
+            "cleanup_op_ids": [
+                str(item) for item in merge_list("cleanup_op_ids") if str(item)
+            ],
+            "required_signals": sorted(required),
+            "negative_signals": [str(item) for item in merge_list("negative_signals") if str(item)],
+            "required_role_slots": merge_list("required_role_slots"),
+            "allowed_primitives": [
+                str(item) for item in merge_list("allowed_primitives") if str(item)
+            ],
+            "allowed_edit_scope": [
+                str(item) for item in merge_list("allowed_edit_scope") if str(item)
+            ],
+            "preserve_constraints": merge_list("preserve_constraints"),
+            "source_antipatterns": merge_list("source_antipatterns"),
+            "target_effects": merge_list("target_effects"),
+            "target_invariants": merge_list("target_invariants"),
+            "negative_guards": merge_list("negative_guards"),
+            "effect_kind": ",".join(
+                sorted({str(item.get("effect_kind") or "") for item in matched if item.get("effect_kind")})
+            ),
+            "lowering_family": ",".join(
+                sorted(
+                    {
+                        str(item.get("lowering_family") or "")
+                        for item in matched
+                        if item.get("lowering_family")
+                    }
+                )
+            ),
+        }
+    )
+    if any(str(item) == "REROUTE_FACT" for item in row.get("allowed_primitives") or []):
+        constraints = list(row.get("preserve_constraints") or [])
+        if "answer_unit_preserve" not in constraints:
+            constraints.append("answer_unit_preserve")
+        row["preserve_constraints"] = constraints
+    return row
+
+
+def _materialize_admission_branches(pattern: GroupSummary, groups: Sequence[GroupSummary]) -> GroupSummary:
+    admission = dict((pattern.formation_signals or {}).get("pattern_admission") or {})
+    branch_specs = [
+        _model_dump(spec) for spec in (admission.get("branch_specs") or []) if _model_dump(spec)
+    ]
+    if not branch_specs:
+        return pattern
+    program = getattr(pattern.instantiation_program, "synthesized_program", None)
+    if program is None or getattr(program, "program_envelope", None) is None:
+        return pattern
+    envelope_obj = program.program_envelope
+    envelope_payload = _model_dump(envelope_obj)
+    existing_rows = [
+        _model_dump(row)
+        for row in (envelope_payload.get("runtime_branches") or [])
+        if _model_dump(row)
+    ]
+    group_by_case: Dict[str, List[GroupSummary]] = defaultdict(list)
+    for group in groups:
+        for case_id in group.case_ids or []:
+            group_by_case[str(case_id)].append(group)
+    runtime_rows: List[Dict[str, Any]] = []
+    for spec in branch_specs:
+        branch_case_ids = [str(case_id) for case_id in (spec.get("case_ids") or []) if str(case_id)]
+        branch_groups = [
+            group
+            for case_id in branch_case_ids
+            for group in group_by_case.get(case_id, [])
+        ]
+        runtime_rows.append(
+            _merge_branch_rows_for_admission_spec(
+                spec=spec,
+                branch_groups=branch_groups,
+                existing_rows=existing_rows,
+            )
+        )
+    envelope_payload["runtime_branches"] = runtime_rows
+    envelope_payload["branch_selection_contract"] = {
+        **_model_dump(envelope_payload.get("branch_selection_contract") or {}),
+        "selection_unit": "runtime_branch",
+        "requires_current_variant_binding": True,
+        "admission_branch_materialized": True,
+    }
+    updated_envelope = envelope_obj.model_copy(update=envelope_payload)
+    updated_program = program.model_copy(update={"program_envelope": updated_envelope})
+    updated_instantiation = pattern.instantiation_program.model_copy(
+        update={"synthesized_program": updated_program}
+    )
+    pattern = pattern.model_copy(
+        update={"instantiation_program": updated_instantiation}
+    )
+    trigger_contract = _model_dump(getattr(pattern, "trigger_contract", None))
+    action_contract = _model_dump(trigger_contract.get("action_contract") or {})
+    action_contract["program_envelope"] = envelope_payload
+    trigger_contract["action_contract"] = action_contract
+    if hasattr(pattern.trigger_contract, "model_copy"):
+        pattern = pattern.model_copy(
+            update={
+                "trigger_contract": pattern.trigger_contract.model_copy(
+                    update=trigger_contract
+                )
+            }
+        )
+    return pattern
+
+
 def _build_pattern_candidate(
     groups: Sequence[GroupSummary],
     pair_scores: Dict[Tuple[str, str], PairScore],
@@ -2670,6 +2907,7 @@ def _build_pattern_candidate(
         if pattern.instantiation_program.synthesized_program is None
         else pattern.instantiation_program.shared_status
     )
+    pattern = _materialize_admission_branches(pattern, groups)
     return pattern
 
 

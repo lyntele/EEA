@@ -1765,6 +1765,23 @@ def _bundle_selection_key(arguments: Dict[str, Any]) -> str:
     return ""
 
 
+def _answer_unit_preserve_for_reroute(shape: Dict[str, Any]) -> bool:
+    if not shape:
+        return True
+    arity_delta = shape.get("arity_delta")
+    if arity_delta not in (None, "", 0, "0"):
+        return False
+    current_arity = shape.get("current_arity")
+    target_arity = shape.get("target_arity")
+    if current_arity is not None and target_arity is not None and str(current_arity) != str(target_arity):
+        return False
+    current_grain = str(shape.get("current_grain") or "")
+    target_grain = str(shape.get("target_grain") or "")
+    if current_grain and target_grain and current_grain != target_grain:
+        return False
+    return True
+
+
 def _canonical_contract_for_action(
     *,
     program_id: Optional[str],
@@ -2001,7 +2018,20 @@ def _annotate_canonical_candidates(
             for scope in ("FROM", "JOIN"):
                 if scope not in scopes:
                     scopes.append(scope)
-            if args.get("target_output_refs") and "SELECT" not in scopes:
+            preserve_answer_unit = _answer_unit_preserve_for_reroute(
+                _payload(args.get("output_shape_delta"))
+            )
+            args["answer_unit_preserve"] = preserve_answer_unit
+            if preserve_answer_unit:
+                args["preserve_invariants"] = sorted(
+                    {
+                        *[str(item) for item in (args.get("preserve_invariants") or []) if str(item)],
+                        "answer_unit_preserve",
+                        "preserve_select_projection",
+                        "preserve_aggregation_grain",
+                    }
+                )
+            if args.get("target_output_refs") and not preserve_answer_unit and "SELECT" not in scopes:
                 scopes.append("SELECT")
             args["required_edit_scopes"] = scopes
         args["canonical_unresolved_variation_axes"] = list(

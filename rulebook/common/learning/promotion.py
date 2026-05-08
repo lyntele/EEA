@@ -1553,7 +1553,12 @@ def _apply_branch_runtime_decision(
         if _payload(branch)
     ]
     if not branches:
-        return group
+        return group.model_copy(
+            update={
+                "runtime_usable": False,
+                "runtime_blockers": ["runtime_branch_contract_missing"],
+            }
+        )
 
     replay_mode = "branch_member_replay"
     updated_branches: List[Dict[str, Any]] = []
@@ -1722,7 +1727,12 @@ def apply_promotion_decision(
         formal_blocker=result.formal_promotion_blocker,
         branch_replay_rows=_branch_replay_rows_from_result(result),
     )
-    branch_runtime_usable = bool(promoted.runtime_usable)
+    promoted_program = getattr(promoted.instantiation_program, "synthesized_program", None)
+    promoted_envelope = _payload(getattr(promoted_program, "program_envelope", None))
+    branch_runtime_usable = any(
+        bool(_payload(branch).get("runtime_usable"))
+        for branch in (promoted_envelope.get("runtime_branches") or [])
+    )
     if can_promote_pattern or branch_runtime_usable:
         promoted.instantiation_program = promoted.instantiation_program.model_copy(
             update={
