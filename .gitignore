@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local agent/editor state
+.codex
+rulebook/.codex
+
+# Test/cache artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Experiment outputs and runtime state
+/workspace/
+rulebook/outputs/
+rulebook/**/outputs/
+rulebook/**/.state/
+rulebook/**/library_snapshots/
+rulebook/**/workspace/
+rulebook/**/*.log
+rulebook/**/*.jsonl
+rulebook/**/summary.json
+rulebook/**/progress.json
+rulebook/**/run_config.json
+rulebook/**/final_library.json
+rulebook/**/library_freeze.json
+rulebook/**/eea_*_request.json
+rulebook/**/eea_*_response.json
+
+# Large/generated serialized artifacts
+rulebook/**/*.pkl
+rulebook/**/*.sqlite
+
+# Local secrets/configuration
+rulebook/common/config.toml
