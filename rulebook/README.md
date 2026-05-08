@@ -52,11 +52,21 @@ tests/
 
 ## Configuration
 
-The default config is `common/config.toml`. Do not commit real API keys.
+EEA resolves LLM config in this order:
+
+1. `RULEBOOK_CONFIG_PATH`, `RULEBOOK_API_PROFILE_PATH`, `RULEBOOK_API_PROFILE`,
+   or `API_PROFILE` if set.
+2. Local legacy `common/config.toml` if present.
+3. The current DeepEye integration profile at
+   `../deepeye/DeepEye-SQL/rulebook_experiments/configs/api_profile_openrouter.toml`.
+
+Both the legacy `[llm]` shape and DeepEye's `[rulebook.openrouter]` /
+`[rulebook.model_map]` profile shape are supported. Do not commit real API keys.
 
 Environment overrides:
 
 ```text
+RULEBOOK_CONFIG_PATH
 RULEBOOK_LLM_MODEL
 RULEBOOK_LLM_BASE_URL
 RULEBOOK_LLM_API_KEY
