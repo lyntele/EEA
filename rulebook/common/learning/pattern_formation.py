@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import (
+    BiasRecognitionContract,
     CoreInterface,
     GroupFormationEvidence,
     GroupLifecycle,
@@ -30,6 +32,7 @@ from method.EEA.rulebook.common.core.data_structures import (
     RepairSkeletonSemantic,
     RepairSkeletonStructural,
     TriggerSignature,
+    TriggerContract,
 )
 from method.EEA.rulebook.common.analysis.signal_summary import (
     build_trigger_contract,
@@ -45,6 +48,7 @@ from method.EEA.rulebook.common.runtime.trigger_contract import (
     materialize_library_runtime_contracts,
 )
 from method.EEA.rulebook.common.core.vocabulary import (
+    BIAS_RECOGNITION_SIGNAL_VOCABULARY,
     Confidence,
     GrainType,
     GroupStatus,
@@ -2317,7 +2321,9 @@ def _call_pattern_admission_judge(
         ).encode("utf-8")
     ).hexdigest()
     if cache_key in _PATTERN_ADMISSION_CACHE:
-        return dict(_PATTERN_ADMISSION_CACHE[cache_key])
+        return _attach_validated_bias_recognition_contract(
+            dict(_PATTERN_ADMISSION_CACHE[cache_key])
+        )
 
     from method.EEA.rulebook.common.llm.utils import call_llm
     from method.EEA.rulebook.common.llm.prompts.pattern_admission_judge import build_pattern_admission_judge_prompt
@@ -2388,8 +2394,108 @@ def _call_pattern_admission_judge(
         },
     )
     response = dict(raw) if isinstance(raw, dict) else {}
+    response = _attach_validated_bias_recognition_contract(response)
     _PATTERN_ADMISSION_CACHE[cache_key] = response
     return response
+
+
+def _bias_signal_from_runtime_signal(signal: str) -> Optional[str]:
+    text = str(signal or "")
+    mapping = {
+        "pred.role_side_pair_output=True": "has_pair_role_side_output",
+        "pred.same_relation_two_role_sides=True": "same_relation_two_role_sides",
+        "pred.pair_output=True": "select_arity_ge_2",
+        "pred.output_arity=2": "select_arity_ge_2",
+        "pred.select_arity=2": "select_arity_ge_2",
+        "pred.has_aggregate=True": "has_aggregate_in_select",
+        "pred.has_distinct_aggregate=True": "answer_unit_count_distinct",
+        "pred.has_group_by=True": "has_group_by",
+    }
+    if text in mapping:
+        return mapping[text]
+    if text.startswith("pred.output_arity="):
+        try:
+            return "select_arity_ge_2" if int(text.rsplit("=", 1)[1]) >= 2 else None
+        except Exception:
+            return None
+    if text.startswith("pred.select_arity="):
+        try:
+            return "select_arity_ge_2" if int(text.rsplit("=", 1)[1]) >= 2 else None
+        except Exception:
+            return None
+    return None
+
+
+def _sanitize_bias_text(value: Any, limit: int = 80) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_\\- ]+", "", text)
+    return re.sub(r"\\s+", "_", text)[:limit]
+
+
+def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
+    brc = _model_dump(raw.get("bias_recognition_contract") or {})
+    if not brc:
+        return {}
+    sigs = [
+        str(signal)
+        for signal in (brc.get("recognition_signals") or [])
+        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
+    ]
+    anti = [
+        str(signal)
+        for signal in (brc.get("anti_signals") or [])
+        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
+    ]
+    sigs = sorted(dict.fromkeys(sigs))
+    anti = sorted(dict.fromkeys(anti))
+    if not (3 <= len(sigs) <= 6):
+        return {}
+    try:
+        threshold = float(brc.get("min_signal_overlap", 0.6) or 0.6)
+    except Exception:
+        threshold = 0.6
+    threshold = min(1.0, max(0.0, threshold))
+    return {
+        "schema_version": "bias-recognition-v1",
+        "bias_motif": _sanitize_bias_text(brc.get("bias_motif")),
+        "answer_shape_hint": _sanitize_bias_text(brc.get("answer_shape_hint"), limit=40),
+        "recognition_signals": sigs,
+        "anti_signals": anti,
+        "min_signal_overlap": threshold,
+    }
+
+
+def _attach_validated_bias_recognition_contract(response: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _validated_bias_recognition_contract_payload(response)
+    if payload:
+        response["bias_recognition_contract_validated"] = payload
+    return response
+
+
+def _fallback_bias_recognition_contract(groups: Sequence[GroupSummary]) -> Optional[BiasRecognitionContract]:
+    votes: Counter[str] = Counter()
+    for group in groups:
+        contract = _model_dump(getattr(group, "trigger_contract", None))
+        signal_rows: List[str] = []
+        signal_rows.extend(str(item) for item in (contract.get("required_signals") or []) if str(item))
+        signal_rows.extend(str(item) for item in (contract.get("decisive_pred_signals") or []) if str(item))
+        for variant in contract.get("variant_required_signal_sets") or []:
+            if isinstance(variant, (list, tuple, set)):
+                signal_rows.extend(str(item) for item in variant if str(item))
+        for signal in signal_rows:
+            mapped = _bias_signal_from_runtime_signal(signal)
+            if mapped:
+                votes[mapped] += 1
+    selected = [signal for signal, _count in votes.most_common(6)]
+    if len(selected) < 3:
+        return None
+    return BiasRecognitionContract(
+        bias_motif="fallback_from_runtime_signals",
+        answer_shape_hint="other",
+        recognition_signals=sorted(selected[:6]),
+        anti_signals=[],
+        min_signal_overlap=0.6,
+    )
 
 
 def _member_pair_scores(
@@ -2455,9 +2561,11 @@ def _pair_supports_root_membership(
         return True
     if relation != "partial":
         return False
-    left_loci = _primary_repair_loci(left)
-    right_loci = _primary_repair_loci(right)
-    return bool(left_loci and right_loci and left_loci & right_loci)
+    strong_reasons = {
+        "shared_primary_repair_locus",
+        "shared_root_effect_axis_with_same_target_invariant_family",
+    }
+    return bool(strong_reasons & {str(item) for item in pair.broad_retrieval_reasons})
 
 
 def _root_membership_closure(
@@ -2885,6 +2993,65 @@ def _materialize_admission_branches(pattern: GroupSummary, groups: Sequence[Grou
     return pattern
 
 
+def _sync_trigger_contract_from_envelope_and_admission(group: GroupSummary) -> GroupSummary:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    envelope_obj = getattr(program, "program_envelope", None) if program is not None else None
+    envelope = _model_dump(envelope_obj)
+    if not envelope:
+        return group
+    runtime_branches = [
+        _model_dump(branch)
+        for branch in (envelope.get("runtime_branches") or [])
+        if _model_dump(branch)
+    ]
+    trigger_contract = _model_dump(getattr(group, "trigger_contract", None))
+    if runtime_branches:
+        trigger_contract["runtime_branches"] = runtime_branches
+        trigger_contract["required_signals"] = sorted(
+            {
+                str(signal)
+                for branch in runtime_branches
+                for signal in (branch.get("required_signals") or [])
+                if str(signal)
+            }
+        )
+    action_contract = _model_dump(trigger_contract.get("action_contract") or {})
+    action_contract["program_envelope"] = envelope
+    ops = list(getattr(program, "ops", []) or [])
+    main_op = next(
+        (
+            _model_dump(op)
+            for op in ops
+            if not bool(_model_dump(op).get("is_dependency") or False)
+        ),
+        _model_dump(ops[0]) if ops else {},
+    )
+    locus = str(main_op.get("locus") or "").upper()
+    op_type = str(main_op.get("op_type") or "").upper()
+    if locus:
+        action_contract["locus"] = locus
+    if "DROP" in op_type:
+        action_contract["op_family"] = "drop"
+    elif "ADD" in op_type:
+        action_contract["op_family"] = "add"
+    elif "REPLACE" in op_type or "SWITCH" in op_type:
+        action_contract["op_family"] = "replace"
+    elif "REROUTE" in op_type:
+        action_contract["op_family"] = "reroute"
+    trigger_contract["action_contract"] = action_contract
+    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
+    if brc is not None:
+        brc_payload = brc.model_dump(mode="json") if hasattr(brc, "model_dump") else _model_dump(brc)
+        trigger_contract["canonical_discriminants"] = list(
+            brc_payload.get("recognition_signals") or []
+        )
+    return group.model_copy(
+        update={
+            "trigger_contract": TriggerContract.model_validate(trigger_contract)
+        }
+    )
+
+
 def _build_pattern_candidate(
     groups: Sequence[GroupSummary],
     pair_scores: Dict[Tuple[str, str], PairScore],
@@ -2908,6 +3075,21 @@ def _build_pattern_candidate(
         else pattern.instantiation_program.shared_status
     )
     pattern = _materialize_admission_branches(pattern, groups)
+    brc_payload = _validated_bias_recognition_contract_payload(admission_response)
+    brc = (
+        BiasRecognitionContract.model_validate(brc_payload)
+        if brc_payload
+        else _fallback_bias_recognition_contract(groups)
+    )
+    if brc is not None:
+        pattern = pattern.model_copy(
+            update={
+                "instantiation_program": pattern.instantiation_program.model_copy(
+                    update={"bias_recognition_contract": brc}
+                )
+            }
+        )
+    pattern = _sync_trigger_contract_from_envelope_and_admission(pattern)
     return pattern
 
 

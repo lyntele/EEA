@@ -1151,6 +1151,7 @@ def _rewrite_contract_prompt_payload(
         "dependency_edits": [],
         "allowed_scopes": [],
         "required_absence_checks": [],
+        "required_presence_checks": [],
         "preserve_constraints": [
             "Preserve predicates, literals, grouping, ordering, and joins unless an edit below explicitly changes them.",
         ],
@@ -1215,6 +1216,64 @@ def _rewrite_contract_prompt_payload(
                     }
                 )
             aliases = _aliases_from_exprs(bound_exprs or from_exprs)
+            auto_join_blocks = [
+                block
+                for block in _bound_join_blocks_for_aliases(
+                    current_sql,
+                    aliases,
+                    dropped_select_exprs=bound_exprs or from_exprs,
+                )
+                if not bool(block.get("external_reference_found"))
+            ]
+            if auto_join_blocks:
+                contract["dependency_edits"].append(
+                    {
+                        "action_id": action_id,
+                        "op": "DROP_JOIN_BLOCK_IF_ALIAS_UNREFERENCED",
+                        "edit": "remove_join_blocks",
+                        "scope": "JOIN",
+                        "required": True,
+                        "bound_join_blocks": auto_join_blocks,
+                        "binding_status": "bound",
+                    }
+                )
+                for block in auto_join_blocks:
+                    if str(block.get("sql") or ""):
+                        contract["required_absence_checks"].append(
+                            {
+                                "action_id": action_id,
+                                "scope": "JOIN",
+                                "text": block.get("sql"),
+                                "reason": "dropped select alias join block must not remain in rewrite_sql",
+                            }
+                        )
+            cleanup_edits = [
+                _payload_for_prompt(item)
+                for item in (args.get("cleanup_edits") or [])
+                if _payload_for_prompt(item)
+            ]
+            if (
+                str(args.get("distinct_dependency") or "") == "SELECT_ENFORCE_DISTINCT"
+                or any(str(item.get("kind") or "") == "enforce_distinct" for item in cleanup_edits)
+            ):
+                contract["dependency_edits"].append(
+                    {
+                        "action_id": action_id,
+                        "op": "SELECT_ENFORCE_DISTINCT",
+                        "edit": "enforce_select_distinct",
+                        "scope": "SELECT",
+                        "required": True,
+                        "binding_status": "provided_by_action_contract",
+                    }
+                )
+                contract.setdefault("required_presence_checks", []).append(
+                    {
+                        "action_id": action_id,
+                        "scope": "SELECT",
+                        "pattern": r"\\bselect\\s+distinct\\b",
+                        "reason": "rewrite must enforce DISTINCT for row-result output decrease",
+                    }
+                )
             for step in args.get("repair_program") or []:
                 step_payload = _payload_for_prompt(step)
                 if not isinstance(step_payload, dict):
@@ -2678,7 +2737,8 @@ def _enforce_rewrite_contract_absence_checks(
     if not rewrite_sql:
         return rewrite_sql, traces, contract_steps_applied
     failures: List[Dict[str, str]] = []
-    lowered = str(rewrite_sql).lower()
+    rewrite_text = str(rewrite_sql)
+    lowered = rewrite_text.lower()
     for check in rewrite_contract.get("required_absence_checks") or []:
         payload = _payload_for_prompt(check)
         text = str(payload.get("text") or "").strip()
@@ -2687,6 +2747,22 @@ def _enforce_rewrite_contract_absence_checks(
                 {
                     "action_id": str(payload.get("action_id") or ""),
                     "text": text,
+                }
+            )
+    for check in rewrite_contract.get("required_presence_checks") or []:
+        payload = _payload_for_prompt(check)
+        pattern = str(payload.get("pattern") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        ok = False
+        if pattern:
+            ok = bool(re.search(pattern, rewrite_text, flags=re.IGNORECASE))
+        elif text:
+            ok = text.lower() in lowered
+        if not ok:
+            failures.append(
+                {
+                    "action_id": str(payload.get("action_id") or ""),
+                    "text": pattern or text or "required_presence",
                 }
             )
     if not failures:

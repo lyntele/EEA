@@ -505,6 +505,40 @@ def _compact_repair_program_for_action(
     return out
 
 
+def _pair_output_distinct_dependency_args(
+    case_view: RuntimeCaseView,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    signals = dict(getattr(case_view, "bias_recognition_signals", {}) or {})
+    if not (
+        signals.get("has_pair_role_side_output")
+        and signals.get("no_distinct_on_pair_output")
+    ):
+        return args
+    out = dict(args)
+    scopes = list(out.get("required_edit_scopes") or [])
+    if "SELECT" not in scopes:
+        scopes.append("SELECT")
+    out["required_edit_scopes"] = scopes
+    out["distinct_dependency"] = "SELECT_ENFORCE_DISTINCT"
+    preserve = {
+        str(item)
+        for item in (out.get("preserve_invariants") or [])
+        if str(item)
+    }
+    preserve.add("SELECT_ENFORCE_DISTINCT")
+    out["preserve_invariants"] = sorted(preserve)
+    cleanup = [
+        item if isinstance(item, dict) else {"kind": str(item)}
+        for item in (out.get("cleanup_edits") or [])
+        if item
+    ]
+    if not any(str(item.get("kind") or "") == "enforce_distinct" for item in cleanup):
+        cleanup.append({"kind": "enforce_distinct"})
+    out["cleanup_edits"] = cleanup
+    return out
+
+
 def _sql_alias_map(sql: str) -> Dict[str, str]:
     aliases: Dict[str, str] = {}
     pattern = re.compile(
@@ -2054,7 +2088,10 @@ def _annotate_canonical_candidates(
         args["bundle_id"] = str(bundle_meta.get("bundle_id") or "")
         args["effect_kind"] = str(bundle_meta.get("effect_kind") or "")
         args["bound_branch_id"] = str(bundle_meta.get("bundle_id") or "")
-        args["cleanup_edits"] = list(bundle_meta.get("cleanup_op_ids") or [])
+        args["cleanup_edits"] = [
+            *list(args.get("cleanup_edits") or []),
+            *list(bundle_meta.get("cleanup_op_ids") or []),
+        ]
         args["counts_as_action"] = int(bundle_meta.get("counts_as_action") or 1)
         args["bundle_primary_primitive"] = str(bundle_meta.get("primary_primitive") or "")
         args["bundle_selection_key"] = _bundle_selection_key(args)
@@ -2066,9 +2103,9 @@ def _annotate_canonical_candidates(
                     "effect_kind": str(bundle_meta.get("effect_kind") or "") or None,
                     "bound_branch_id": str(bundle_meta.get("bundle_id") or "") or None,
                     "cleanup_edits": [
-                        {"op_id": str(item)}
-                        for item in (bundle_meta.get("cleanup_op_ids") or [])
-                        if str(item)
+                        item if isinstance(item, dict) else {"op_id": str(item)}
+                        for item in (args.get("cleanup_edits") or [])
+                        if item
                     ],
                     "counts_as_action": int(bundle_meta.get("counts_as_action") or 1),
                     "bundle_selection_key": args["bundle_selection_key"] or None,
@@ -2100,6 +2137,7 @@ def _primary_scope_for_primitive(primitive: ActionPrimitive) -> str:
         ActionPrimitive.ADD_SELECT_SLOT,
         ActionPrimitive.REPLACE_SELECT_SLOT,
         ActionPrimitive.DROP_SELECT_SLOT,
+        ActionPrimitive.SELECT_ENFORCE_DISTINCT,
         ActionPrimitive.SWITCH_CANONICAL_FIELD,
         ActionPrimitive.MATERIALIZE_RANKING_OUTPUT,
     }:
@@ -2878,7 +2916,7 @@ def _enumerate_drop_select_slot(
                 candidates.append(
                     ActionCandidate(
                         candidate_id=_hash_cand(f"DROPN|{group_id}|{combo_key}"),
-                        arguments={
+                        arguments=_pair_output_distinct_dependency_args(case_view, {
                             "from_exprs": exprs,
                             "side_indexes": indexes,
                             "drop_count": drop_count,
@@ -2888,7 +2926,7 @@ def _enumerate_drop_select_slot(
                                 "SELECT",
                                 contract_repair_program,
                             ),
-                        },
+                        }),
                         provenance=f"group={group_id};pred_select_exprs={combo_key}",
                         source_group_id=group_id,
                         source_group_type=group_type,
@@ -2899,7 +2937,7 @@ def _enumerate_drop_select_slot(
             candidates.append(
                 ActionCandidate(
                     candidate_id=_hash_cand(f"DROP|{group_id}|{expr}"),
-                    arguments={
+                    arguments=_pair_output_distinct_dependency_args(case_view, {
                         "from_expr": expr,
                         "from_exprs": [expr],
                         "side_index": idx,
@@ -2911,7 +2949,7 @@ def _enumerate_drop_select_slot(
                             "SELECT",
                             contract_repair_program,
                         ),
-                    },
+                    }),
                     provenance=f"group={group_id};pred_select_expr={expr}",
                     source_group_id=group_id,
                     source_group_type=group_type,
@@ -3056,7 +3094,7 @@ def _enumerate_drop_side(
         candidates.append(
             ActionCandidate(
                 candidate_id=_hash_cand(f"SIDE|{group_id}|{idx}|{expr}"),
-                arguments={
+                arguments=_pair_output_distinct_dependency_args(case_view, {
                     "side_index": idx,
                     "side_indexes": [idx],
                     "from_expr": expr,
@@ -3066,7 +3104,7 @@ def _enumerate_drop_side(
                         "SELECT",
                         contract_repair_program,
                     ),
-                },
+                }),
                 provenance=f"group={group_id};pair_side[{idx}]={expr}",
                 source_group_id=group_id,
                 source_group_type=group_type,

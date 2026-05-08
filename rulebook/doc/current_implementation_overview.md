@@ -103,7 +103,14 @@ Responsibilities:
 - Build `RuntimeCaseView` from question, evidence, selected SQL `S0`, schema,
   and `c0_candidates`.
 - Build current runtime-visible signals from the current SQL and local schema.
+- Build closed-vocabulary `bias_recognition_signals` for pattern recognition,
+  such as `has_pair_role_side_output`, `select_arity_ge_2`,
+  `no_distinct_on_pair_output`, aggregate cues, route cues, and order/group
+  cues. These signals answer only whether current `S0` shows the same root
+  bias; they do not choose the concrete repair.
 - Gate memory objects through three layers:
+  - lightweight bias recognition for `pattern` memories that carry
+    `InstantiationProgram.bias_recognition_contract`
   - executable trigger contract
   - applicability checks
     - `program_envelope.source_antipatterns`
@@ -117,6 +124,8 @@ Responsibilities:
     - branch dry-run must bind every required bundle on current `S0`
     - zero matching branch returns no match
     - multiple matching branches return `branch_selection_ambiguous`
+    - if bias recognition succeeds but no branch can bind, runtime records
+      `pattern_recognized_branch_unbindable` and does not enter rewrite
   - compiler dry-run
     - non-empty candidate enumeration
     - required bundle coverage
@@ -398,6 +407,10 @@ Responsibilities:
 - Build patterns root-first:
   - component retrieval uses case-derived effect/source/target signals
   - root admission decides shared source misconception / target preference
+  - admitted patterns now also carry a `bias_recognition_contract`: a compact
+    root-bias recognition contract with 3-6 closed-vocabulary phenomenon
+    signals. It is stored on `InstantiationProgram`, not used as an executable
+    rewrite program.
   - `core_program_signature`, DISTINCT, join cleanup, route/grain/action
     differences are branch/accessory evidence after root admission, not
     pre-admission split keys
@@ -408,6 +421,9 @@ Responsibilities:
 - Pair score computation is cached by singleton signal/contract hash. The
   insight slicer receives at most representative pair decisions by relation and
   case coverage, not a full component pair matrix.
+- Root closure is intentionally conservative: `compatible` pairs can close a
+  root; `partial` pairs need explicit strong root evidence; veto/conflict
+  relations cannot mechanically absorb members.
 - Keep `experience_families` empty in the evolved library. The schema field may
   exist for compatibility, but it is not a runtime or promotion source.
 

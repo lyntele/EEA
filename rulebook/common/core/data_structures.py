@@ -18,7 +18,7 @@ All lists default to [] via `Field(default_factory=list)`。
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -285,6 +285,8 @@ class RuntimeCaseView(BaseModel):
     """Phase A audit-only signal bundle. Existing trigger/compile/rewrite paths ignore it."""
     case_signal_bundle: Optional[CaseSignalBundle] = None
     """Phase A provenance bundle. Runtime behavior ignores it unless explicitly audited."""
+    bias_recognition_signals: Dict[str, bool] = Field(default_factory=dict)
+    """Pattern-level phenomenon signals used only for lightweight bias recognition."""
 
 
 # =============================================================================
@@ -948,6 +950,23 @@ class InstantiationProgram(BaseModel):
     """Canonical shared program synthesized from member ErrorInstance IRs."""
     program_coverage: Optional[ProgramCoverage] = None
     """Deterministic compiler coverage for the synthesized program."""
+    bias_recognition_contract: Optional["BiasRecognitionContract"] = None
+    """Lightweight pattern trigger: recognize whether current S0 shows the same bias."""
+
+
+class BiasRecognitionContract(BaseModel):
+    """Pattern-level lightweight recognition contract.
+
+    This answers only "does the current case expose the same bias?". Concrete
+    repair remains branch/binder/compiler responsibility.
+    """
+
+    schema_version: Literal["bias-recognition-v1"] = "bias-recognition-v1"
+    bias_motif: str = ""
+    answer_shape_hint: str = ""
+    recognition_signals: List[str] = Field(default_factory=list)
+    anti_signals: List[str] = Field(default_factory=list)
+    min_signal_overlap: float = 0.6
 
 
 class TriggerSignature(BaseModel):
@@ -984,6 +1003,7 @@ class TriggerContract(BaseModel):
     )
     action_contract: Dict[str, Any] = Field(default_factory=dict)
     source_case_contract: Dict[str, Any] = Field(default_factory=dict)
+    runtime_branches: List[Dict[str, Any]] = Field(default_factory=list)
     max_actions: int = 1
 
 
@@ -1178,6 +1198,9 @@ class TriggerCandidateAudit(BaseModel):
     hard_gate_reasons: List[str] = Field(default_factory=list)
     deferred_instantiation_reasons: List[str] = Field(default_factory=list)
     compiler_candidate_reasons: List[str] = Field(default_factory=list)
+    bias_recognition: Dict[str, Any] = Field(default_factory=dict)
+    bias_recognized: bool = False
+    diagnostic_only: bool = False
 
 
 class TriggerResult(BaseModel):

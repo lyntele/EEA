@@ -982,3 +982,38 @@ TODO / 自检项：
   - 仍 `passthrough_no_match`。
   - 主要原因已经不是 pattern 顶层 contract，而是相关 source-route branch 本身没有可用 required signals / executable branch。
   - 这说明 source-route 仍需要后续改 branch admission/materialization 或 action 表达，不应继续放宽顶层 trigger。
+
+### 2026-05-08 追加：pattern 轻识别 / branch 严实例化改造
+
+参考计划：`doc/pattern_recongnize.md`。
+
+重新定位：`pattern` 的价值是用更少、更本质的信号识别“是否是同一种错”；`branch` 负责“这题怎么具体改”，因此 branch 仍需要 required signals、binder dry-run、compiler dry-run。不能让 pattern 触发比 singleton 更重，也不能在 branch 不可绑定时强行 rewrite。
+
+本轮 todo 与完成情况：
+
+- WU1a DeepEye 字段透传：已补齐 `compiler_empty_reason_counts`，原先已透传 `rewrite_enabled_reason`、`trigger_blocker_counts`、`top_candidate_reasons`、`replay_trigger_diagnostics`、`memory_selection_audit`、branch/bundle 选择字段。
+- WU1b closure 收紧：`_pair_supports_root_membership` 仅直接接受 `compatible`；`partial` 必须带 `shared_primary_repair_locus` 或 `shared_root_effect_axis_with_same_target_invariant_family` 强证据；不再接受 `direct_merge_veto` / `core_program_signature_conflict`。
+- WU2a 数据结构：新增 `BiasRecognitionContract`，挂到 `InstantiationProgram.bias_recognition_contract`；`RuntimeCaseView` 新增 `bias_recognition_signals`；`TriggerCandidateAudit` 新增 bias 识别审计字段。
+- WU2b vocabulary/builder：新增封闭 `BIAS_RECOGNITION_SIGNAL_VOCABULARY`；runtime 从当前 SQL/schema 计算 `has_pair_role_side_output`、`select_arity_ge_2`、`no_distinct_on_pair_output`、aggregate/route/order/group 等现象级信号。
+- WU2c prompt：`pattern_admission_judge` 要求 admit pattern 时输出 `bias_recognition_contract`，信号必须来自白名单，不允许具体表/列/alias/case id。
+- WU2d 落地：admission response 校验并写入 `bias_recognition_contract_validated`；构建 pattern 时写入 `InstantiationProgram.bias_recognition_contract`；若 LLM 没输出，使用已有 runtime trigger signals 投票生成 fallback contract。
+- WU3 trigger 两段化：pattern 若带 bias contract，先做轻识别；识别成功后跳过 pattern 顶层 strict required-signal gate，进入 branch selection；branch 不可绑定时记录 `pattern_recognized_branch_unbindable` 且不进入 selection pool。
+- WU3 feature flag：`EEA_PATTERN_TWO_STAGE_TRIGGER=0` 可关闭两段 trigger，保留 WU2/WU4/WU5。
+- WU3 audit：runtime summary 增加 `stage_1_bias_recognized_count`、`stage_1_bias_signals_missed_count`、`stage_2_branch_ready_count`、`stage_2_branch_unbindable_count`。
+- WU4 trigger_contract 同步：pattern 构建后把 `program_envelope.runtime_branches` 同步到 `trigger_contract.runtime_branches`，并把 branch required signals 并集、action envelope、主 op locus/op_family 同步到 trigger contract。
+- WU5 accessory action：DROP_SELECT_SLOT / DROP_SIDE 在 pair-role-side output 且 source 无 DISTINCT 时携带 `SELECT_ENFORCE_DISTINCT` 依赖；rewrite contract 自动绑定删除 select alias 后失依的 JOIN block，并为 DISTINCT 加 required presence check。
+
+已做的静态验证：
+
+- `python -m py_compile` 覆盖 EEA 修改文件与 DeepEye `rulebook_experiments/eea_contract_adapter.py`。
+- prompt format probe 通过：`bias_recognition_contract` 和 vocabulary 能正常渲染。
+- runtime signal probe 通过：toxicology 双端点 SQL 可生成 14 个 bias signals，其中 `has_pair_role_side_output=True`、`no_distinct_on_pair_output=True`、`select_arity_ge_2=True`。
+
+尚未完成：
+
+- 未跑完整 r6 focus18 端到端。上一轮同命令运行时间较长，并被用户要求回退；本轮先完成代码与静态验证，完整 r6 需要单独启动。
+
+风险点：
+
+- WU2 fallback 只在已有 runtime signals 足够时生成 contract；如果 LLM admission 大面积不产 `bias_recognition_contract` 且已有 signals 不足 3 个，pattern 仍不会走两段 trigger。
+- WU5 DISTINCT 目前按“当前 S0 是 pair-role-side 输出且无 DISTINCT”携带依赖；这是现象级机制，不绑定 toxicology，但仍需 r6 验证是否过宽。

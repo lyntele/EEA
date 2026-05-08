@@ -7,6 +7,8 @@ candidate, but it must not invent executable actions or runtime trigger rules.
 
 from __future__ import annotations
 
+from method.EEA.rulebook.common.core.vocabulary import BIAS_RECOGNITION_SIGNAL_VOCABULARY
+
 
 PATTERN_ADMISSION_JUDGE_PROMPT = """\
 Task:
@@ -145,6 +147,13 @@ Return strict JSON only:
     }}
   ],
   "negative_guards": ["conditions that must prevent trigger/absorption"],
+  "bias_recognition_contract": {{
+    "bias_motif": "short phenomenon-level motif, no concrete table/column names",
+    "answer_shape_hint": "scalar | subset | preserved_aggregate_unit | route_scope | other",
+    "recognition_signals": ["3-5 signals from the closed vocabulary below"],
+    "anti_signals": ["optional signals from the same vocabulary"],
+    "min_signal_overlap": 0.6
+  }},
   "required_code_checks": ["compiler/replay checks still required before runtime use"],
   "reject_reason": "",
   "rationale": "one concise sentence"
@@ -161,6 +170,7 @@ If not admitting, return the same object shape with:
   "branch_specs": [],
   "membership_by_case": [],
   "negative_guards": [],
+  "bias_recognition_contract": {{}},
   "required_code_checks": [],
   "reject_reason": "why this is not one stable pattern",
   "rationale": "one concise sentence"
@@ -176,6 +186,17 @@ pair_semantic_decisions (relation counts plus representative pairs only):
 
 component_summary:
 {component_summary_json}
+
+Bias recognition contract:
+- If admit_pattern is true, also fill bias_recognition_contract.
+- It is only for lightweight runtime recognition: "does current S0 show this
+  same bias?", not "how to rewrite it".
+- Select 3-5 phenomenon-level recognition_signals from this closed vocabulary:
+{bias_recognition_vocabulary_json}
+- Do not use concrete table names, column names, aliases, SQL literals, case ids,
+  or database-specific terms in bias_motif or answer_shape_hint.
+- anti_signals are exclusion cues: if any anti signal is true, runtime must not
+  recognize this pattern.
 """
 
 
@@ -189,6 +210,14 @@ def build_pattern_admission_judge_prompt(
         case_cards_json=case_cards_json,
         pair_semantic_decisions_json=pair_semantic_decisions_json,
         component_summary_json=component_summary_json,
+        bias_recognition_vocabulary_json=(
+            "["
+            + ", ".join(
+                f'"{item}"'
+                for item in sorted(BIAS_RECOGNITION_SIGNAL_VOCABULARY)
+            )
+            + "]"
+        ),
     )
 
 

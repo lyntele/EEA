@@ -196,6 +196,7 @@ class ActionPrimitive(str, Enum):
     ADD_SELECT_SLOT = "ADD_SELECT_SLOT"
     REPLACE_SELECT_SLOT = "REPLACE_SELECT_SLOT"
     DROP_SELECT_SLOT = "DROP_SELECT_SLOT"
+    SELECT_ENFORCE_DISTINCT = "SELECT_ENFORCE_DISTINCT"
     REROUTE_FACT = "REROUTE_FACT"
     INSERT_BRIDGE = "INSERT_BRIDGE"
     CHANGE_GRAIN = "CHANGE_GRAIN"
@@ -203,6 +204,29 @@ class ActionPrimitive(str, Enum):
     DROP_SIDE = "DROP_SIDE"
     SWITCH_CANONICAL_FIELD = "SWITCH_CANONICAL_FIELD"
     MATERIALIZE_RANKING_OUTPUT = "MATERIALIZE_RANKING_OUTPUT"
+
+
+BIAS_RECOGNITION_SIGNAL_VOCABULARY = {
+    # Output-shape bias recognition. These are phenomenon-level signals, not
+    # table/column names.
+    "has_pair_role_side_output",
+    "same_relation_two_role_sides",
+    "select_arity_ge_2",
+    "no_distinct_on_pair_output",
+    "select_role_dtype_homogeneous",
+    # Aggregate answer-unit recognition.
+    "has_aggregate_in_select",
+    "answer_unit_count_distinct",
+    "answer_unit_count_plain",
+    "answer_unit_scalar_aggregate",
+    # Source-route/scope recognition.
+    "has_join_chain_via_bridge_table",
+    "has_direct_relation_join",
+    "has_predicate_outside_aggregate_scope",
+    # Generic SQL-shape cues.
+    "has_group_by",
+    "has_order_by_limit",
+}
 
 
 # =============================================================================
