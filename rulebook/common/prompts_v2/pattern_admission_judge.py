@@ -20,11 +20,17 @@ Boundary:
 - You are NOT creating a rewrite hint.
 - You are NOT inventing compiler arguments.
 - You are NOT promoting the candidate to runtime.
+- First decide the root pattern: whether the cases share the same source
+  misconception / target preference / repair effect. Then assign admitted
+  members to finite branches. Do not decide root membership from SQL edit path
+  alone.
 - You may admit a pattern only when the cases share a stable source->target
-  bias AND a concrete answer-blind repair interface.
-- The candidate has already been split by the extracted core repair package.
-  A broad stable-bias phrase may support admission, but it must not override
-  repair-interface conflicts.
+  root bias AND each admitted case can either be assigned to an answer-blind
+  branch or explicitly marked as not runtime-usable/offline-only.
+- The candidate may contain different extracted core repair packages. Treat
+  those differences as branch/accessory evidence first. Reject only when the
+  difference changes the source misconception, target preference, answer unit,
+  metric/formula, or non-branchable scope contract.
 - Pair context is auxiliary audit evidence. Use case_cards as the primary
   evidence for stable bias and repair interface. Do not admit a pattern only
   because representative pairs look compatible, and do not reject solely
@@ -32,10 +38,10 @@ Boundary:
   a clean subset.
 - Branches are allowed only when each branch can be selected from the current
   question/pred/schema/memory signals, not from gold SQL or final answers.
-- Finite dependency branches may be admitted only when they remain inside the
-  same answer-unit contract and the same extracted repair interface. If a branch
-  changes target preference, answer unit, ranking metric, formula, predicate
-  metric, or aggregation grain, reject or exclude it.
+- Finite dependency/action branches may be admitted only when they remain inside
+  the same root bias. If a branch changes target preference, answer unit,
+  ranking metric, formula, predicate metric, or non-branchable aggregation
+  contract, reject or exclude it.
 - If a retrieved component contains a clean stable subset plus unrelated cases,
   admit the clean subset and list the unrelated cases in excluded_case_ids.
   Do not reject the whole component when accepted_case_ids can isolate one
@@ -50,9 +56,10 @@ Definitions:
 - branch_axis: a finite unresolved variation such as "which output side is kept"
   or "whether a dependency such as DISTINCT is needed". Branches must be
   selected by local signals and compiler coverage, not by hand-coded case IDs.
-- core_program_signature: the extracted SQL-edit package for one member. A
-  different core signature is normally reviewed in a separate candidate. Do not
-  use a broad stable-bias phrase to re-merge candidates split by core signature.
+- core_program_signature: the extracted SQL-edit package for one member. It is
+  branch evidence, not root-pattern identity. A different core signature can
+  remain in the same pattern only if it is a finite lowering branch under the
+  same source misconception and target preference.
 - dependency branch: a supporting edit inside the same answer-unit contract.
   Examples include duplicate removal, route cleanup, or preserving equivalent
   predicate scope while applying the same core output repair. A dependency is
@@ -62,6 +69,10 @@ Definitions:
 - negative guard: a condition showing when this pattern must not absorb a case.
 - accepted_case_ids: the subset, if any, that truly shares this pattern. Exclude
   members that only match a broad axis but require a different repair program.
+- membership_by_case: every candidate case should be accounted for as
+  accepted_root, rejected_root, branch_unassigned, or offline_only. Do not omit a
+  case silently just because its card was sampled or its branch is not yet
+  runtime-safe.
 - When excluding a case from a slicer_hypothesis, explain the concrete conflict
   in source_misread, target_preference, answer unit, or scope contract. Do not
   exclude only because it needs an additional join, predicate move, DISTINCT, or
@@ -126,6 +137,13 @@ Return strict JSON only:
       "required_interface_delta": "what differs inside the same stable bias"
     }}
   ],
+  "membership_by_case": [
+    {{
+      "case_id": "...",
+      "status": "accepted_root | rejected_root | branch_unassigned | offline_only",
+      "reason": "why this case belongs, conflicts, or cannot yet be branched"
+    }}
+  ],
   "negative_guards": ["conditions that must prevent trigger/absorption"],
   "required_code_checks": ["compiler/replay checks still required before runtime use"],
   "reject_reason": "",
@@ -141,6 +159,7 @@ If not admitting, return the same object shape with:
   "primary_repair_interface": "",
   "branch_axes": [],
   "branch_specs": [],
+  "membership_by_case": [],
   "negative_guards": [],
   "required_code_checks": [],
   "reject_reason": "why this is not one stable pattern",

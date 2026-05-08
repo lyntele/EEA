@@ -64,6 +64,7 @@ PATTERN_ADMISSION_PROMPT_BUDGET_CHARS = 24000
 PATTERN_ADMISSION_MAX_GROUP_CARDS = 4
 PATTERN_ADMISSION_PAIR_PER_RELATION_LIMIT = 2
 PATTERN_ADMISSION_COMPACT_PAIR_PER_RELATION_LIMIT = 1
+PATTERN_ADMISSION_MAX_REPRESENTATIVE_PAIRS = 40
 
 
 def _model_dump(obj: Any) -> Dict[str, Any]:
@@ -1161,10 +1162,11 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
         broad_retrieval_reasons=broad_retrieval_reasons,
         program_blockers=program_blockers,
     )
-    branchable_for_pattern = semantic_relation in {
+    branchable_for_pattern = bool(broad_retrieval_reasons) and semantic_relation in {
         "compatible",
         "partial",
         "direct_merge_veto",
+        "core_program_signature_conflict",
     }
     pair = PairScore(
         left_group_id=left.group_id,
@@ -1877,9 +1879,52 @@ def _pattern_pair_decision(
     return payload
 
 
-def _pattern_identity_key(group: GroupSummary) -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str, str], ...]]:
+def _pattern_root_identity_key(group: GroupSummary) -> Tuple[str, ...]:
+    """Root-bias identity for superseding prefix pattern rediscoveries."""
+
+    admission = dict((_signal_payload(group).get("pattern_admission") or {}) or {})
+    program = _model_dump(getattr(group.instantiation_program, "synthesized_program", None))
+    effect_rows = []
+    for effect in _program_effect_candidates(getattr(group.instantiation_program, "synthesized_program", None)):
+        payload = _model_dump(effect)
+        delta = _model_dump(payload.get("delta") or {})
+        effect_rows.append(
+            (
+                str(payload.get("axis") or ""),
+                str(payload.get("role") or ""),
+                str(delta.get("kind") or ""),
+                str(delta.get("arity_direction") or ""),
+                str(delta.get("direction") or ""),
+            )
+        )
+    stable_bias = str(admission.get("stable_bias_key") or "").strip().lower()
+    interface = str(admission.get("primary_repair_interface") or "").strip().lower()
+    if effect_rows or stable_bias or interface:
+        return (
+            "root",
+            stable_bias,
+            interface,
+            _canonical_payload(sorted(effect_rows)),
+        )
+    return (
+        "program",
+        _canonical_payload(
+            [
+                (
+                    str(item.get("op_family") or item.get("action_lowering_family") or ""),
+                    str(item.get("target_family") or item.get("effect_axis") or ""),
+                )
+                for item in (program.get("ops") or [])
+                if _model_dump(item)
+            ]
+        ),
+    )
+
+
+def _pattern_identity_key(group: GroupSummary) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[Tuple[str, str, str], ...]]:
     """Stable identity for deduping repeatedly rediscovered pattern candidates."""
     case_key = tuple(sorted((str(case_id) for case_id in group.case_ids or []), key=_case_id_sort_key))
+    root_key = _pattern_root_identity_key(group)
     program = _model_dump(getattr(group.instantiation_program, "synthesized_program", None))
     op_key = tuple(
         sorted(
@@ -1892,11 +1937,12 @@ def _pattern_identity_key(group: GroupSummary) -> Tuple[Tuple[str, ...], Tuple[T
             if _model_dump(item)
         )
     )
-    return case_key, op_key
+    return case_key, root_key, op_key
 
 
 def _dedupe_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
-    by_identity: Dict[Tuple[Tuple[str, ...], Tuple[Tuple[str, str, str], ...]], GroupSummary] = {}
+    by_identity: Dict[Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[Tuple[str, str, str], ...]], GroupSummary] = {}
+    by_root: Dict[Tuple[str, ...], List[GroupSummary]] = defaultdict(list)
     for pattern in patterns or []:
         if pattern.group_type != GroupType.PATTERN:
             continue
@@ -1910,8 +1956,28 @@ def _dedupe_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
             continue
         if pattern.runtime_usable == existing.runtime_usable and str(pattern.version) > str(existing.version):
             by_identity[key] = pattern
+    for pattern in by_identity.values():
+        by_root[_pattern_root_identity_key(pattern)].append(pattern)
+    kept: List[GroupSummary] = []
+    for _root_key, root_patterns in by_root.items():
+        root_patterns = sorted(
+            root_patterns,
+            key=lambda group: (
+                len({str(case_id) for case_id in group.case_ids or []}),
+                bool(group.runtime_usable),
+                str(group.version),
+            ),
+            reverse=True,
+        )
+        selected_for_root: List[GroupSummary] = []
+        for pattern in root_patterns:
+            case_set = {str(case_id) for case_id in pattern.case_ids or []}
+            if any(case_set and case_set <= {str(case_id) for case_id in existing.case_ids or []} for existing in selected_for_root):
+                continue
+            selected_for_root.append(pattern)
+        kept.extend(selected_for_root)
     return sorted(
-        by_identity.values(),
+        kept,
         key=lambda group: (
             tuple(sorted((str(case_id) for case_id in group.case_ids or []), key=_case_id_sort_key)),
             group.group_id,
@@ -1976,6 +2042,36 @@ def _pair_decision_context(
         for pair in pairs
         for case_id in [*pair.left_case_ids, *pair.right_case_ids]
     }
+    ranked_all = sorted(
+        list(pairs or []),
+        key=lambda pair: (
+            relation_order.index(pair.semantic_relation)
+            if pair.semantic_relation in relation_order
+            else len(relation_order),
+            -float(pair.score or 0.0),
+            tuple(pair.left_case_ids),
+            tuple(pair.right_case_ids),
+        ),
+    )
+    for case_id in sorted(all_case_ids - covered_case_ids, key=_case_id_sort_key):
+        if len(selected) >= PATTERN_ADMISSION_MAX_REPRESENTATIVE_PAIRS:
+            break
+        candidates = [
+            pair
+            for pair in ranked_all
+            if case_id
+            in (
+                {str(item) for item in pair.left_case_ids}
+                | {str(item) for item in pair.right_case_ids}
+            )
+        ]
+        if candidates:
+            add_pair(candidates[0])
+            covered_case_ids = {
+                str(member_case_id)
+                for pair in selected
+                for member_case_id in [*pair.left_case_ids, *pair.right_case_ids]
+            }
     return {
         "schema_version": "pair-decision-context-v1",
         "pair_count": len(list(pairs or [])),
@@ -2320,6 +2416,238 @@ def _pattern_admitted_case_ids(
     return sorted(set(selected), key=_case_id_sort_key)
 
 
+def _case_ids_for_group(group: GroupSummary) -> Set[str]:
+    return {str(case_id) for case_id in (group.case_ids or []) if str(case_id)}
+
+
+def _pair_supports_root_membership(pair: PairScore) -> bool:
+    """Whether a pair is enough to keep a case inside a root-pattern review.
+
+    This is not a merge decision.  It only says the pair shares enough
+    case-derived root evidence that executable differences should be reviewed as
+    possible branches instead of silently dropping the member.
+    """
+
+    if _is_absolute_conflict(pair.veto_reason):
+        return False
+    if not pair.broad_retrieval_reasons:
+        return False
+    return str(pair.semantic_relation or "") in {
+        "compatible",
+        "partial",
+        "direct_merge_veto",
+        "core_program_signature_conflict",
+    }
+
+
+def _root_membership_closure(
+    *,
+    groups: Sequence[GroupSummary],
+    pair_scores: Dict[Tuple[str, str], PairScore],
+    accepted_case_ids: Sequence[str],
+    excluded_case_ids: Sequence[str],
+) -> Dict[str, Any]:
+    """Close over recalled root-compatible members before branch admission.
+
+    LLM admission is allowed to identify a clean root subset, but omitted
+    component members must be made explicit.  Cases with root-compatible pair
+    evidence to an accepted seed are added as branch-unassigned root members;
+    explicit LLM exclusions are preserved as rejected unless a later LLM run
+    admits them.
+    """
+
+    accepted: Set[str] = {str(case_id) for case_id in accepted_case_ids if str(case_id)}
+    excluded: Set[str] = {str(case_id) for case_id in excluded_case_ids if str(case_id)}
+    all_case_ids = {
+        str(case_id)
+        for group in groups
+        for case_id in (group.case_ids or [])
+        if str(case_id)
+    }
+    membership_status: Dict[str, Dict[str, Any]] = {
+        case_id: {
+            "status": "accepted_root_by_judge"
+            if case_id in accepted
+            else "rejected_root_by_judge"
+            if case_id in excluded
+            else "retrieved_but_not_admitted",
+            "evidence_pair_ids": [],
+            "reason": "",
+        }
+        for case_id in sorted(all_case_ids, key=_case_id_sort_key)
+    }
+    if len(accepted) < 2:
+        return {
+            "accepted_case_ids": sorted(accepted, key=_case_id_sort_key),
+            "added_case_ids": [],
+            "membership_status_by_case": membership_status,
+            "not_closed_case_ids": sorted(all_case_ids - accepted, key=_case_id_sort_key),
+            "closure_reason": "below_min_judge_accepted_seed",
+        }
+
+    added: Set[str] = set()
+    not_closed: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        accepted_seed_groups = [
+            group for group in groups if _case_ids_for_group(group) & accepted
+        ]
+        for group in groups:
+            group_case_ids = _case_ids_for_group(group)
+            if group_case_ids & accepted:
+                continue
+            if group_case_ids <= excluded:
+                not_closed |= group_case_ids
+                continue
+            supporting_pairs: List[PairScore] = []
+            hard_conflicts: List[str] = []
+            for seed in accepted_seed_groups:
+                key = _pair_key(group, seed)
+                pair = pair_scores.get(key)
+                if pair is None:
+                    continue
+                if _is_absolute_conflict(pair.veto_reason):
+                    hard_conflicts.append(str(pair.veto_reason))
+                    continue
+                if _pair_supports_root_membership(pair):
+                    supporting_pairs.append(pair)
+            if supporting_pairs:
+                accepted |= group_case_ids
+                added |= group_case_ids
+                not_closed -= group_case_ids
+                changed = True
+                for case_id in group_case_ids:
+                    membership_status[case_id] = {
+                        "status": "accepted_root_by_mechanical_branch_closure",
+                        "evidence_pair_ids": [
+                            f"{pair.left_group_id}::{pair.right_group_id}"
+                            for pair in supporting_pairs[:6]
+                        ],
+                        "reason": (
+                            "component member has case-derived root evidence to an "
+                            "accepted seed; executable differences remain branch evidence"
+                        ),
+                    }
+            else:
+                not_closed |= group_case_ids
+                for case_id in group_case_ids:
+                    if case_id in membership_status and membership_status[case_id]["status"] != "rejected_root_by_judge":
+                        membership_status[case_id] = {
+                            "status": "retrieved_but_not_root_closed",
+                            "evidence_pair_ids": [],
+                            "reason": ";".join(sorted(set(hard_conflicts))) or "no_root_membership_pair_to_accepted_seed",
+                        }
+
+    return {
+        "accepted_case_ids": sorted(accepted, key=_case_id_sort_key),
+        "added_case_ids": sorted(added, key=_case_id_sort_key),
+        "membership_status_by_case": membership_status,
+        "not_closed_case_ids": sorted(not_closed - accepted, key=_case_id_sort_key),
+        "closure_reason": "root_membership_pair_evidence",
+    }
+
+
+def _llm_membership_by_case(
+    response: Dict[str, Any],
+    available_case_ids: Set[str],
+) -> Dict[str, Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+    allowed = {str(case_id) for case_id in available_case_ids}
+    for item in response.get("membership_by_case") or []:
+        payload = _model_dump(item)
+        case_id = str(payload.get("case_id") or "")
+        if not case_id or case_id not in allowed:
+            continue
+        rows[case_id] = {
+            "judge_status": str(payload.get("status") or ""),
+            "judge_reason": str(payload.get("reason") or ""),
+        }
+    return rows
+
+
+def _merge_membership_audit(
+    closure_status: Dict[str, Dict[str, Any]],
+    judge_status: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for case_id, status in closure_status.items():
+        row = dict(status)
+        if case_id in judge_status:
+            row.update(judge_status[case_id])
+        else:
+            row["judge_status"] = row.get("judge_status", "")
+            row["judge_reason"] = row.get("judge_reason", "")
+        merged[case_id] = row
+    return merged
+
+
+def _branch_specs_covering_cases(
+    *,
+    response: Dict[str, Any],
+    admitted_groups: Sequence[GroupSummary],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Ensure every root-admitted member has an explicit branch assignment.
+
+    Branch specs here are admission-time audit contracts.  Runtime branches are
+    still synthesized from extracted repair programs and replay-gated later.
+    """
+
+    admitted_case_ids = {
+        str(case_id)
+        for group in admitted_groups
+        for case_id in (group.case_ids or [])
+        if str(case_id)
+    }
+    branch_specs = [
+        _model_dump(spec) for spec in (response.get("branch_specs") or []) if _model_dump(spec)
+    ]
+    covered_case_ids = {
+        str(case_id)
+        for spec in branch_specs
+        for case_id in (spec.get("case_ids") or [])
+        if str(case_id)
+    }
+    missing = admitted_case_ids - covered_case_ids
+    if not missing:
+        return branch_specs, []
+
+    added: List[str] = []
+    for signature, bucket in _core_signature_buckets(admitted_groups).items():
+        bucket_case_ids = sorted(
+            {
+                str(case_id)
+                for group in bucket
+                for case_id in (group.case_ids or [])
+                if str(case_id)
+            },
+            key=_case_id_sort_key,
+        )
+        if not (set(bucket_case_ids) & missing):
+            continue
+        digest = hashlib.sha1(
+            _canonical_payload([list(item) for item in signature]).encode("utf-8")
+        ).hexdigest()[:8]
+        branch_specs.append(
+            {
+                "branch_id": f"mechanical_branch_{digest}",
+                "case_ids": bucket_case_ids,
+                "required_interface_delta": (
+                    "branch derived from extracted repair effect/core package; "
+                    "runtime must select by branch signals and compiler binding"
+                ),
+                "selection_signal": (
+                    "answer-blind source_state/branch required signals plus "
+                    "schema-legal compiler binding"
+                ),
+                "origin": "mechanical_branch_coverage",
+                "core_program_signature": [list(item) for item in signature],
+            }
+        )
+        added.extend(case_id for case_id in bucket_case_ids if case_id in missing)
+    return branch_specs, sorted(set(added), key=_case_id_sort_key)
+
+
 def _build_pattern_candidate(
     groups: Sequence[GroupSummary],
     pair_scores: Dict[Tuple[str, str], PairScore],
@@ -2476,222 +2804,238 @@ def _build_pattern_admission_candidates(
             component_groups_all,
             pair_scores,
         )
+        member_pair_supplement_count = component_pair_supplement_count
         component_pair_scores = _member_pair_scores(component_groups_all, pair_scores)
         available_component_case_ids = {
             str(case_id)
             for group in component_groups_all
             for case_id in group.case_ids or []
         }
-        core_buckets = _core_signature_buckets(component_groups_all)
-        if len(core_buckets) > 1:
+        component_ids = [group.group_id for group in component_groups_all]
+        try:
+            response = _call_pattern_admission_judge(
+                groups=component_groups_all,
+                member_pair_scores=component_pair_scores,
+                slicer_candidate=None,
+            )
+        except Exception as exc:
             reports.append(
                 {
-                    "component_group_ids": component,
+                    "component_group_ids": component_ids,
                     "component_case_ids": sorted(
                         available_component_case_ids,
                         key=_case_id_sort_key,
                     ),
                     "admitted": False,
-                    "reason": "split_large_component_by_core_program_signature_for_pattern_admission",
+                    "reason": f"pattern_admission_judge_error:{type(exc).__name__}",
+                    "error": str(exc),
                     "formation_pair_scope": {
                         "scope": "component_all_pairs",
                         "component_pair_count": len(component_pair_scores),
                         "supplemented_pair_count": component_pair_supplement_count,
                     },
-                    "core_program_signature_buckets": [
-                        {
-                            "core_program_signature": [list(item) for item in signature],
-                            "case_ids": sorted(
-                                {
-                                    str(case_id)
-                                    for group in groups
-                                    for case_id in group.case_ids or []
-                                },
-                                key=_case_id_sort_key,
-                            ),
-                        }
-                        for signature, groups in core_buckets.items()
-                    ],
                     "pair_decision_context": _pair_decision_context(component_pair_scores),
                 }
             )
-        for _, component_groups in core_buckets.items():
-            if len(component_groups) < 2:
-                continue
-            member_pair_supplement_count = _ensure_pair_scores_for_groups(
-                component_groups,
+            continue
+
+        available_case_ids = set(available_component_case_ids)
+        response = dict(response)
+        accepted_before_closure = _pattern_admitted_case_ids(response, available_case_ids)
+        excluded_before_closure = [
+            str(item)
+            for item in (response.get("excluded_case_ids") or [])
+            if str(item) in available_case_ids
+        ]
+        judge_membership = _llm_membership_by_case(response, available_case_ids)
+        closure = _root_membership_closure(
+            groups=component_groups_all,
+            pair_scores=pair_scores,
+            accepted_case_ids=accepted_before_closure,
+            excluded_case_ids=excluded_before_closure,
+        )
+        membership_status_by_case = _merge_membership_audit(
+            closure["membership_status_by_case"],
+            judge_membership,
+        )
+        admitted_case_ids = list(closure["accepted_case_ids"])
+        response["accepted_case_ids_before_branch_closure"] = accepted_before_closure
+        response["accepted_case_ids"] = admitted_case_ids
+        response["excluded_case_ids_before_branch_closure"] = excluded_before_closure
+        response["mechanical_branch_closure_added_case_ids"] = list(
+            closure["added_case_ids"]
+        )
+        response["root_membership_status_by_case"] = membership_status_by_case
+        response["retrieved_but_not_admitted_case_ids"] = list(
+            closure["not_closed_case_ids"]
+        )
+        response["mechanical_branch_closure_override_reason"] = closure[
+            "closure_reason"
+        ]
+        admitted_groups = [
+            group
+            for group in component_groups_all
+            if _case_ids_for_group(group) & set(admitted_case_ids)
+        ]
+        branch_specs, mechanical_branch_case_ids = _branch_specs_covering_cases(
+            response=response,
+            admitted_groups=admitted_groups,
+        )
+        if branch_specs:
+            response["branch_specs"] = branch_specs
+        if mechanical_branch_case_ids:
+            response["mechanical_branch_spec_added_case_ids"] = mechanical_branch_case_ids
+            if not response.get("branch_axes"):
+                response["branch_axes"] = [
+                    {
+                        "name": "mechanical_core_repair_branch",
+                        "why_needed": (
+                            "admitted root members expose finite executable "
+                            "repair-package variation"
+                        ),
+                        "selection_signal": (
+                            "runtime branch signals plus compiler binding; "
+                            "gold SQL is not available at runtime"
+                        ),
+                        "origin": "mechanical_branch_coverage",
+                    }
+                ]
+        case_key = tuple(admitted_case_ids)
+        admitted = bool(response.get("admit_pattern")) and len(admitted_case_ids) >= 2
+        admission_blocker = ""
+        if bool(response.get("admit_pattern")) and not accepted_before_closure:
+            admission_blocker = "missing_explicit_accepted_case_ids"
+            response["reject_reason"] = (
+                response.get("reject_reason")
+                or "Pattern admission must explicitly list accepted_case_ids; "
+                "code will not infer membership from the full candidate."
+            )
+        core_branch_coverage = (
+            _core_signature_branch_coverage(admitted_groups, response)
+            if admitted
+            else {}
+        )
+        if core_branch_coverage:
+            response["core_signature_branch_coverage"] = core_branch_coverage
+        admitted_pair_supplement_count = 0
+        if admitted and case_key not in seen_case_sets:
+            admitted_pair_supplement_count = _ensure_pair_scores_for_groups(
+                admitted_groups,
                 pair_scores,
             )
-            component_ids = [group.group_id for group in component_groups]
-            member_pair_scores = _member_pair_scores(component_groups, pair_scores)
-            try:
-                response = _call_pattern_admission_judge(
-                    groups=component_groups,
-                    member_pair_scores=member_pair_scores,
-                    slicer_candidate=None,
+            candidate_pattern = _build_pattern_candidate(
+                admitted_groups,
+                pair_scores,
+                admission_response=response,
+            )
+            effect_backed = (
+                candidate_pattern.formation_signals.get("synthesis_basis") == "effect"
+                and bool(
+                    _program_effect_candidates(
+                        candidate_pattern.instantiation_program.synthesized_program
+                    )
                 )
-            except Exception as exc:
-                reports.append(
-                    {
-                        "component_group_ids": component_ids,
-                        "component_case_ids": sorted(
-                            {
-                                str(case_id)
-                                for group in component_groups
-                                for case_id in group.case_ids
-                            },
-                            key=_case_id_sort_key,
-                        ),
-                        "admitted": False,
-                        "reason": f"pattern_admission_judge_error:{type(exc).__name__}",
-                        "error": str(exc),
-                        "formation_pair_scope": {
-                            "scope": "core_bucket_all_pairs",
-                            "component_pair_count": len(member_pair_scores),
-                            "supplemented_pair_count": member_pair_supplement_count,
-                        },
-                        "pair_decision_context": _pair_decision_context(member_pair_scores),
-                    }
-                )
-                continue
-
-            available_case_ids = {
-                str(case_id) for group in component_groups for case_id in group.case_ids
-            }
-            admitted_case_ids = _pattern_admitted_case_ids(response, available_case_ids)
-            admitted_groups = [
-                group
-                for group in component_groups
-                if {str(case_id) for case_id in group.case_ids} & set(admitted_case_ids)
-            ]
-            case_key = tuple(admitted_case_ids)
-            admitted = bool(response.get("admit_pattern")) and len(admitted_case_ids) >= 2
-            admission_blocker = ""
-            if bool(response.get("admit_pattern")) and not admitted_case_ids:
-                admission_blocker = "missing_explicit_accepted_case_ids"
-                response = dict(response)
+            )
+            member_effect_backed = all(
+                _group_effect_candidate_count(group) > 0 for group in admitted_groups
+            )
+            if (
+                core_branch_coverage.get("has_core_signature_conflict")
+                and not core_branch_coverage.get("covered")
+            ):
+                admitted = False
+                admission_blocker = "uncovered_core_branch"
                 response["reject_reason"] = (
                     response.get("reject_reason")
-                    or "Pattern admission must explicitly list accepted_case_ids; "
-                    "code will not infer membership from the full candidate."
+                    or "Formal pattern admission found multiple core repair packages, "
+                    "but branch_specs do not cover all admitted cases."
                 )
-            core_branch_coverage = (
-                _core_signature_branch_coverage(admitted_groups, response)
-                if admitted
-                else {}
-            )
-            if core_branch_coverage:
-                response = dict(response)
-                response["core_signature_branch_coverage"] = core_branch_coverage
-            admitted_pair_supplement_count = 0
-            if admitted and case_key not in seen_case_sets:
-                admitted_pair_supplement_count = _ensure_pair_scores_for_groups(
-                    admitted_groups,
-                    pair_scores,
-                )
-                candidate_pattern = _build_pattern_candidate(
-                    admitted_groups,
-                    pair_scores,
-                    admission_response=response,
-                )
-                effect_backed = (
-                    candidate_pattern.formation_signals.get("synthesis_basis") == "effect"
-                    and bool(
-                        _program_effect_candidates(
-                            candidate_pattern.instantiation_program.synthesized_program
-                        )
-                    )
-                )
-                member_effect_backed = all(
-                    _group_effect_candidate_count(group) > 0 for group in admitted_groups
-                )
-                if (
-                    core_branch_coverage.get("has_core_signature_conflict")
-                    and not core_branch_coverage.get("covered")
-                ):
+                response["required_code_checks"] = [
+                    *list(response.get("required_code_checks") or []),
+                    "core repair package variations must be represented as branch_specs",
+                ]
+            elif core_branch_coverage.get("has_core_signature_conflict"):
+                if not member_effect_backed:
                     admitted = False
-                    admission_blocker = "uncovered_core_branch"
-                    response = dict(response)
+                    admission_blocker = "missing_member_effect_evidence"
                     response["reject_reason"] = (
                         response.get("reject_reason")
-                        or "Formal pattern admission found multiple core repair packages, "
-                        "but branch_axes/branch_specs do not cover all admitted cases."
+                        or "Branched pattern admission requires each member to expose "
+                        "at least one contrastive repair effect."
                     )
-                    response["required_code_checks"] = [
-                        *list(response.get("required_code_checks") or []),
-                        "core repair package variations must be represented as branch_specs",
-                    ]
-                elif core_branch_coverage.get("has_core_signature_conflict"):
-                    if not member_effect_backed:
-                        admitted = False
-                        admission_blocker = "missing_member_effect_evidence"
-                        response = dict(response)
-                        response["reject_reason"] = (
-                            response.get("reject_reason")
-                            or "Branched pattern admission requires each member to expose "
-                            "at least one contrastive repair effect."
-                        )
-                    else:
-                        response = dict(response)
-                        response["required_code_checks"] = [
-                            *list(response.get("required_code_checks") or []),
-                            "branch-specific effect-backed programs are required before runtime promotion",
-                        ]
-                        candidate_pattern.formation_signals["pattern_admission"] = response
-                        seen_case_sets.add(case_key)
-                        patterns.append(candidate_pattern)
-                elif not effect_backed:
-                    admitted = False
-                    admission_blocker = "missing_effect_backed_shared_program"
-                    response = dict(response)
-                    response["reject_reason"] = (
-                        response.get("reject_reason")
-                        or "Formal pattern admission requires an effect-backed shared program; "
-                        "legacy exact-op agreement is not sufficient."
-                    )
-                    response["required_code_checks"] = [
-                        *list(response.get("required_code_checks") or []),
-                        "repair effect synthesis must produce a shared contrastive effect before runtime promotion",
-                    ]
                 else:
+                    response["required_code_checks"] = [
+                        *list(response.get("required_code_checks") or []),
+                        "branch-specific effect-backed programs are required before runtime promotion",
+                    ]
+                    candidate_pattern.formation_signals["pattern_admission"] = response
                     seen_case_sets.add(case_key)
                     patterns.append(candidate_pattern)
-            reports.append(
-                {
-                    "component_group_ids": component_ids,
-                    "component_case_ids": sorted(available_case_ids, key=_case_id_sort_key),
-                    "admitted": admitted,
-                    "admission_blocker": admission_blocker,
-                    "admitted_case_ids": admitted_case_ids,
-                    "mechanical_branch_closure_added_case_ids": [],
-                    "excluded_case_ids": [
-                        str(item)
-                        for item in (response.get("excluded_case_ids") or [])
-                        if str(item)
-                    ],
-                    "stable_bias_key": response.get("stable_bias_key"),
-                    "primary_repair_interface": response.get("primary_repair_interface"),
-                    "branch_axes": response.get("branch_axes") or [],
-                    "branch_specs": response.get("branch_specs") or [],
-                    "negative_guards": response.get("negative_guards") or [],
-                    "required_code_checks": response.get("required_code_checks") or [],
-                    "reject_reason": response.get("reject_reason"),
-                    "formation_pair_scope": {
-                        "scope": "core_bucket_all_pairs",
-                        "component_pair_count": len(member_pair_scores),
-                        "supplemented_pair_count": member_pair_supplement_count,
-                        "admitted_pair_supplemented_count": (
-                            admitted_pair_supplement_count if admitted else 0
-                        ),
-                    },
-                    "judge_reject_reason_before_branch_closure": None,
-                    "excluded_case_ids_before_branch_closure": [],
-                    "mechanical_branch_closure_override_reason": None,
-                    "core_signature_branch_coverage": core_branch_coverage,
-                    "rationale": response.get("rationale"),
-                    "pair_decision_context": _pair_decision_context(member_pair_scores),
-                }
-            )
+            elif not effect_backed:
+                admitted = False
+                admission_blocker = "missing_effect_backed_shared_program"
+                response["reject_reason"] = (
+                    response.get("reject_reason")
+                    or "Formal pattern admission requires an effect-backed shared program; "
+                    "legacy exact-op agreement is not sufficient."
+                )
+                response["required_code_checks"] = [
+                    *list(response.get("required_code_checks") or []),
+                    "repair effect synthesis must produce a shared contrastive effect before runtime promotion",
+                ]
+            else:
+                seen_case_sets.add(case_key)
+                patterns.append(candidate_pattern)
+        reports.append(
+            {
+                "component_group_ids": component_ids,
+                "component_case_ids": sorted(available_case_ids, key=_case_id_sort_key),
+                "admitted": admitted,
+                "admission_blocker": admission_blocker,
+                "admitted_case_ids": admitted_case_ids,
+                "mechanical_branch_closure_added_case_ids": list(
+                    closure["added_case_ids"]
+                ),
+                "mechanical_branch_spec_added_case_ids": response.get(
+                    "mechanical_branch_spec_added_case_ids",
+                    [],
+                ),
+                "excluded_case_ids": [
+                    str(item)
+                    for item in (response.get("excluded_case_ids") or [])
+                    if str(item)
+                ],
+                "root_membership_status_by_case": membership_status_by_case,
+                "retrieved_but_not_admitted_case_ids": list(
+                    closure["not_closed_case_ids"]
+                ),
+                "stable_bias_key": response.get("stable_bias_key"),
+                "primary_repair_interface": response.get("primary_repair_interface"),
+                "branch_axes": response.get("branch_axes") or [],
+                "branch_specs": response.get("branch_specs") or [],
+                "negative_guards": response.get("negative_guards") or [],
+                "required_code_checks": response.get("required_code_checks") or [],
+                "reject_reason": response.get("reject_reason"),
+                "formation_pair_scope": {
+                    "scope": "component_root_first_all_pairs",
+                    "component_pair_count": len(component_pair_scores),
+                    "supplemented_pair_count": member_pair_supplement_count,
+                    "admitted_pair_supplemented_count": (
+                        admitted_pair_supplement_count if admitted else 0
+                    ),
+                },
+                "judge_reject_reason_before_branch_closure": response.get(
+                    "reject_reason"
+                ),
+                "excluded_case_ids_before_branch_closure": excluded_before_closure,
+                "mechanical_branch_closure_override_reason": response.get(
+                    "mechanical_branch_closure_override_reason"
+                ),
+                "core_signature_branch_coverage": core_branch_coverage,
+                "rationale": response.get("rationale"),
+                "pair_decision_context": _pair_decision_context(component_pair_scores),
+            }
+        )
     return patterns, reports
 
 
@@ -3071,8 +3415,8 @@ def form_offline_families(
         "stable_bias_frames": [],
         "insight_slicer_candidates": [],
         "pattern_candidate_generation_policy": (
-            "conservative_pattern_admission; core_program_signature splits "
-            "large candidates before formal admission; insight slicer is disabled"
+            "root_first_pattern_admission; core_program_signature/action differences "
+            "are branch evidence after root admission; insight slicer is disabled"
         ),
         "retrieval_audit": retrieval_audit,
         "formation_audit": {

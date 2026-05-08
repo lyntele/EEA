@@ -71,6 +71,7 @@ def _compact_promotion_result(row: Dict[str, Any]) -> Dict[str, Any]:
     metrics = dict(row.get("replay_metrics") or {})
     formal_metrics = dict(row.get("formal_replay_metrics") or {})
     promoted = dict(row.get("promoted_group") or {})
+    branch_runtime = dict(row.get("branch_runtime") or {})
     return {
         "group_id": str(row.get("group_id") or promoted.get("group_id") or ""),
         "eligible": bool(row.get("eligible", False)),
@@ -104,6 +105,17 @@ def _compact_promotion_result(row: Dict[str, Any]) -> Dict[str, Any]:
             "runtime_usable": bool(promoted.get("runtime_usable", False)),
             "status": str(promoted.get("status") or ""),
             "promotion_state": str(promoted.get("promotion_state") or ""),
+        },
+        "branch_runtime": {
+            "runtime_usable_branch_count": int(
+                branch_runtime.get("runtime_usable_branch_count") or 0
+            ),
+            "runtime_usable_branch_ids": list(
+                branch_runtime.get("runtime_usable_branch_ids") or []
+            )[:12],
+            "runtime_superseded_case_ids": list(
+                branch_runtime.get("runtime_superseded_case_ids") or []
+            )[:24],
         },
     }
 
@@ -300,6 +312,32 @@ def evolve_library_with_replay(
                 "runtime_usable": bool(promoted.runtime_usable),
                 "status": str(getattr(promoted.status, "value", promoted.status)),
                 "promotion_state": promoted.lifecycle.promotion_state,
+            }
+            program = getattr(promoted.instantiation_program, "synthesized_program", None)
+            envelope = _payload(getattr(program, "program_envelope", None)) or {}
+            runtime_branches = [
+                dict(branch)
+                for branch in (envelope.get("runtime_branches") or [])
+                if isinstance(branch, dict)
+            ]
+            result_payload["branch_runtime"] = {
+                "runtime_usable_branch_count": sum(
+                    1 for branch in runtime_branches if bool(branch.get("runtime_usable"))
+                ),
+                "runtime_usable_branch_ids": [
+                    str(branch.get("branch_id") or "")
+                    for branch in runtime_branches
+                    if bool(branch.get("runtime_usable"))
+                ],
+                "runtime_superseded_case_ids": sorted(
+                    {
+                        str(case_id)
+                        for branch in runtime_branches
+                        if bool(branch.get("runtime_usable"))
+                        for case_id in (branch.get("support_case_ids") or [])
+                        if str(case_id)
+                    }
+                ),
             }
             report["promotion_results"].append(result_payload)
             if promoted.runtime_usable:

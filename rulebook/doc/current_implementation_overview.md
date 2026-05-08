@@ -111,6 +111,7 @@ Responsibilities:
     - `required_role_slots`
     - `negative_guards`
   - branch-level runtime selection for `pattern`
+    - pattern root matching happens before branch selection
     - only replay-validated `program_envelope.runtime_branches` can be selected
     - required branch signals must match the current `RuntimeCaseView`
     - branch dry-run must bind every required bundle on current `S0`
@@ -123,8 +124,10 @@ Responsibilities:
     - branch-selection ambiguity on bundle candidates
 - Canonically merge compatible matched memories before treating them as
   conflicting.
-  Compatibility compares semantic action contracts; source identity fields such
-  as `case_id`, `bundle_id`, `op_id`, and evidence notes are ignored.
+  Runtime first compares root-bias contracts. Multiple candidates under the same
+  root bias are not allowed to block each other only because branch/action
+  contracts differ; runtime keeps the top root-compatible candidates within the
+  normal selection budget and lets branch/compiler decide the executable path.
 - Return matched groups, compiler output, rewrite hint, and a runtime guard
   consumed by DeepEye.
 - Runtime branch selection scopes the matched pattern before compiler:
@@ -390,8 +393,18 @@ Responsibilities:
   evidence. If required formation signals are missing, keep the object as a
   singleton and report `signal_missing`.
 - Use pair scores only for candidate retrieval and audit. Pattern admission LLM
-  sees full case cards plus pair relation counts and representative pairs, not
-  all O(n^2) pair decisions.
+  sees compact case cards plus pair relation counts and representative pairs,
+  not all O(n^2) pair decisions.
+- Build patterns root-first:
+  - component retrieval uses case-derived effect/source/target signals
+  - root admission decides shared source misconception / target preference
+  - `core_program_signature`, DISTINCT, join cleanup, route/grain/action
+    differences are branch/accessory evidence after root admission, not
+    pre-admission split keys
+  - every recalled component member must be reported as accepted, rejected,
+    retrieved-but-not-admitted, or mechanically root-closed into a branch slot
+  - mechanical branch closure is generic: it uses branchable pair evidence from
+    the case's own repair trace and never DB/table/qid-specific rules
 - Pair score computation is cached by singleton signal/contract hash. The
   insight slicer receives at most representative pair decisions by relation and
   case coverage, not a full component pair matrix.
@@ -463,6 +476,11 @@ Responsibilities:
 - Local post-update evolve
 - final evolve and freeze
 - replay-gated runtime family / formal pattern decisions
+- online evolve keeps singleton and pattern memories only; family is disabled
+- full-pattern replay is diagnostic, while runtime exposure is controlled by
+  branch-level replay/binding status. When a replay case loader is available,
+  each evolved prefix runs branch-scoped member replay before a branch can become
+  runtime visible.
 
 ### `common/promotion_v2.py`
 
@@ -477,10 +495,15 @@ Responsibilities:
 - branch-level runtime admission:
   each formal pattern carries per-branch replay status into
   `program_envelope.runtime_branches`; runtime never selects an unvalidated
-  branch. Branch admission is computed from formal replay rows restricted to
-  the branch support cases, not by blindly copying whole-pattern metrics.
-  Whole-pattern blockers remain audit metadata; runtime visibility is determined
-  by whether at least one branch is replay-usable.
+  branch. Branch admission is computed from `branch_member_replay`: EEA first
+  builds a branch-scoped memory containing only that branch's bundles/contracts,
+  replays the branch's support cases, and accepts the branch only if replay
+  actually selects/binds that same branch or its bundle and improves without
+  regression. Whole-pattern blockers remain audit metadata; runtime visibility
+  is determined by whether at least one branch is replay-usable.
+- runtime-usable branch support controls which source singletons are
+  superseded. If a pattern has only some usable branches, unsupported branch
+  source singletons remain active instead of being removed by the root pattern.
 - keep replay-derived `ProgramCoverage` split:
   - `static_program_coverage` remains the synthesis/static view
   - `runtime_binding_coverage` reflects replay/runtime binding evidence

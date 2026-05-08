@@ -24,6 +24,7 @@ from .execution_compare_v2 import run_execution_comparison
 from .family_formation_v2 import build_family_from_groups
 from .program_coverage_v2 import validate_group_program_coverage
 from .runtime_v2 import (
+    _filter_group_to_runtime_branch,
     prepare_rewrite_plan,
     rewrite_one_candidate,
     rewrite_realization_origin_from_result,
@@ -362,11 +363,95 @@ def _primary_selection_origin(actions: Sequence[Any]) -> str:
     return "mixed"
 
 
+def _action_bundle_ids(actions: Sequence[Any]) -> List[str]:
+    values: set[str] = set()
+    for action in actions or []:
+        payload = _payload(action)
+        args = _payload(payload.get("arguments"))
+        for key in (
+            "bundle_id",
+            "bound_branch_id",
+            "canonical_op_id",
+            "op_id",
+            "bundle_selection_key",
+        ):
+            value = str(args.get(key) or "").strip()
+            if value:
+                values.add(value)
+    return sorted(values)
+
+
+def _selected_branch_ids_from_plan(plan: Mapping[str, Any]) -> Dict[str, str]:
+    trigger_result = plan.get("trigger_result")
+    payload = _payload(trigger_result)
+    return {
+        str(group_id): str(branch_id)
+        for group_id, branch_id in (payload.get("selected_branch_ids") or {}).items()
+        if str(group_id) and str(branch_id)
+    }
+
+
 def _formal_replay_row_passed(row: Mapping[str, Any]) -> bool:
     """Whether one formal replay row is usable as independent support evidence."""
     return bool(
         row.get("eligible_for_formal_promotion")
         and not row.get("holdout_in_training")
+        and not row.get("comparison_unknown")
+        and not _row_comparison_unknown_reasons(row)
+        and row.get("compile_pass")
+        and int(row.get("action_count") or 0) > 0
+        and row.get("improved")
+        and not row.get("regressed")
+    )
+
+
+def _branch_bundle_ids(branch: Mapping[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for item in branch.get("bundle_ids") or []:
+        value = str(item or "").strip()
+        if value:
+            values.add(value)
+    for key in ("bundle_id", "branch_id"):
+        value = str(branch.get(key) or "").strip()
+        if value:
+            values.add(value)
+    return values
+
+
+def _branch_id(branch: Mapping[str, Any]) -> str:
+    return str(branch.get("branch_id") or branch.get("bundle_id") or "").strip()
+
+
+def _row_selects_branch(row: Mapping[str, Any], branch: Mapping[str, Any]) -> bool:
+    branch_id = _branch_id(branch)
+    bundle_ids = _branch_bundle_ids(branch)
+    selected_branch_id = str(row.get("selected_branch_id") or "").strip()
+    if branch_id and selected_branch_id == branch_id:
+        return True
+    selected_branch_ids = {
+        str(value).strip()
+        for value in (_payload(row.get("selected_branch_ids")) or {}).values()
+        if str(value).strip()
+    }
+    if branch_id and branch_id in selected_branch_ids:
+        return True
+    selected_bundle_ids = {
+        str(value).strip()
+        for value in (row.get("selected_bundle_ids") or [])
+        if str(value).strip()
+    }
+    return bool(bundle_ids and selected_bundle_ids and bundle_ids & selected_bundle_ids)
+
+
+def _branch_replay_row_passed(row: Mapping[str, Any], branch: Mapping[str, Any]) -> bool:
+    """Whether one branch-scoped member replay row validates this runtime branch.
+
+    Branch replay is not formal promotion evidence: it can replay a member
+    through the branch-specific memory to validate that runtime branch selection,
+    compiler binding, and rewrite all follow the same executable branch.
+    """
+    return bool(
+        _row_selects_branch(row, branch)
         and not row.get("comparison_unknown")
         and not _row_comparison_unknown_reasons(row)
         and row.get("compile_pass")
@@ -481,6 +566,8 @@ def _replay_one_holdout(
     training_case_ids: Optional[Sequence[str]] = None,
     holdout_in_training: bool = False,
     eligible_for_formal_promotion: bool = True,
+    forced_branch_id: Optional[str] = None,
+    forced_branch_bundle_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "holdout_case_id": str(holdout_case_id),
@@ -500,6 +587,11 @@ def _replay_one_holdout(
         "final_selected_origin": "c0_top1_if_equivalent_else_rewrite_if_equivalent",
         "memory_rewrite_broke_c0_top1": False,
     }
+    if forced_branch_id:
+        row["forced_branch_id"] = str(forced_branch_id)
+        row["forced_branch_bundle_ids"] = [
+            str(item) for item in (forced_branch_bundle_ids or []) if str(item)
+        ]
     if memory_override is not None:
         memory = memory_override.model_copy(deep=True)
         memory.runtime_usable = True
@@ -624,6 +716,9 @@ def _replay_one_holdout(
     compiler_output = plan.get("compiler_output")
     actions = list(getattr(compiler_output, "actions", []) or [])
     selection_origins = _action_selection_origins(actions)
+    selected_branch_ids = _selected_branch_ids_from_plan(plan)
+    selected_branch_values = sorted(set(selected_branch_ids.values()))
+    selected_bundle_ids = _action_bundle_ids(actions)
     empty_reasons = _candidate_empty_reasons(plan.get("compiler_candidate_sets") or [])
     row.update(
         {
@@ -637,6 +732,9 @@ def _replay_one_holdout(
             "matched_group_ids": [
                 matched.group_id for matched in (plan.get("matched_groups") or [])
             ],
+            "selected_branch_ids": selected_branch_ids,
+            "selected_branch_id": selected_branch_values[0] if len(selected_branch_values) == 1 else "",
+            "selected_bundle_ids": selected_bundle_ids,
                 "pred_status": pred_status,
                 "c0_status": c0_status,
                 "action_count": len(actions),
@@ -839,6 +937,38 @@ def run_promotion_test(
         )
         for case_id in group.case_ids
     ]
+    branch_member_rows: List[Dict[str, Any]] = []
+    for branch in _runtime_branch_rows_for_group(group):
+        branch_id = _branch_id(branch)
+        support_case_ids = _runtime_branch_support(branch, group.case_ids)
+        if not branch_id or not support_case_ids:
+            continue
+        branch_memory = _branch_scoped_memory(
+            group,
+            branch,
+            support_case_ids,
+        )
+        branch_bundle_ids = sorted(_branch_bundle_ids(branch))
+        for case_id in support_case_ids:
+            branch_member_rows.append(
+                _replay_one_holdout(
+                    group=group,
+                    source_singletons_by_case_id=source_singletons_by_case_id,
+                    holdout_case_id=str(case_id),
+                    case_loader=case_loader,
+                    db_path=db_path,
+                    database_dir=database_dir,
+                    row_sample_limit=row_sample_limit,
+                    memory_override=branch_memory,
+                    memory_kind_override="branch_member_replay",
+                    replay_mode="branch_member_replay",
+                    training_case_ids=support_case_ids,
+                    holdout_in_training=True,
+                    eligible_for_formal_promotion=False,
+                    forced_branch_id=branch_id,
+                    forced_branch_bundle_ids=branch_bundle_ids,
+                )
+            )
     pairwise_cross_rows: List[Dict[str, Any]] = []
     if int(group.support or 0) == 2:
         for case_id in group.case_ids:
@@ -1108,6 +1238,13 @@ def run_promotion_test(
                 "used_for_formal_promotion": False,
                 "rows": full_group_rows,
             },
+            {
+                "diagnostic": "branch_member_replay",
+                "used_for_metrics": False,
+                "used_for_formal_promotion": False,
+                "used_for_branch_runtime": True,
+                "rows": branch_member_rows,
+            },
         ]
         + [
             {
@@ -1145,6 +1282,91 @@ def _runtime_branch_support(branch: Dict[str, Any], fallback_case_ids: Sequence[
     support = [str(case_id) for case_id in (branch.get("support_case_ids") or []) if str(case_id)]
     _ = fallback_case_ids
     return support
+
+
+def _runtime_branch_rows_for_group(group: GroupSummary) -> List[Dict[str, Any]]:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    envelope = _payload(getattr(program, "program_envelope", None))
+    return [
+        _payload(branch)
+        for branch in (envelope.get("runtime_branches") or envelope.get("lowering_branches") or [])
+        if _payload(branch)
+    ]
+
+
+def _branch_scoped_memory(
+    group: GroupSummary,
+    branch: Mapping[str, Any],
+    support_case_ids: Sequence[str],
+) -> GroupSummary:
+    branch_payload = dict(branch)
+    branch_payload["runtime_usable"] = True
+    branch_payload["runtime_blockers"] = []
+    memory = _filter_group_to_runtime_branch(group.model_copy(deep=True), branch_payload)
+    memory.case_ids = [str(case_id) for case_id in support_case_ids]
+    memory.support = len(memory.case_ids)
+    memory.runtime_usable = True
+    ensure_materialized_trigger_contract(memory)
+    return memory
+
+
+def _branch_replay_rows_from_result(result: PromotionTestResult) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in result.leave_one_out_results or []:
+        payload = _payload(row)
+        if payload.get("diagnostic") == "branch_member_replay":
+            for nested in payload.get("rows") or []:
+                nested_payload = _payload(nested)
+                if str(nested_payload.get("replay_mode") or "") == "branch_member_replay":
+                    rows.append(nested_payload)
+            continue
+        if str(payload.get("replay_mode") or "") == "branch_member_replay":
+            rows.append(payload)
+    deduped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            str(row.get("forced_branch_id") or row.get("selected_branch_id") or ""),
+            str(row.get("holdout_case_id") or ""),
+            str(row.get("replay_mode") or ""),
+        )
+        if key[1]:
+            deduped[key] = row
+    return list(deduped.values())
+
+
+def _branch_rows_for_branch(
+    branch: Mapping[str, Any],
+    branch_replay_rows: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    branch_id = _branch_id(branch)
+    bundle_ids = _branch_bundle_ids(branch)
+    out: List[Dict[str, Any]] = []
+    for row in branch_replay_rows or []:
+        payload = _payload(row)
+        forced_branch_id = str(payload.get("forced_branch_id") or "").strip()
+        forced_bundle_ids = {
+            str(value).strip()
+            for value in (payload.get("forced_branch_bundle_ids") or [])
+            if str(value).strip()
+        }
+        if branch_id and forced_branch_id == branch_id:
+            out.append(payload)
+            continue
+        if bundle_ids and forced_bundle_ids and bundle_ids & forced_bundle_ids:
+            out.append(payload)
+    return out
+
+
+def _runtime_usable_branch_support_case_ids(group: GroupSummary) -> set[str]:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    envelope = _payload(getattr(program, "program_envelope", None))
+    case_ids: set[str] = set()
+    for branch in envelope.get("runtime_branches") or []:
+        payload = _payload(branch)
+        if not bool(payload.get("runtime_usable")):
+            continue
+        case_ids.update(_runtime_branch_support(payload, group.case_ids))
+    return case_ids
 
 
 def _formal_rows_from_result(
@@ -1208,9 +1430,8 @@ def _apply_branch_runtime_decision(
     *,
     can_promote_pattern: bool,
     formal_metrics: ReplayMetrics,
-    formal_replay_modes: Sequence[str],
     formal_blocker: Optional[str],
-    formal_rows: Sequence[Mapping[str, Any]],
+    branch_replay_rows: Sequence[Mapping[str, Any]],
 ) -> GroupSummary:
     program = getattr(group.instantiation_program, "synthesized_program", None)
     envelope = getattr(program, "program_envelope", None) if program is not None else None
@@ -1225,21 +1446,17 @@ def _apply_branch_runtime_decision(
     if not branches:
         return group
 
-    replay_mode = ",".join(str(mode) for mode in (formal_replay_modes or []) if str(mode))
-    formal_rows_by_case = {
-        str(row.get("holdout_case_id") or ""): _payload(row)
-        for row in formal_rows or []
-        if str(row.get("holdout_case_id") or "")
-    }
+    replay_mode = "branch_member_replay"
     updated_branches: List[Dict[str, Any]] = []
     usable_count = 0
     for branch in branches:
-        branch_id = str(branch.get("branch_id") or branch.get("bundle_id") or "")
+        branch_id = _branch_id(branch)
         support_case_ids = _runtime_branch_support(branch, group.case_ids)
+        support_case_id_set = set(support_case_ids)
         branch_rows = [
-            formal_rows_by_case[case_id]
-            for case_id in support_case_ids
-            if case_id in formal_rows_by_case
+            row
+            for row in _branch_rows_for_branch(branch, branch_replay_rows)
+            if str(row.get("holdout_case_id") or "") in support_case_id_set
         ]
         branch_metrics = _metrics_from_rows(
             branch_rows,
@@ -1248,19 +1465,18 @@ def _apply_branch_runtime_decision(
         failed_members = [
             str(row.get("holdout_case_id") or "")
             for row in branch_rows
-            if row.get("holdout_case_id") is not None and not _formal_replay_row_passed(row)
+            if row.get("holdout_case_id") is not None
+            and not _branch_replay_row_passed(row, branch)
         ]
         blockers: List[str] = []
         if not support_case_ids:
             blockers.append("branch_support_missing")
-        if len(support_case_ids) < PROMOTION_SUPPORT_MIN:
-            blockers.append("branch_support_below_min")
         if len(branch_rows) != len(support_case_ids):
             blockers.append(
-                f"branch_formal_replay_missing:{len(branch_rows)}/{len(support_case_ids)}"
+                f"branch_runtime_replay_missing:{len(branch_rows)}/{len(support_case_ids)}"
             )
-        if branch_rows and not all(_formal_replay_row_passed(row) for row in branch_rows):
-            blockers.append("branch_formal_replay_failed")
+        if branch_rows and not all(_branch_replay_row_passed(row, branch) for row in branch_rows):
+            blockers.append("branch_runtime_replay_failed")
         if branch_metrics.compile_coverage < PATTERN_PROMOTION_MIN_COMPILE_COVERAGE:
             blockers.append("branch_compile_coverage_below_threshold")
         if branch_metrics.replay_regression > MAX_REPLAY_REGRESSION:
@@ -1278,8 +1494,6 @@ def _apply_branch_runtime_decision(
         pattern_blockers: List[str] = []
         if formal_blocker:
             pattern_blockers.append("pattern_formal_blocker:" + str(formal_blocker))
-        if not can_promote_pattern:
-            pattern_blockers.append("pattern_not_formally_promoted")
         if branch_usable:
             usable_count += 1
         updated = dict(branch)
@@ -1377,13 +1591,19 @@ def apply_promotion_decision(
         promoted,
         can_promote_pattern=can_promote_pattern,
         formal_metrics=formal_metrics,
-        formal_replay_modes=result.formal_replay_modes,
         formal_blocker=result.formal_promotion_blocker,
-        formal_rows=_formal_rows_from_result(promoted, result),
+        branch_replay_rows=_branch_replay_rows_from_result(result),
     )
-    if can_promote_pattern:
+    branch_runtime_usable = bool(promoted.runtime_usable)
+    if can_promote_pattern or branch_runtime_usable:
         promoted.instantiation_program = promoted.instantiation_program.model_copy(
-            update={"shared_status": "formal_validated"}
+            update={
+                "shared_status": (
+                    "formal_validated"
+                    if can_promote_pattern
+                    else "branch_runtime_validated"
+                )
+            }
         )
         promoted.group_type = GroupType.PATTERN
         promoted.runtime_usable = bool(promoted.runtime_usable)
@@ -1391,8 +1611,15 @@ def apply_promotion_decision(
             promoted.runtime_blockers = list(promoted.runtime_blockers or []) or [
                 "no_runtime_usable_branch"
             ]
-        promoted.confidence = Confidence.HIGH
-        promoted.lifecycle.promotion_state = "promoted_pattern_replay_gated"
+        promoted.confidence = Confidence.HIGH if can_promote_pattern else Confidence.MEDIUM
+        promoted.lifecycle.promotion_state = (
+            "promoted_pattern_replay_gated"
+            if can_promote_pattern
+            else "runtime_branch_replay_gated"
+        )
+        promoted.lifecycle.quarantine_reason = (
+            None if can_promote_pattern else result.formal_promotion_blocker
+        )
         ensure_materialized_trigger_contract(promoted)
         return promoted
     promoted.runtime_usable = False
@@ -1422,6 +1649,9 @@ def integrate_promoted_groups(
         if group.status != GroupStatus.ACTIVE:
             continue
         member_case_ids = {str(case_id) for case_id in group.case_ids}
+        runtime_superseded_case_ids = (
+            _runtime_usable_branch_support_case_ids(group) if group.runtime_usable else set()
+        ) or (member_case_ids if group.runtime_usable else set())
         existing_same = [
             existing
             for existing in (library.patterns + library.experience_families)
@@ -1437,7 +1667,7 @@ def integrate_promoted_groups(
         if group.runtime_usable:
             updated_singletons: List[GroupSummary] = []
             for singleton in library.singletons:
-                if not (set(map(str, singleton.case_ids)) & member_case_ids):
+                if not (set(map(str, singleton.case_ids)) & runtime_superseded_case_ids):
                     updated_singletons.append(singleton)
                     continue
                 archived = singleton.model_copy(deep=True)
@@ -1452,7 +1682,7 @@ def integrate_promoted_groups(
                 if existing.group_id == group.group_id:
                     continue
                 existing_cases = {str(case_id) for case_id in existing.case_ids}
-                if existing_cases and existing_cases <= member_case_ids:
+                if existing_cases and existing_cases <= runtime_superseded_case_ids:
                     existing.status = GroupStatus.DEPRECATED
                     existing.runtime_usable = False
                     existing.lifecycle.superseded_by_group_id = group.group_id

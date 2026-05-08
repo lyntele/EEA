@@ -2395,6 +2395,41 @@ def _action_contract_key(group: GroupSummary) -> Tuple[str, ...]:
     return key
 
 
+def _root_bias_contract_key(group: GroupSummary) -> Tuple[str, ...]:
+    """Root-pattern key used before treating action branches as conflicts."""
+
+    signals = _payload(getattr(group, "formation_signals", None))
+    admission = _payload(signals.get("pattern_admission"))
+    insight = _payload(signals.get("repair_insight_signature"))
+    contract = _group_trigger_contract(group)
+    action = _payload(contract.get("action_contract"))
+    stable_bias = str(admission.get("stable_bias_key") or "").strip().lower()
+    interface = str(
+        admission.get("primary_repair_interface")
+        or insight.get("interface_key")
+        or insight.get("repair_interface")
+        or ""
+    ).strip().lower()
+    source_misread = str(insight.get("source_misread") or "").strip().lower()
+    target_preference = str(insight.get("target_preference") or "").strip().lower()
+    key = (
+        stable_bias,
+        interface,
+        source_misread,
+        target_preference,
+    )
+    if any(key):
+        return ("root_bias", *key)
+    required = sorted(
+        str(sig)
+        for sig in (contract.get("canonical_discriminants") or contract.get("required_signals") or [])
+        if _is_substantive_hard_signal(str(sig))
+    )
+    if required:
+        return ("root_signals", ",".join(required))
+    return ("missing_root_bias", str(group.group_id))
+
+
 def _select_compatible_groups(
     passed: List[Tuple[GroupSummary, TriggerCandidateAudit]],
     *,
@@ -2413,6 +2448,12 @@ def _select_compatible_groups(
     for item in selection_pool:
         buckets.setdefault(_action_contract_key(item[0]), []).append(item)
     if len(buckets) > 1:
+        root_buckets: Dict[Tuple[str, ...], List[Tuple[GroupSummary, TriggerCandidateAudit]]] = {}
+        for item in selection_pool:
+            root_buckets.setdefault(_root_bias_contract_key(item[0]), []).append(item)
+        if len(root_buckets) == 1:
+            bucket_items = sorted(selection_pool, key=_group_sort_key, reverse=True)
+            return [group for group, _audit in bucket_items[: max(1, max_selected)]], ""
         return [], "conflicting_action_contracts"
     bucket_items = next(iter(buckets.values()))
     selected = [group for group, _audit in bucket_items[: max(1, max_selected)]]

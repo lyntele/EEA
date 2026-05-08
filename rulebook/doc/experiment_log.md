@@ -2,6 +2,8 @@
 
 本文档是 EEA 当前系统的统一实验账本。以后每一次聚类、触发、在线累计、端到端相关尝试都记录在这里，不再拆分多个实验文档。
 
+注意：早期实验段落保留为历史记录，用来解释为什么某些路线被采用、回退或废弃；如果旧段落与后续实现决策冲突，以日期更晚的“决策/本轮修改”段落和 `current_implementation_overview.md` 为准。
+
 ## 记录规范
 
 每个实验必须记录：
@@ -743,3 +745,66 @@ prompt 规模观察：
 
 - toxicology14 冷启动中 q225 以后不应再因缺少旧 pair score 导致 update error。
 - q307 不应再被 q206 的 role slot 预绑定挡成 `runtime=no_match`；若后续失败，应落在 compiler/no_action、rewrite 或 selection，并有明确诊断。
+
+### T-20260508-01：root pattern / branch runtime 语义修正
+
+背景：
+
+- wrong59 端到端结果显示：库内可以积累 pattern 候选，但 formal replay/promotion 全失败，runtime 大量仍落在多个同类 singleton 或 `conflicting_action_contracts`。
+- 对照本账本前文和 `expert_report_3.md` 后确认：两段信号、branch runtime、pattern root-first 都已经讨论过，但代码主路径仍有偏差。
+- 偏差包括：
+  - component 已召回成员后，代码仍按 `core_program_signature` 先切桶，再让 LLM admission 决定子集。
+  - component 内未被 admission 显式列出的 case 会静默留在 `uncovered_case_ids` / `retrieved_but_not_admitted`，没有 root closure。
+  - pattern 顶层 formal replay 失败会使整个 pattern runtime 不可用，即使部分 branch 可能可编译、可 replay。
+  - 多个同 root singleton 通过时，runtime 仍可能因为 action contract 不同直接 `conflicting_action_contracts`。
+
+本轮原则：
+
+- Pattern 不是最终执行单元，也不只是粗筛索引；它是共同 `root bias / shared misconception / target preference` 容器。
+- Branch 是 runtime 执行单元；实例化、compiler candidate、rewrite hint 均应以已选 branch 为准。
+- Pattern 整体 replay 只作为诊断指标，不再一票否决所有 branch。
+- Root 信号决定归属，branch/action/accessory 信号决定实例化路径。
+
+本轮修改：
+
+- `family_formation_v2` 将 pattern admission 改为 root-first：
+  - `core_program_signature_conflict` 可以进入 root pattern review，作为 branch evidence，而不是预切分。
+  - component 不再按 core signature 先切桶；LLM 先审查整个 root component。
+  - admission 后执行 generic mechanical branch closure：如果未被显式排除的 component 成员与 accepted seed 有 case-derived root pair evidence，则闭包进 root pattern，并标为 branch 待分配。
+  - 自动补齐 branch specs 覆盖所有 root-admitted cases；这些 specs 是 admission 审计合同，runtime branch 仍由 repair program synthesis + replay gate 决定。
+  - formation report 增加 `root_membership_status_by_case`、`retrieved_but_not_admitted_case_ids`、`mechanical_branch_closure_added_case_ids`、`mechanical_branch_spec_added_case_ids`。
+- `pattern_admission_judge` prompt 改为先判断 root，再分 branch；明确禁止因为 DISTINCT、join cleanup、route/grain/action path 差异直接拆 root。
+- `promotion_v2` 改为 branch-level runtime gate：
+  - branch 可用性由该 branch support rows 的 compile/replay/regression/action-count 决定。
+  - `pattern.runtime_usable = any(runtime_usable_branch)`。
+  - pattern formal blocker 保留为 `pattern_level_blockers`，不再自动否决 branch。
+  - 只有 runtime-usable branch 的 support case 对应 singleton 会被 supersede；未通过 branch 的 singleton 保持 active。
+- `runtime_v2` 在多个候选 action contract 冲突前增加 root-bias contract 合并：
+  - 如果多个候选同 root，只保留排序最高的 root-compatible 候选，不再全挡成 `conflicting_action_contracts`。
+  - pattern 仍先选唯一 runtime branch，再将 branch-scoped memory 交给 compiler。
+- `evolution_v2` compact report 增加 branch runtime 摘要，方便查看 runtime-usable branch 数量和被 supersede 的 case ids。
+
+TODO / 自检项：
+
+- [x] 检查 strong pattern 组是否不再因 `core_program_signature` / DISTINCT / join cleanup 被提前拆散：代码不再按 core signature 预切桶，action/path 差异交给 branch。
+- [x] 检查每个 component member 是否都有 `root_membership_status_by_case`，不得 silent omission：admission response 与 formation report 均记录 accepted/excluded/closed/retrieved-not-admitted。
+- [x] 检查 closure 是否只使用 case-derived pair evidence，不能出现 db/table/qid 规则：closure 只读 pair score 的 root membership 证据和 LLM membership，不读具体案例枚举。
+- [x] 检查 branch specs 是否覆盖 admitted root cases；未覆盖必须报告 blocker：缺口进入 `mechanical_branch_spec_added_case_ids` / status，而不是静默丢弃。
+- [x] 检查 promotion 结果中 branch runtime 可用性是否独立于 pattern formal blocker：整组 formal blocker 只保留为 `pattern_level_blockers`，branch runtime 独立计算。
+- [x] 检查只有 runtime-usable branch support 的 singletons 被 supersede：`integrate_promoted_groups` 只废弃 runtime-usable branch support cases。
+- [x] 检查 runtime 是否先 root，再 branch，再 compiler；多个同 root singleton 不应再直接互相挡：root-bias contract 一致时保留 top root-compatible candidates，再做 branch/compiler。
+- [x] 实验失败时先按 `not_retrieved / retrieved_not_admitted / admitted_no_branch / branch_replay_failed / runtime_no_match / compiler_no_action / rewrite_failed` 定位。
+
+审查后补充修正：
+
+- 第一次 high 审查指出 branch runtime 仍借用 formal replay 行，不能证明 replay 实际选中了同一 branch。
+- 已补 `branch_member_replay`：
+  - 每个 branch 先构造成 branch-scoped memory，只保留该 branch 的 bundles/contracts。
+  - branch support case replay 时记录 `forced_branch_id`、`selected_branch_id`、`selected_bundle_ids`。
+  - branch runtime 只有在 replay 选中同一 branch 或其 bundle、compile 通过、action 数合法、rewrite 改善且不退化时才置为 usable。
+- 审查还指出 root closure 不是 fixed-point、LLM `membership_by_case` 未合并、root-bias key 混入 effect/action 字段、same-root runtime 只返回 top1。
+- 已补：
+  - root closure 改为 fixed-point。
+  - LLM membership 与 mechanical closure 合并进 member status。
+  - root-bias key 仅保留 stable bias / repair interface / source misread / target preference 等 root 字段。
+  - same-root conflict 时返回 selection budget 内的 root-compatible candidates，不再 top1。
