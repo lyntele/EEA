@@ -1,0 +1,409 @@
+"""Serial library evolution helpers for EEA v2.
+
+The current learning path keeps singleton sources and strict formal patterns.
+Experience-family formation is disabled as a runtime/promotion source.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from method.EEA.rulebook.common.core.data_structures import GroupSummary, LibraryStateV2
+from method.EEA.rulebook.common.learning.pattern_formation import form_offline_families
+from method.EEA.rulebook.common.learning.promotion import (
+    CaseLoader,
+    apply_promotion_decision,
+    integrate_promoted_groups,
+    run_promotion_test,
+)
+from method.EEA.rulebook.common.runtime.trigger_contract import (
+    ensure_materialized_trigger_contract,
+    materialize_library_runtime_contracts,
+)
+from method.EEA.rulebook.common.core.vocabulary import GroupStatus, GroupType
+
+
+def _payload(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {key: _payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_payload(item) for item in value]
+    return value
+
+
+def _status_value(group: GroupSummary) -> str:
+    status = getattr(group, "status", "")
+    return str(getattr(status, "value", status))
+
+
+def _library_counts(library: LibraryStateV2) -> Dict[str, int]:
+    return {
+        "patterns": len(library.patterns or []),
+        "experience_families": len(library.experience_families or []),
+        "singletons": len(library.singletons or []),
+        "cases_processed": int(library.cases_processed or 0),
+    }
+
+
+def _compact_pattern_report(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "group_id": str(row.get("group_id") or ""),
+        "case_ids": [str(case_id) for case_id in (row.get("case_ids") or [])],
+        "support": int(row.get("support") or 0),
+        "runtime_usable": bool(row.get("runtime_usable", False)),
+        "promotion_state": str(row.get("promotion_state") or ""),
+        "stable_bias_key": row.get("stable_bias_key"),
+        "primary_repair_interface": row.get("primary_repair_interface"),
+        "reject_reason": row.get("reject_reason"),
+        "effect_axes": list(row.get("effect_axes") or [])[:8],
+        "manual_label_counts": dict(row.get("manual_label_counts") or {}),
+    }
+
+
+def _compact_promotion_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = dict(row.get("replay_metrics") or {})
+    formal_metrics = dict(row.get("formal_replay_metrics") or {})
+    promoted = dict(row.get("promoted_group") or {})
+    branch_runtime = dict(row.get("branch_runtime") or {})
+    return {
+        "group_id": str(row.get("group_id") or promoted.get("group_id") or ""),
+        "eligible": bool(row.get("eligible", False)),
+        "reason": str(row.get("reason") or "")[:1000],
+        "formal_promotion_blocker": str(row.get("formal_promotion_blocker") or "")[:1000],
+        "support_protocol_passed": bool(row.get("support_protocol_passed", False)),
+        "replay_metrics": {
+            key: metrics.get(key)
+            for key in (
+                "compile_coverage",
+                "replay_improvement",
+                "replay_regression",
+                "sample_size",
+                "comparison_unknown_rate",
+            )
+        },
+        "formal_replay_metrics": {
+            key: formal_metrics.get(key)
+            for key in (
+                "compile_coverage",
+                "replay_improvement_llm_selected",
+                "replay_improvement_deterministic_unique",
+                "replay_regression",
+                "sample_size",
+                "formal_eligible_sample_size",
+            )
+        },
+        "promoted_group": {
+            "group_id": str(promoted.get("group_id") or ""),
+            "group_type": str(promoted.get("group_type") or ""),
+            "runtime_usable": bool(promoted.get("runtime_usable", False)),
+            "status": str(promoted.get("status") or ""),
+            "promotion_state": str(promoted.get("promotion_state") or ""),
+        },
+        "branch_runtime": {
+            "runtime_usable_branch_count": int(
+                branch_runtime.get("runtime_usable_branch_count") or 0
+            ),
+            "runtime_usable_branch_ids": list(
+                branch_runtime.get("runtime_usable_branch_ids") or []
+            )[:12],
+            "runtime_superseded_case_ids": list(
+                branch_runtime.get("runtime_superseded_case_ids") or []
+            )[:24],
+        },
+    }
+
+
+def compact_evolution_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a log-safe summary for online adapters.
+
+    Full formation/replay reports contain pair decisions and replay rows that
+    grow with the whole prefix. They are useful offline, but should not be
+    embedded in per-case runtime logs.
+    """
+    formation = dict(report.get("formation") or {})
+    patterns = [
+        _compact_pattern_report(dict(row))
+        for row in (formation.get("patterns") or [])[:50]
+        if isinstance(row, dict)
+    ]
+    promotion_results = [
+        _compact_promotion_result(dict(row))
+        for row in (report.get("promotion_results") or [])[:50]
+        if isinstance(row, dict)
+    ]
+    return {
+        "schema_version": "evolution-report-compact-v1",
+        "event_kind": str(report.get("event_kind") or ""),
+        "focus_case_ids": [str(case_id) for case_id in (report.get("focus_case_ids") or [])],
+        "library_counts_before": dict(report.get("library_counts_before") or {}),
+        "library_counts_after": dict(report.get("library_counts_after") or {}),
+        "formation_counts": {
+            "input": dict(formation.get("input_counts") or {}),
+            "output": dict(formation.get("output_counts") or {}),
+        },
+        "candidate_pattern_count": int(report.get("candidate_pattern_count") or 0),
+        "candidate_evolved_object_count": int(report.get("candidate_evolved_object_count") or 0),
+        "promotion_skipped_reason": report.get("promotion_skipped_reason"),
+        "promoted_runtime_objects": list(report.get("promoted_runtime_objects") or []),
+        "promotion_results": promotion_results,
+        "patterns": patterns,
+        "runtime_contract_validation": dict(report.get("runtime_contract_validation") or {}),
+        "freeze_manifest": dict(report.get("freeze_manifest") or {}),
+        "learned_but_no_future_opportunity": list(
+            report.get("learned_but_no_future_opportunity") or []
+        ),
+    }
+
+
+def _source_singletons_by_case_id(library: LibraryStateV2) -> Dict[str, GroupSummary]:
+    """Return per-case singleton source programs, including archived ones."""
+    sources: Dict[str, GroupSummary] = {}
+    for group in library.singletons or []:
+        if group.group_type != GroupType.SINGLETON or len(group.case_ids or []) != 1:
+            continue
+        source = group.model_copy(deep=True)
+        source.status = GroupStatus.ACTIVE
+        source.runtime_usable = True
+        ensure_materialized_trigger_contract(source)
+        sources[str(group.case_ids[0])] = source
+    return sources
+
+
+def _active_evolution_candidates(
+    formed_library: LibraryStateV2,
+    *,
+    focus_case_ids: Optional[Set[str]] = None,
+) -> List[GroupSummary]:
+    by_id: Dict[str, GroupSummary] = {}
+    for family in list(formed_library.patterns or []):
+        if family.group_type != GroupType.PATTERN:
+            continue
+        if _status_value(family) != GroupStatus.ACTIVE.value:
+            continue
+        by_id[family.group_id] = family
+    # Focus is audit context for the event that triggered this evolution cycle;
+    # replay/promotion candidates come from the whole current memory prefix.
+    _ = focus_case_ids
+    return sorted(
+        by_id.values(),
+        key=lambda group: (min(map(str, group.case_ids or [""])), group.group_id),
+    )
+
+
+def freeze_library_manifest(
+    *,
+    library: LibraryStateV2,
+    reason: str,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build and optionally write a compact freeze manifest."""
+    manifest: Dict[str, Any] = {
+        "schema_version": "library-freeze-v1",
+        "reason": reason,
+        "db_id": library.db_id,
+        "cases_processed": int(library.cases_processed or 0),
+        "library_counts": _library_counts(library),
+        "group_versions": {},
+        "frozen_at_utc": datetime.utcnow().isoformat(),
+    }
+    for group in [
+        *(library.patterns or []),
+        *(library.singletons or []),
+    ]:
+        manifest["group_versions"][group.group_id] = {
+            "group_type": str(getattr(group.group_type, "value", group.group_type)),
+            "version": int(group.version or 0),
+            "case_ids": list(group.case_ids or []),
+            "runtime_usable": bool(group.runtime_usable),
+            "status": str(getattr(group.status, "value", group.status)),
+            "promotion_state": group.lifecycle.promotion_state,
+        }
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        manifest["path"] = str(output_path)
+    return manifest
+
+
+def evolve_library_with_replay(
+    *,
+    library: LibraryStateV2,
+    event_kind: str,
+    case_loader: Optional[CaseLoader] = None,
+    db_path: Optional[str] = None,
+    database_dir: Optional[str] = None,
+    manual_groups: Optional[Dict[str, Any]] = None,
+    focus_case_ids: Optional[Iterable[str]] = None,
+    max_neighbor_edges: int = 5,
+    family_runtime_policy: str = "replay_gated",
+    promotion_min_support: int = 2,
+    row_sample_limit: int = 5000,
+    freeze_output_path: Optional[Path] = None,
+) -> Tuple[LibraryStateV2, Dict[str, Any]]:
+    """Run one serial singleton->pattern evolution cycle."""
+    focus_set = {str(case_id) for case_id in (focus_case_ids or set())}
+    working_library = library.model_copy(deep=True)
+    working_library.experience_families = []
+    before_counts = _library_counts(working_library)
+    formed_library, formation_report = form_offline_families(
+        working_library,
+        manual_groups=manual_groups,
+        max_neighbor_edges=max_neighbor_edges,
+        mark_runtime_usable=False,
+        focus_case_ids=focus_set or None,
+    )
+    family_candidates = _active_evolution_candidates(
+        formed_library,
+        focus_case_ids=focus_set or None,
+    )
+    report: Dict[str, Any] = {
+        "event_kind": event_kind,
+        "focus_case_ids": sorted(focus_set),
+        "library_counts_before": before_counts,
+        "formation": _payload(formation_report),
+        "candidate_family_count": 0,
+        "candidate_evolved_object_count": len(family_candidates),
+        "candidate_pattern_count": len(
+            [
+                group
+                for group in family_candidates
+                if group.group_type == GroupType.PATTERN
+            ]
+        ),
+        "promotion_results": [],
+        "promoted_runtime_objects": [],
+        "promotion_skipped_reason": None,
+    }
+
+    can_run_replay = bool(case_loader is not None and db_path)
+    if (
+        family_runtime_policy == "replay_gated"
+        and int(working_library.cases_processed or 0) >= int(promotion_min_support)
+        and can_run_replay
+    ):
+        source_singletons = _source_singletons_by_case_id(working_library)
+        promoted_groups: List[GroupSummary] = []
+        for family in family_candidates:
+            result = run_promotion_test(
+                group=family,
+                source_singletons_by_case_id=source_singletons,
+                case_loader=case_loader,
+                db_path=str(db_path),
+                database_dir=database_dir,
+                row_sample_limit=row_sample_limit,
+            )
+            promoted = apply_promotion_decision(family, result)
+            promoted_groups.append(promoted)
+            result_payload = _payload(result)
+            result_payload["promoted_group"] = {
+                "group_id": promoted.group_id,
+                "group_type": str(getattr(promoted.group_type, "value", promoted.group_type)),
+                "runtime_usable": bool(promoted.runtime_usable),
+                "status": str(getattr(promoted.status, "value", promoted.status)),
+                "promotion_state": promoted.lifecycle.promotion_state,
+            }
+            program = getattr(promoted.instantiation_program, "synthesized_program", None)
+            envelope = _payload(getattr(program, "program_envelope", None)) or {}
+            runtime_branches = [
+                dict(branch)
+                for branch in (envelope.get("runtime_branches") or [])
+                if isinstance(branch, dict)
+            ]
+            result_payload["branch_runtime"] = {
+                "runtime_usable_branch_count": sum(
+                    1 for branch in runtime_branches if bool(branch.get("runtime_usable"))
+                ),
+                "runtime_usable_branch_ids": [
+                    str(branch.get("branch_id") or "")
+                    for branch in runtime_branches
+                    if bool(branch.get("runtime_usable"))
+                ],
+                "runtime_superseded_case_ids": sorted(
+                    {
+                        str(case_id)
+                        for branch in runtime_branches
+                        if bool(branch.get("runtime_usable"))
+                        for case_id in (branch.get("support_case_ids") or [])
+                        if str(case_id)
+                    }
+                ),
+            }
+            report["promotion_results"].append(result_payload)
+            if promoted.runtime_usable:
+                report["promoted_runtime_objects"].append(result_payload["promoted_group"])
+        integrate_promoted_groups(working_library, promoted_groups)
+    else:
+        if family_runtime_policy != "replay_gated":
+            report["promotion_skipped_reason"] = f"family_runtime_policy={family_runtime_policy}"
+        elif int(working_library.cases_processed or 0) < int(promotion_min_support):
+            report["promotion_skipped_reason"] = "below_promotion_min_support"
+        elif not can_run_replay:
+            report["promotion_skipped_reason"] = "missing_case_loader_or_db_path"
+        # Keep discovered strict patterns offline when replay cannot run, but
+        # do not remove or deactivate their source singletons. Runtime admission
+        # still requires a later replay-gated cycle.
+        integrate_promoted_groups(working_library, family_candidates)
+
+    report["library_counts_after"] = _library_counts(working_library)
+    _library, contract_report = materialize_library_runtime_contracts(working_library)
+    report["runtime_contract_validation"] = contract_report
+    if event_kind == "final_evolve_and_freeze" and report["promoted_runtime_objects"]:
+        report["learned_but_no_future_opportunity"] = [
+            dict(item) for item in report["promoted_runtime_objects"]
+        ]
+    if event_kind == "final_evolve_and_freeze" or freeze_output_path is not None:
+        report["freeze_manifest"] = freeze_library_manifest(
+            library=working_library,
+            reason=event_kind,
+            output_path=freeze_output_path,
+        )
+    return working_library, report
+
+
+def final_evolve_and_freeze(
+    *,
+    library: LibraryStateV2,
+    case_loader: Optional[CaseLoader] = None,
+    db_path: Optional[str] = None,
+    database_dir: Optional[str] = None,
+    manual_groups: Optional[Dict[str, Any]] = None,
+    max_neighbor_edges: int = 5,
+    family_runtime_policy: str = "replay_gated",
+    promotion_min_support: int = 2,
+    row_sample_limit: int = 5000,
+    freeze_output_path: Optional[Path] = None,
+) -> Tuple[LibraryStateV2, Dict[str, Any]]:
+    """Run the plan.md final evolution boundary and freeze manifest."""
+    return evolve_library_with_replay(
+        library=library,
+        event_kind="final_evolve_and_freeze",
+        case_loader=case_loader,
+        db_path=db_path,
+        database_dir=database_dir,
+        manual_groups=manual_groups,
+        focus_case_ids=None,
+        max_neighbor_edges=max_neighbor_edges,
+        family_runtime_policy=family_runtime_policy,
+        promotion_min_support=promotion_min_support,
+        row_sample_limit=row_sample_limit,
+        freeze_output_path=freeze_output_path,
+    )
+
+
+__all__ = [
+    "compact_evolution_report",
+    "evolve_library_with_replay",
+    "final_evolve_and_freeze",
+    "freeze_library_manifest",
+]

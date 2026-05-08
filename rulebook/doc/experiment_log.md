@@ -808,3 +808,29 @@ TODO / 自检项：
   - LLM membership 与 mechanical closure 合并进 member status。
   - root-bias key 仅保留 stable bias / repair interface / source misread / target preference 等 root 字段。
   - same-root conflict 时返回 selection budget 内的 root-compatible candidates，不再 top1。
+
+## 2026-05-08 代码结构重构：去除 v2 文件命名并收口 EEA API
+
+目标：
+
+- 将原先平铺在 `common/` 根目录的实现按主流程归并，避免 runtime、learning、analysis、LLM、IO 互相散乱引用。
+- 文件和目录命名不再带 `v2`，真实实现迁入语义化目录。
+- 新增 `rulebook/api.py` 作为 DeepEye 接入侧唯一正式入口；DeepEye post-selection 主链不再直接 import EEA 内部模块。
+- 不保留旧路径 shim；DeepEye 接入端同步更新。
+
+结构调整：
+
+- `common/core/`：数据结构、枚举、配置、基础 schema 类型。
+- `common/io/`：执行比较、数据库 schema 访问、本地 schema view。
+- `common/analysis/`：SQL 结构分析、信号构建、role graph、修复轨迹归一化。
+- `common/learning/`：wrong-case accumulate、pattern formation、shared program、promotion、evolution/freeze。
+- `common/runtime/`：runtime case view、trigger、branch/action 编译、hint 产出。
+- `common/llm/`：LLM client、JSON call helper、prompt builders。
+- `common/reporting/`：coverage、trigger observability、version/run metadata。
+
+验证要求：
+
+- EEA 内部 `py_compile` 必须通过。
+- `method.EEA.rulebook.api` 必须可导入 runtime/update/evolution/reporting 公开入口。
+- DeepEye post-selection 主链的 `run_single_db_e2e.py --help` 必须正常。
+- DeepEye 主链不得再引用 `method.EEA.rulebook.common.*_v2`、`prompts_v2`、`pool_coverage/versioning/trigger_observability` 旧路径。

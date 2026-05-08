@@ -5,9 +5,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from method.EEA.rulebook.common.llm_client import LLMClient
+from method.EEA.rulebook.common.llm.client import LLMClient
 from method.EEA.rulebook.refine.prompts import build_refinement_messages
-from method.EEA.rulebook.common.schema import (
+from method.EEA.rulebook.common.core.schema import (
     CaseInput,
     Mismatch,
     RefinementSessionTrace,

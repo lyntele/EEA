@@ -19,48 +19,34 @@ DeepEye selected SQL S0
 ## Main Code Layout
 
 ```text
+api.py                             Public EEA API consumed by DeepEye.
+
 common/
-  runtime_v2.py                    Runtime trigger, matching, guard assembly.
-  accumulate_v2.py                 Wrong-case audit -> singleton memory update.
-  evolution_v2.py                  Online/local memory evolution and final freeze.
-  action_compiler_v2.py            Code-side candidate enumeration + action selection.
-  repair_program_normalizer_v2.py  Pred/gold repair program -> canonical repair IR.
-  shared_program_synthesizer_v2.py Shared canonical program synthesis.
-  program_coverage_v2.py           Compiler coverage validation for canonical programs.
-  promotion_v2.py                  Replay-gated family/pattern promotion.
-  family_formation_v2.py           Singleton/family grouping and replay checks.
-  trigger_contract_v2.py           Runtime trigger contracts and executable checks.
-  signal_summary_v2.py             Formation and trigger signal construction.
-  role_graph_normalizer_v2.py      Schema-agnostic role graph extraction.
-  structure_delta_v2.py            Deterministic pred-vs-gold SQL structure delta.
-  llm_nodes_v2.py                  LLM node wrappers for audit/compiler/rewrite/hint.
-  llm_utils_v2.py                  Shared robust JSON LLM call helper.
-  code_preprocess_v2.py            Deterministic preprocessing before LLM audit.
-  pipeline_v2.py                   Offline wrong-case processing pipeline.
-  data_structures_v2.py            Pydantic contracts for v2 runtime/update objects.
-  vocabulary_v2.py                 Enums for signals, actions, scopes, statuses.
-  local_schema_v2.py               Per-case local schema recall.
-  db_schema_access_v2.py           SQLite/schema access helpers.
-  execution_compare_v2.py          SQL execution comparison.
-  prompts_v2/                      Prompt builders used by v2 LLM nodes.
+  core/                            Data structures, enums, config, base schemas.
+  io/                              DB schema access, local schema, execution compare.
+  analysis/                        SQL structure, signals, role graph, repair IR.
+  learning/                        Accumulate, pattern formation, promotion, evolution.
+  runtime/                         Runtime trigger, branch match, compiler, hints.
+  llm/                             LLM client, JSON helpers, prompt builders.
+  reporting/                       Coverage, trigger observability, version metadata.
 
 cli/
-  run_online_e2e_validation_v2.py      Online replay/update validation harness.
-  run_multidb_validation_v2.py         Multi-database validation orchestrator.
-  replay_runtime_trigger_v2.py         Trigger-only replay.
-  replay_runtime_rewrite_v2.py         Runtime rewrite replay.
-  replay_manual_pattern_compiler_v2.py Compiler coverage replay for manual groups.
-  offline_family_formation_v2.py       Offline family formation check.
-  build_v2_library_from_work.py        Build v2 library from DeepEye work dirs.
-  convert_manual_patterns_to_v2.py     Convert manual pattern groups into v2 library.
-  audit_v2_run.py                      Inspect a v2 run directory.
+  run_online_e2e_validation.py         Online replay/update validation harness.
+  run_multidb_validation.py            Multi-database validation orchestrator.
+  replay_runtime_trigger.py            Trigger-only replay.
+  replay_runtime_rewrite.py            Runtime rewrite replay.
+  replay_manual_pattern_compiler.py    Compiler coverage replay for manual groups.
+  offline_pattern_formation.py         Offline pattern formation check.
+  build_library_from_work.py           Build library from DeepEye work dirs.
+  convert_manual_patterns.py           Convert manual pattern groups into library.
+  audit_run.py                         Inspect a run directory.
 
 refine/
-  Legacy SQL parsing/refiner support kept because current v2 utilities still
+  Legacy SQL parsing/refiner support kept because current utilities still
   reuse the SQL structure parser. It is not the current EEA entry point.
 
 tests/
-  test_canonical_program_v2.py         Regression coverage for canonical program,
+  test_canonical_program.py            Regression coverage for canonical program,
                                       compiler, trigger, and rewrite behavior.
 ```
 

@@ -5,9 +5,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from method.EEA.rulebook.common.config import RulebookConfig, load_config
-from method.EEA.rulebook.common.llm_client import LLMClient
-from method.EEA.rulebook.common.schema import (
+from method.EEA.rulebook.common.core.config import RulebookConfig, load_config
+from method.EEA.rulebook.common.llm.client import LLMClient
+from method.EEA.rulebook.common.core.schema import (
     BranchPlan,
     BranchStepRecord,
     BranchTrace,

@@ -1,6 +1,6 @@
-# Current EEA v2 Implementation Overview
+# Current EEA Implementation Overview
 
-This document is a fast map of the current EEA v2 codebase. It reflects the
+This document is a fast map of the current EEA codebase. It reflects the
 post-selection integration path and the current runtime/update/evolve stack.
 
 ## 1. End-to-End Flow
@@ -94,7 +94,7 @@ promotion proves that the pattern is safe for runtime use.
 
 ## 2. Runtime Path
 
-### `common/runtime_v2.py`
+### `common/runtime/runtime.py`
 
 Main answer-blind runtime entry.
 
@@ -150,7 +150,7 @@ Important outputs:
 - `guard`
 - `reason = no_match / no_action / blocked / ready`
 
-### `common/trigger_contract_v2.py`
+### `common/runtime/trigger_contract.py`
 
 Runtime contract materialization and validation.
 
@@ -161,7 +161,7 @@ Responsibilities:
 - Decide whether a memory object is runtime-executable.
 - Remove broad/non-substantive trigger signals from hard runtime use.
 
-### `common/signal_summary_v2.py`
+### `common/analysis/signal_summary.py`
 
 Builds formation-time summaries and runtime trigger contracts.
 
@@ -178,7 +178,7 @@ Responsibilities:
     - runtime-deterministic now requires `runtime_binding_coverage >= 1.0`
     - static compile coverage no longer upgrades runtime selection policy by itself
 
-### `common/role_graph_normalizer_v2.py`
+### `common/analysis/role_graph_normalizer.py`
 
 Schema-agnostic SQL role graph normalization.
 
@@ -197,7 +197,7 @@ Responsibilities:
 
 ## 3. Action Compiler And Rewrite Path
 
-### `common/action_compiler_v2.py`
+### `common/runtime/action_compiler.py`
 
 Code-side candidate enumeration for the current SQL.
 
@@ -229,14 +229,14 @@ Current implemented primitives:
 - `SWITCH_CANONICAL_FIELD`
 - `MATERIALIZE_RANKING_OUTPUT`
 
-### `common/llm_nodes_v2.py`
+### `common/llm/nodes.py`
 
 LLM wrapper layer for the current v2 stack.
 
 Responsibilities:
 
 - Build compact prompt payloads.
-- Call `common/llm_utils_v2.py`.
+- Call `common/llm/utils.py`.
 - Parse LLM JSON back into typed v2 contracts.
 
 Current runtime-facing node behavior:
@@ -247,7 +247,7 @@ Current runtime-facing node behavior:
 - `run_error_instance_extractor`
   - emits executable repair hypotheses plus hypotheses about source
     antipatterns / target invariants / uncertain axes
-  - canonical authority stays in `repair_program_normalizer_v2.py`
+  - canonical authority stays in `common/analysis/repair_program_normalizer.py`
 - `run_action_compiler`
   - LLM is a selector over code-enumerated candidates
   - deterministic unique preselection can bypass the LLM
@@ -269,7 +269,7 @@ Current runtime-facing node behavior:
   - readability helper only
   - does not decide applicability
 
-### `common/prompts_v2/`
+### `common/llm/prompts/`
 
 Prompt builders for current nodes.
 
@@ -292,7 +292,7 @@ Files:
 
 ## 4. Update / Audit / Memory Construction
 
-### `common/accumulate_v2.py`
+### `common/learning/accumulate.py`
 
 Wrong-case update entry.
 
@@ -302,7 +302,7 @@ Responsibilities:
 - Run audit + extraction + normalization.
 - Build singleton memory and merge it into `LibraryStateV2`.
 
-### `common/pipeline_v2.py`
+### `common/learning/case_pipeline.py`
 
 One-case offline/update pipeline.
 
@@ -318,7 +318,7 @@ Important behavior:
 - If the auditor emits `candidate_fix_sql`, code can validate it via execution
   comparison before treating it as `validated_sql`.
 
-### `common/code_preprocess_v2.py`
+### `common/analysis/code_preprocess.py`
 
 Deterministic preprocessing before LLM audit/extraction.
 
@@ -329,7 +329,7 @@ Responsibilities:
 - Build answer-blind case signal views
 - Build offline-only delta signatures
 
-### `common/structure_delta_v2.py`
+### `common/analysis/structure_delta.py`
 
 Deterministic pred-vs-gold structural delta.
 
@@ -338,14 +338,14 @@ Responsibilities:
 - Compute generic SQL structural differences without case rules.
 - Feed downstream audit/extraction/normalization.
 
-### `common/repair_program_normalizer_v2.py`
+### `common/common/analysis/repair_program_normalizer.py`
 
 Canonical repair IR extraction.
 
 Responsibilities:
 
 - Convert extracted repair hypotheses into canonical repair ops.
-- Call `contrastive_repair_effect_v2.py` to derive Phase-1
+- Call `common/analysis/contrastive_repair_effect.py` to derive Phase-1
   `ContrastiveRepairEffect` candidates from the audited pred-vs-target trace.
 - Populate:
   - `operation_signature`
@@ -360,7 +360,7 @@ Responsibilities:
   - `predicate_scope_delta`
   - `grain_delta`
 
-### `common/contrastive_repair_effect_v2.py`
+### `common/common/analysis/contrastive_repair_effect.py`
 
 Phase-1 offline effect discovery.
 
@@ -379,7 +379,7 @@ Responsibilities:
 
 ## 5. Shared Program / Singleton / Pattern / Promotion
 
-### `common/family_formation_v2.py`
+### `common/learning/pattern_formation.py`
 
 Build strict pattern candidates from singleton repair traces.
 
@@ -411,7 +411,7 @@ Responsibilities:
 - Keep `experience_families` empty in the evolved library. The schema field may
   exist for compatibility, but it is not a runtime or promotion source.
 
-### `common/shared_program_synthesizer_v2.py`
+### `common/learning/shared_program_synthesizer.py`
 
 Synthesizes shared canonical repair programs.
 
@@ -453,7 +453,7 @@ Responsibilities:
   - `unresolved_variation_axes`
 - Emit generic lowering families and allowed primitive sets.
 
-### `common/program_coverage_v2.py`
+### `common/learning/program_coverage.py`
 
 Coverage validator for shared programs.
 
@@ -467,7 +467,7 @@ Responsibilities:
   - if runtime binding exists, it reflects `runtime_binding_coverage`
   - otherwise it falls back to static coverage
 
-### `common/evolution_v2.py`
+### `common/learning/evolution.py`
 
 Online and final memory evolution.
 
@@ -482,7 +482,7 @@ Responsibilities:
   each evolved prefix runs branch-scoped member replay before a branch can become
   runtime visible.
 
-### `common/promotion_v2.py`
+### `common/learning/promotion.py`
 
 Replay-based promotion logic.
 
@@ -513,7 +513,7 @@ Responsibilities:
 
 ## 6. Core Contracts And Shared Types
 
-### `common/data_structures_v2.py`
+### `common/core/data_structures.py`
 
 Primary Pydantic contracts.
 
@@ -536,7 +536,7 @@ Important structures:
 - `GroupSummary`
 - `LibraryStateV2`
 
-### `common/vocabulary_v2.py`
+### `common/core/vocabulary.py`
 
 Shared enums and constants.
 
@@ -550,19 +550,19 @@ Contains:
 
 ## 7. Schema / Execution / Utilities
 
-### `common/local_schema_v2.py`
+### `common/io/local_schema.py`
 
 Builds local schema views for each case.
 
-### `common/db_schema_access_v2.py`
+### `common/io/db_schema_access.py`
 
 SQLite schema access helpers.
 
-### `common/execution_compare_v2.py`
+### `common/io/execution_compare.py`
 
 Execution comparison utilities.
 
-### `common/llm_utils_v2.py`
+### `common/llm/utils.py`
 
 Shared OpenAI-compatible JSON LLM caller.
 
@@ -579,15 +579,15 @@ point, but parts of the current code still reuse that parser stack.
 
 Current v2 CLIs:
 
-- `cli/run_online_e2e_validation_v2.py`
-- `cli/run_multidb_validation_v2.py`
-- `cli/replay_runtime_trigger_v2.py`
-- `cli/replay_runtime_rewrite_v2.py`
-- `cli/replay_manual_pattern_compiler_v2.py`
-- `cli/offline_family_formation_v2.py`
-- `cli/build_v2_library_from_work.py`
-- `cli/convert_manual_patterns_to_v2.py`
-- `cli/audit_v2_run.py`
+- `cli/run_online_e2e_validation.py`
+- `cli/run_multidb_validation.py`
+- `cli/replay_runtime_trigger.py`
+- `cli/replay_runtime_rewrite.py`
+- `cli/replay_manual_pattern_compiler.py`
+- `cli/offline_pattern_formation.py`
+- `cli/build_library_from_work.py`
+- `cli/convert_manual_patterns.py`
+- `cli/audit_run.py`
 
 Removed old v1 cluster pipeline:
 

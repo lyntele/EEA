@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import sqlglot
 from sqlglot import exp
 
-from method.EEA.rulebook.common.schema import (
+from method.EEA.rulebook.common.core.schema import (
     ASTSignature,
     ExecutionResult,
     Fingerprints,
