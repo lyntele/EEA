@@ -809,6 +809,33 @@ TODO / 自检项：
   - root-bias key 仅保留 stable bias / repair interface / source misread / target preference 等 root 字段。
   - same-root conflict 时返回 selection budget 内的 root-compatible candidates，不再 top1。
 
+2026-05-08 追加修正：
+
+- 复查 `toxicology_focus18_postsel_v1_qwen3coderflash_20260508_r2` 后发现上面最后两项仍未完全落到主路径：
+  - branch-scoped replay 在进入真实 replay 前仍调用 group-level member coverage，因此 branch memory 被 `member_candidate_binding_failed` 提前判成 `training_memory_contract_invalid`。
+  - same-root singleton 选择仍把 learned source program 的大段来源字段放入 action/root key，导致 `206/249/268/285/307` 在 q253 当前案例上都能枚举动作，却被拆成多个 action/root bucket。
+- 本次实现改为：
+  - `_contract_program_issues(..., require_member_coverage=False)` 用于 `branch_member_replay`。branch-scoped replay 只检查是否有可执行 program 和 case-derived repair steps，不再要求整组 member coverage；member coverage 仍保留在 pattern-level diagnostics。
+  - branch runtime policy 改成 `branch_support_all_safe_any_improved`：branch support 必须全部选中同 branch、compile pass、无 comparison unknown、无 regression、action count 合法；但只要求至少一个 support member 改善，不再要求每个 member 都改善，也不再用 pattern-level improvement ratio 阈值一票否决。
+  - runtime root key 改为优先使用结构化 root effect/action shape，不再使用自然语言 interface 的微小措辞差异切 root；自然语言 interface 只在结构化 root 字段缺失时兜底。
+  - same-root conflict resolution 增加 current-case transform key：先用代码枚举当前 case 的可执行 candidate，只比较 primitive + 当前绑定参数 + dependency repair program，不比较 source case id、bundle id、canonical program id、support evidence 等来源字段。多个同 root singleton 必须存在共同 current transform 才允许进入 compiler；如果当前变换集合确实不同，则报告 `ambiguous_current_transform`，不能按多数派放行。
+- high 审查后的追加收窄：
+  - transform key 从正向字段白名单改为“保留全部当前 executable arguments，剔除 identity/provenance/audit/LLM rationale 字段”，避免遗漏 `MOVE_CONDITION`、`CHANGE_GRAIN`、ranking 等 primitive 的关键参数。
+  - transform key 显式携带 `ActionCandidateSet.primitive`，不再依赖 candidate 上不存在的 primitive 字段。
+  - transform key 最终只由 `ActionCandidateSet.primitive + non-empty executable args` 组成；不再混入 `bundle_primary_primitive/effect_kind` 等 learned metadata。
+  - `canonical_op_type/counts_as_action` 也从 transform key 中移除；metadata-only candidate 会返回空 key，不能进入 same-root transform 放行。
+  - nested `repair_program.arguments` 同样走 executable-args 清洗；只有 canonical metadata 的 dependency step 不会单独形成 transform key。
+  - 如果 nested dependency step 清洗后没有可执行参数，不保留空 `repair_program` shell；同一 action bucket 多 memory 也必须验证共同 current transform。
+  - all-empty transform key 不再 fallback 放行；同 root 多 action bucket 必须有共同 current transform，否则统一 `ambiguous_current_transform`。
+  - root fallback 不再使用 `locus/op_family/target_family` 这类 action-level 字段切 root，也不再让这些字段把无 root evidence 的对象推进 same-root transform 阶段；这些字段只用于 current transform/branch 层。
+  - branch replay support completeness 改为 holdout case-id set 精确比较，重复 replay row 不能掩盖缺失 support member。
+- 最小真实复现：
+  - 用 r2 的 `final_library.json` 和 q253 `eea_runtime_request.json` 重跑 `prepare_rewrite_plan`。
+  - 修改前：`passthrough_no_match`，`206/249/268/285/307` 均通过基础 gate 后被 conflict 打掉。
+  - 修改后：完整 r2 库会报告 `ambiguous_current_transform`，因为 `206/249/307` 和 `268/285` 在当前 q253 上对应两个不同可执行变换分支，这不再被多数派强行放行。
+  - 用只包含 `206/249/307` 的同变换子库重跑 q253：`reason=ready`，matched `grp-sing-toxicology-307 / grp-sing-toxicology-249`，产出 1 个 `DROP_SELECT_SLOT` action，hint 为删除 `a2.element`，说明同根同当前变换不再被 conflict 误挡。
+  - 对 `grp-pat-toxicology-206-253-93286776` branch-scoped memory 检查：group coverage 模式仍有 `member_candidate_binding_failed`，branch-scoped 模式已无 contract issue，说明 promotion 的早期错误 blocker 已拆开。
+
 ## 2026-05-08 代码结构重构：去除 v2 文件命名并收口 EEA API
 
 目标：

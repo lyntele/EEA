@@ -216,19 +216,21 @@ def _contract_program_issues(
     group: GroupSummary,
     *,
     member_case_views: Optional[Mapping[str, Any]] = None,
+    require_member_coverage: bool = True,
 ) -> List[str]:
     issues: List[str] = []
     program = getattr(group.instantiation_program, "synthesized_program", None)
-    coverage = validate_group_program_coverage(
-        group,
-        member_case_views=member_case_views,
-    )
     if program is None:
         issues.append("missing_synthesized_program")
     elif not program.ops:
         issues.append("empty_synthesized_program")
-    if coverage.blockers:
-        issues.extend(coverage.blockers)
+    if require_member_coverage:
+        coverage = validate_group_program_coverage(
+            group,
+            member_case_views=member_case_views,
+        )
+        if coverage.blockers:
+            issues.extend(coverage.blockers)
     steps = _contract_repair_program(group)
     if not steps:
         issues.append("missing_group_repair_program_steps")
@@ -444,11 +446,19 @@ def _row_selects_branch(row: Mapping[str, Any], branch: Mapping[str, Any]) -> bo
 
 
 def _branch_replay_row_passed(row: Mapping[str, Any], branch: Mapping[str, Any]) -> bool:
+    """Whether one branch-scoped member replay row proves positive repair value."""
+    return bool(_branch_replay_row_runtime_safe(row, branch) and row.get("improved"))
+
+
+def _branch_replay_row_runtime_safe(row: Mapping[str, Any], branch: Mapping[str, Any]) -> bool:
     """Whether one branch-scoped member replay row validates this runtime branch.
 
     Branch replay is not formal promotion evidence: it can replay a member
     through the branch-specific memory to validate that runtime branch selection,
-    compiler binding, and rewrite all follow the same executable branch.
+    compiler binding, and rewrite all follow the same executable branch. A
+    branch can be runtime-usable when all support members compile safely and at
+    least one member shows improvement; it does not need every support member to
+    improve, because some support rows may already be close to the gold form.
     """
     return bool(
         _row_selects_branch(row, branch)
@@ -456,9 +466,28 @@ def _branch_replay_row_passed(row: Mapping[str, Any], branch: Mapping[str, Any])
         and not _row_comparison_unknown_reasons(row)
         and row.get("compile_pass")
         and int(row.get("action_count") or 0) > 0
-        and row.get("improved")
         and not row.get("regressed")
     )
+
+
+def _branch_replay_failure_reasons(
+    row: Mapping[str, Any],
+    branch: Mapping[str, Any],
+) -> List[str]:
+    reasons: List[str] = []
+    if not _row_selects_branch(row, branch):
+        reasons.append("branch_not_selected")
+    if row.get("comparison_unknown") or _row_comparison_unknown_reasons(row):
+        reasons.append("comparison_unknown")
+    if not row.get("compile_pass"):
+        reasons.append("compile_failed")
+    if int(row.get("action_count") or 0) <= 0:
+        reasons.append("no_actions")
+    if row.get("regressed"):
+        reasons.append("regressed")
+    if not row.get("improved"):
+        reasons.append("not_improved")
+    return reasons or ["unknown"]
 
 
 def _metrics_from_rows(rows: Sequence[Mapping[str, Any]], *, version: int) -> ReplayMetrics:
@@ -613,11 +642,22 @@ def _replay_one_holdout(
         row["holdout_in_training"] = True
         row["eligible_for_formal_promotion"] = False
         row["protocol_violation"] = "holdout_present_in_training_memory"
-    memory_issues = _contract_program_issues(memory)
+    contract_validation_mode = (
+        "branch_scoped_runtime"
+        if str(memory_kind) == "branch_member_replay"
+        else "group_member_coverage"
+    )
+    memory_issues = _contract_program_issues(
+        memory,
+        require_member_coverage=contract_validation_mode != "branch_scoped_runtime",
+    )
     if memory_issues:
         row["reason"] = "training_memory_contract_invalid"
         row["contract_issues"] = memory_issues
+        row["contract_issue_count"] = len(memory_issues)
+        row["contract_validation_mode"] = contract_validation_mode
         return row
+    row["contract_validation_mode"] = contract_validation_mode
     case = case_loader(str(holdout_case_id))
     if not case:
         row["reason"] = "missing_case_record"
@@ -1458,6 +1498,13 @@ def _apply_branch_runtime_decision(
             for row in _branch_rows_for_branch(branch, branch_replay_rows)
             if str(row.get("holdout_case_id") or "") in support_case_id_set
         ]
+        observed_support_ids = {
+            str(row.get("holdout_case_id") or "")
+            for row in branch_rows
+            if str(row.get("holdout_case_id") or "")
+        }
+        missing_support_ids = sorted(support_case_id_set - observed_support_ids)
+        extra_support_ids = sorted(observed_support_ids - support_case_id_set)
         branch_metrics = _metrics_from_rows(
             branch_rows,
             version=int(group.version or 0),
@@ -1466,30 +1513,37 @@ def _apply_branch_runtime_decision(
             str(row.get("holdout_case_id") or "")
             for row in branch_rows
             if row.get("holdout_case_id") is not None
-            and not _branch_replay_row_passed(row, branch)
+            and not _branch_replay_row_runtime_safe(row, branch)
         ]
+        improved_members = [
+            str(row.get("holdout_case_id") or "")
+            for row in branch_rows
+            if row.get("holdout_case_id") is not None
+            and _branch_replay_row_passed(row, branch)
+        ]
+        failed_member_reasons = {
+            str(row.get("holdout_case_id") or ""): _branch_replay_failure_reasons(row, branch)
+            for row in branch_rows
+            if row.get("holdout_case_id") is not None
+            and not _branch_replay_row_runtime_safe(row, branch)
+        }
         blockers: List[str] = []
         if not support_case_ids:
             blockers.append("branch_support_missing")
-        if len(branch_rows) != len(support_case_ids):
+        if observed_support_ids != support_case_id_set:
             blockers.append(
-                f"branch_runtime_replay_missing:{len(branch_rows)}/{len(support_case_ids)}"
+                f"branch_runtime_replay_support_mismatch:{len(observed_support_ids)}/{len(support_case_ids)}"
             )
-        if branch_rows and not all(_branch_replay_row_passed(row, branch) for row in branch_rows):
-            blockers.append("branch_runtime_replay_failed")
-        if branch_metrics.compile_coverage < PATTERN_PROMOTION_MIN_COMPILE_COVERAGE:
-            blockers.append("branch_compile_coverage_below_threshold")
+        if len(branch_rows) != len(observed_support_ids):
+            blockers.append("branch_runtime_replay_duplicate_rows")
+        if branch_rows and not all(_branch_replay_row_runtime_safe(row, branch) for row in branch_rows):
+            blockers.append("branch_runtime_compile_or_regression_failed")
         if branch_metrics.replay_regression > MAX_REPLAY_REGRESSION:
             blockers.append("branch_replay_regression_above_limit")
         if branch_metrics.mean_action_count > MAX_ACTION_COUNT_PER_CASE:
             blockers.append("branch_action_count_above_limit")
-        if (
-            branch_metrics.replay_improvement_llm_selected
-            < PATTERN_PROMOTION_MIN_REPLAY_IMPROVEMENT
-            and branch_metrics.replay_improvement
-            < PATTERN_PROMOTION_MIN_REPLAY_IMPROVEMENT
-        ):
-            blockers.append("branch_replay_improvement_below_threshold")
+        if branch_rows and not improved_members:
+            blockers.append("branch_replay_no_improvement_evidence")
         branch_usable = bool(not blockers)
         pattern_blockers: List[str] = []
         if formal_blocker:
@@ -1503,6 +1557,11 @@ def _apply_branch_runtime_decision(
         updated["runtime_usable"] = branch_usable
         updated["runtime_blockers"] = [] if branch_usable else blockers
         updated["pattern_level_blockers"] = pattern_blockers
+        updated["runtime_validation_policy"] = "branch_support_all_safe_any_improved"
+        updated["improved_support_case_ids"] = improved_members
+        updated["failed_member_reasons"] = failed_member_reasons
+        updated["missing_support_case_ids"] = missing_support_ids
+        updated["extra_support_case_ids"] = extra_support_ids
         updated["replay_metrics"] = _branch_replay_payload(
             branch_id=branch_id,
             support_case_ids=support_case_ids,

@@ -497,10 +497,27 @@ Responsibilities:
   `program_envelope.runtime_branches`; runtime never selects an unvalidated
   branch. Branch admission is computed from `branch_member_replay`: EEA first
   builds a branch-scoped memory containing only that branch's bundles/contracts,
-  replays the branch's support cases, and accepts the branch only if replay
-  actually selects/binds that same branch or its bundle and improves without
-  regression. Whole-pattern blockers remain audit metadata; runtime visibility
-  is determined by whether at least one branch is replay-usable.
+  replays the branch's support cases, and checks branch execution directly.
+  In this mode, contract validation does not reuse whole-group member coverage,
+  because branch replay is the coverage test. A branch becomes runtime usable
+  when every support row selects/binds the same branch, compiles with at least
+  one action, has no comparison unknown and no regression, and at least one
+  support row shows improvement. Whole-pattern blockers remain audit metadata;
+  runtime visibility is determined by whether at least one branch is
+  replay-usable.
+- same-root runtime singleton/pattern conflict resolution:
+  if multiple memories pass source trigger but have different learned action
+  contracts, runtime first compares root-bias shape and then asks the compiler
+  enumerator for current-case transform keys. These keys use only primitive,
+  current bound arguments, and dependency repair steps, not source case ids,
+  bundle ids, canonical program ids, or support evidence. Memories that compile
+  to a shared current transform can enter compiler together; if no shared
+  transform exists across the passed memories, runtime blocks the case as
+  `ambiguous_current_transform`. The transform key is built from the
+  `ActionCandidateSet` primitive plus non-empty current executable arguments
+  after dropping identity/provenance/audit fields; learned metadata such as
+  bundle/effect labels does not participate. An empty or incomplete transform
+  key is not allowed to fall back into compiler execution.
 - runtime-usable branch support controls which source singletons are
   superseded. If a pattern has only some usable branches, unsupported branch
   source singletons remain active instead of being removed by the root pattern.

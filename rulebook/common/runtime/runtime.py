@@ -68,7 +68,7 @@ _EDIT_SCOPE_ORDER = [
     "LIMIT",
     "SUBQUERY",
 ]
-_BINDER_DRY_RUN_CACHE: Dict[str, Tuple[List[Any], str]] = {}
+_BINDER_DRY_RUN_CACHE: Dict[str, Tuple[List[Tuple[str, Any]], str]] = {}
 
 
 # =============================================================================
@@ -1102,10 +1102,10 @@ def _split_compiler_dry_run_failures(
     return hard, deferred
 
 
-def _binder_dry_run_candidates(
+def _binder_dry_run_candidate_rows(
     group: GroupSummary,
     case_view: RuntimeCaseView,
-) -> Tuple[List[Any], str]:
+) -> Tuple[List[Tuple[str, Any]], str]:
     cache_key = _binder_dry_run_cache_key(group, case_view)
     cached = _BINDER_DRY_RUN_CACHE.get(cache_key)
     if cached is not None:
@@ -1117,15 +1117,16 @@ def _binder_dry_run_candidates(
         )
     except Exception as exc:  # pragma: no cover - defensive gate logging.
         return [], f"binder_exception:{type(exc).__name__}"
-    candidates = [
-        candidate
-        for candidate_set in candidate_sets or []
-        for candidate in (getattr(candidate_set, "candidates", []) or [])
-        if str(getattr(candidate, "source_group_id", "") or "") == str(group.group_id)
-    ]
-    if candidates:
-        _BINDER_DRY_RUN_CACHE[cache_key] = (list(candidates), "binder_candidates_available")
-        return candidates, "binder_candidates_available"
+    rows: List[Tuple[str, Any]] = []
+    for candidate_set in candidate_sets or []:
+        primitive = getattr(candidate_set, "primitive", "")
+        primitive_name = str(getattr(primitive, "value", primitive) or "")
+        for candidate in getattr(candidate_set, "candidates", []) or []:
+            if str(getattr(candidate, "source_group_id", "") or "") == str(group.group_id):
+                rows.append((primitive_name, candidate))
+    if rows:
+        _BINDER_DRY_RUN_CACHE[cache_key] = (list(rows), "binder_candidates_available")
+        return rows, "binder_candidates_available"
     empty_reasons = [
         str(getattr(candidate_set, "empty_reason", "") or "")
         for candidate_set in candidate_sets or []
@@ -1134,6 +1135,14 @@ def _binder_dry_run_candidates(
     reason = ";".join(empty_reasons) or "binder_no_candidates"
     _BINDER_DRY_RUN_CACHE[cache_key] = ([], reason)
     return [], reason
+
+
+def _binder_dry_run_candidates(
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+) -> Tuple[List[Any], str]:
+    rows, reason = _binder_dry_run_candidate_rows(group, case_view)
+    return [candidate for _primitive, candidate in rows], reason
 
 
 def _binder_dry_run_success(group: GroupSummary, case_view: RuntimeCaseView) -> Tuple[bool, str]:
@@ -2314,7 +2323,22 @@ def _semantic_contract_payload(value: Any) -> Any:
     Runtime compatibility should compare the learned repair program, not the
     singleton/pattern object that happened to produce that program.
     """
-    payload = _payload(value)
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, set):
+        return [_semantic_contract_payload(item) for item in sorted(value, key=str)]
+    if isinstance(value, (list, tuple)):
+        return [_semantic_contract_payload(item) for item in value]
+    if hasattr(value, "model_dump"):
+        payload = value.model_dump(mode="python")
+    elif isinstance(value, Mapping):
+        payload = dict(value)
+    else:
+        payload = dict(getattr(value, "__dict__", {}) or {})
+        if not payload:
+            return str(value)
     if isinstance(payload, dict):
         out: Dict[str, Any] = {}
         for key, item in payload.items():
@@ -2326,6 +2350,67 @@ def _semantic_contract_payload(value: Any) -> Any:
     if isinstance(payload, list):
         return [_semantic_contract_payload(item) for item in payload]
     return payload
+
+
+def _stable_json(value: Any) -> str:
+    payload = _semantic_contract_payload(value)
+    if payload in (None, "", [], {}):
+        return ""
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _coarse_output_shape_delta(action_contract: Mapping[str, Any]) -> Dict[str, Any]:
+    shape = _payload(action_contract.get("output_shape_delta"))
+    keys = (
+        "operation",
+        "op",
+        "direction",
+        "from_arity",
+        "to_arity",
+        "current_arity",
+        "target_arity",
+        "current_grain",
+        "target_grain",
+        "grain_delta",
+    )
+    return {
+        key: shape.get(key)
+        for key in keys
+        if shape.get(key) not in (None, "", [], {})
+    }
+
+
+def _root_effect_payload(signals: Mapping[str, Any], action_contract: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return case-derived root-bias fields, excluding branch/accessory details."""
+
+    insight = _payload(signals.get("repair_insight_signature"))
+    admission = _payload(signals.get("pattern_admission"))
+    effect = (
+        signals.get("root_effect")
+        or signals.get("effect_core")
+        or signals.get("shared_effect")
+        or insight.get("effect_core")
+        or {}
+    )
+    delta_axes = (
+        signals.get("root_delta_axes")
+        or signals.get("delta_axes")
+        or insight.get("delta_axes")
+        or []
+    )
+    interface = str(
+        admission.get("primary_repair_interface")
+        or insight.get("interface_key")
+        or insight.get("repair_interface")
+        or ""
+    ).strip().lower()
+    return {
+        "stable_bias_key": str(admission.get("stable_bias_key") or "").strip().lower(),
+        "repair_interface": interface,
+        "output_shape_delta": _coarse_output_shape_delta(action_contract),
+        "effect_core": _semantic_contract_payload(effect),
+        "delta_axes": sorted(str(item) for item in (delta_axes or []) if str(item)),
+    }
 
 
 def _action_contract_key(group: GroupSummary) -> Tuple[str, ...]:
@@ -2399,27 +2484,24 @@ def _root_bias_contract_key(group: GroupSummary) -> Tuple[str, ...]:
     """Root-pattern key used before treating action branches as conflicts."""
 
     signals = _payload(getattr(group, "formation_signals", None))
-    admission = _payload(signals.get("pattern_admission"))
-    insight = _payload(signals.get("repair_insight_signature"))
     contract = _group_trigger_contract(group)
     action = _payload(contract.get("action_contract"))
-    stable_bias = str(admission.get("stable_bias_key") or "").strip().lower()
-    interface = str(
-        admission.get("primary_repair_interface")
-        or insight.get("interface_key")
-        or insight.get("repair_interface")
-        or ""
-    ).strip().lower()
-    source_misread = str(insight.get("source_misread") or "").strip().lower()
-    target_preference = str(insight.get("target_preference") or "").strip().lower()
-    key = (
-        stable_bias,
-        interface,
-        source_misread,
-        target_preference,
-    )
-    if any(key):
-        return ("root_bias", *key)
+    root_payload = _root_effect_payload(signals, action)
+    if any(value not in (None, "", [], {}) for value in root_payload.values()):
+        structured_root_present = bool(
+            root_payload.get("output_shape_delta")
+            or root_payload.get("effect_core")
+            or root_payload.get("delta_axes")
+        )
+        repair_interface = "" if structured_root_present else str(root_payload.get("repair_interface") or "")
+        return (
+            "root_bias",
+            str(root_payload.get("stable_bias_key") or ""),
+            repair_interface,
+            _stable_json(root_payload.get("output_shape_delta")),
+            _stable_json(root_payload.get("effect_core")),
+            ",".join(root_payload.get("delta_axes") or []),
+        )
     required = sorted(
         str(sig)
         for sig in (contract.get("canonical_discriminants") or contract.get("required_signals") or [])
@@ -2430,13 +2512,177 @@ def _root_bias_contract_key(group: GroupSummary) -> Tuple[str, ...]:
     return ("missing_root_bias", str(group.group_id))
 
 
+def _candidate_transform_key(candidate: Any, *, primitive_name: str = "") -> Tuple[str, ...]:
+    """Key for the concrete transform that code can enumerate on this case.
+
+    This is deliberately current-case specific. It compares primitive plus
+    bound arguments, not the source memory id that produced the candidate.
+    """
+
+    arguments = dict(getattr(candidate, "arguments", {}) or {})
+    executable_args = _executable_transform_arguments(arguments)
+    repair_program = []
+    for step in dict(arguments).get("repair_program") or []:
+        step_payload = _semantic_contract_payload(step)
+        if not isinstance(step_payload, dict):
+            continue
+        step_args = _executable_transform_arguments(step_payload.get("arguments") or {})
+        if not step_args:
+            continue
+        repair_program.append(
+            {
+                "locus": step_payload.get("locus"),
+                "op": step_payload.get("op"),
+                "arguments": step_args,
+                "is_dependency": bool(step_payload.get("is_dependency")),
+                "required": bool(step_payload.get("required", True)),
+            }
+        )
+    if executable_args and repair_program:
+        executable_args["repair_program"] = repair_program
+    primitive_text = str(primitive_name or "").strip()
+    args_json = _stable_json(executable_args)
+    if not primitive_text or not args_json:
+        return ()
+    return (primitive_text, args_json)
+
+
+_TRANSFORM_ARGUMENT_NON_EXECUTABLE_KEYS = {
+    "bound_branch_id",
+    "bundle_id",
+    "bundle_primary_primitive",
+    "bundle_selection_key",
+    "canonical_contract",
+    "cleanup_edits",
+    "canonical_invariants",
+    "canonical_op_type",
+    "canonical_op_id",
+    "canonical_refs",
+    "canonical_target_invariants",
+    "canonical_unresolved_variation_axes",
+    "compiled_from_program_id",
+    "counts_as_action",
+    "effect_contract",
+    "effect_kind",
+    "memory_alignment",
+    "provenance",
+    "repair_program",
+    "repair_effect_signature",
+    "rationale",
+    "source_evidence",
+    "supporting_case_ids",
+    "target_invariants",
+    "unresolved_variation_axes",
+}
+
+_TRANSFORM_ARGUMENT_WEAK_ONLY_KEYS = {
+    "output_shape_delta",
+    "required_edit_scopes",
+}
+
+
+def _executable_transform_arguments(arguments: Mapping[str, Any]) -> Dict[str, Any]:
+    """Keep current executable arguments while dropping provenance/audit data."""
+
+    out: Dict[str, Any] = {}
+    for key, value in dict(arguments or {}).items():
+        key_text = str(key)
+        if key_text in _TRANSFORM_ARGUMENT_NON_EXECUTABLE_KEYS:
+            continue
+        if key_text in _CONTRACT_IDENTITY_KEYS:
+            continue
+        payload = _semantic_contract_payload(value)
+        if payload in (None, "", [], {}):
+            continue
+        out[key_text] = payload
+    if not any(key not in _TRANSFORM_ARGUMENT_WEAK_ONLY_KEYS for key in out):
+        return {}
+    return out
+
+
+def _current_transform_keys_for_group(
+    group: GroupSummary,
+    case_view: Optional[RuntimeCaseView],
+) -> Tuple[Set[Tuple[str, ...]], str]:
+    if case_view is None:
+        return set(), "case_view_missing"
+    rows, reason = _binder_dry_run_candidate_rows(group, case_view)
+    keys: Set[Tuple[str, ...]] = set()
+    incomplete_count = 0
+    for primitive_name, candidate in rows:
+        key = _candidate_transform_key(candidate, primitive_name=primitive_name)
+        if key:
+            keys.add(key)
+        else:
+            incomplete_count += 1
+    if keys:
+        return keys, reason
+    if rows and incomplete_count:
+        return set(), "incomplete_transform_key:empty_executable_args"
+    return set(), reason or "no_current_transform_key"
+
+
+def _select_groups_with_shared_current_transform(
+    selection_pool: Sequence[Tuple[GroupSummary, TriggerCandidateAudit]],
+    *,
+    max_selected: int,
+    case_view: Optional[RuntimeCaseView],
+    audit: Dict[str, Any],
+) -> Tuple[List[GroupSummary], str]:
+    """Select same-root memories only when they share a current transform."""
+
+    transform_audit: Dict[str, Any] = {}
+    keys_by_group: Dict[str, Set[Tuple[str, ...]]] = {}
+    for item in selection_pool:
+        group, _candidate_audit = item
+        keys, reason = _current_transform_keys_for_group(group, case_view)
+        keys_by_group[str(group.group_id)] = set(keys)
+        transform_audit[str(group.group_id)] = {
+            "reason": reason,
+            "transform_key_count": len(keys),
+            "transform_keys": [
+                hashlib.sha1(
+                    json.dumps(key, sort_keys=True, ensure_ascii=False, default=str).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()[:12]
+                for key in sorted(keys)
+            ][:8],
+        }
+    audit["current_transform_audit"] = transform_audit
+    non_empty_key_sets = [keys for keys in keys_by_group.values() if keys]
+    if len(non_empty_key_sets) != len(selection_pool):
+        audit["resolution"] = (
+            "same_root_transform_key_incomplete"
+            if non_empty_key_sets
+            else "same_root_no_transform_key"
+        )
+        return [], "ambiguous_current_transform"
+    common_keys = set.intersection(*non_empty_key_sets) if non_empty_key_sets else set()
+    if not common_keys:
+        audit["resolution"] = "same_root_distinct_current_transforms"
+        return [], "ambiguous_current_transform"
+    bucket_items = sorted(selection_pool, key=_group_sort_key, reverse=True)
+    selected = [group for group, _audit in bucket_items[: max(1, max_selected)]]
+    audit["resolution"] = "same_root_current_transform"
+    audit["common_transform_key_count"] = len(common_keys)
+    audit["selected_group_ids"] = [str(group.group_id) for group in selected]
+    return selected, ""
+
+
 def _select_compatible_groups(
     passed: List[Tuple[GroupSummary, TriggerCandidateAudit]],
     *,
     max_selected: int,
-) -> Tuple[List[GroupSummary], str]:
+    case_view: Optional[RuntimeCaseView] = None,
+) -> Tuple[List[GroupSummary], str, Dict[str, Any]]:
+    audit: Dict[str, Any] = {
+        "schema_version": "memory-selection-audit-v1",
+        "policy": "pattern_first_root_bias_then_current_transform",
+        "passed_group_ids": [str(group.group_id) for group, _audit in passed],
+    }
     if not passed:
-        return [], ""
+        return [], "", audit
     passed = sorted(passed, key=_group_sort_key, reverse=True)
     shared_passed = [
         item
@@ -2444,20 +2690,40 @@ def _select_compatible_groups(
         if item[0].group_type == GroupType.PATTERN
     ]
     selection_pool = shared_passed or passed
+    audit["selection_pool_group_ids"] = [str(group.group_id) for group, _audit in selection_pool]
+    audit["selection_pool_kind"] = "pattern" if shared_passed else "singleton_or_mixed"
     buckets: Dict[Tuple[str, ...], List[Tuple[GroupSummary, TriggerCandidateAudit]]] = {}
     for item in selection_pool:
         buckets.setdefault(_action_contract_key(item[0]), []).append(item)
+    audit["action_contract_bucket_count"] = len(buckets)
     if len(buckets) > 1:
         root_buckets: Dict[Tuple[str, ...], List[Tuple[GroupSummary, TriggerCandidateAudit]]] = {}
         for item in selection_pool:
             root_buckets.setdefault(_root_bias_contract_key(item[0]), []).append(item)
+        audit["root_bias_bucket_count"] = len(root_buckets)
         if len(root_buckets) == 1:
-            bucket_items = sorted(selection_pool, key=_group_sort_key, reverse=True)
-            return [group for group, _audit in bucket_items[: max(1, max_selected)]], ""
-        return [], "conflicting_action_contracts"
+            selected, reason = _select_groups_with_shared_current_transform(
+                selection_pool,
+                max_selected=max_selected,
+                case_view=case_view,
+                audit=audit,
+            )
+            return selected, reason, audit
+        audit["resolution"] = "root_bias_conflict"
+        return [], "conflicting_root_bias_contracts", audit
     bucket_items = next(iter(buckets.values()))
+    if len(bucket_items) > 1:
+        selected, reason = _select_groups_with_shared_current_transform(
+            bucket_items,
+            max_selected=max_selected,
+            case_view=case_view,
+            audit=audit,
+        )
+        return selected, reason, audit
     selected = [group for group, _audit in bucket_items[: max(1, max_selected)]]
-    return selected, ""
+    audit["resolution"] = "single_action_contract_bucket"
+    audit["selected_group_ids"] = [str(group.group_id) for group in selected]
+    return selected, "", audit
 
 
 def _memory_max_actions(groups: Sequence[GroupSummary]) -> int:
@@ -2879,6 +3145,7 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
             for key, value in (payload.get("selected_branch_ids") or {}).items()
             if str(key) and str(value)
         },
+        "branch_selection_audit": payload.get("branch_selection_audit") or {},
         "top_candidates": [_compact_trigger_candidate(row) for row in candidates[:12]],
         "blocker_counts": dict(
             sorted(blocker_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
@@ -3096,7 +3363,11 @@ def trigger_memory_objects(
                         selected_group = _filter_group_to_runtime_branch(g, branch)
                 passed.append((selected_group, audit))
 
-    selected, selection_reason = _select_compatible_groups(passed, max_selected=max_selected)
+    selected, selection_reason, selection_audit = _select_compatible_groups(
+        passed,
+        max_selected=max_selected,
+        case_view=case_view,
+    )
     if selection_reason:
         selected_ids = {group.group_id for group, _audit in passed}
         updated_audits: List[TriggerCandidateAudit] = []
@@ -3116,16 +3387,9 @@ def trigger_memory_objects(
             updated_audits.append(audit)
         audits = updated_audits
     final_selected_ids = {str(group.group_id) for group in selected}
-    return TriggerResult(
-        strategy_version="v2-contract-trigger-20260427",
-        selected_groups=selected,
-        selected_branch_ids={
-            audit.group_id: str(audit.selected_branch_id)
-            for _group, audit in passed
-            if getattr(audit, "selected_branch_id", None)
-            and str(audit.group_id) in final_selected_ids
-        },
-        branch_selection_audit={
+    branch_selection_audit: Dict[str, Any] = {"_memory_selection": selection_audit}
+    branch_selection_audit.update(
+        {
             audit.group_id: {
                 "selected_branch_id": getattr(audit, "selected_branch_id", None),
                 "matched_branch_ids": list(getattr(audit, "matched_branch_ids", []) or []),
@@ -3137,7 +3401,18 @@ def trigger_memory_objects(
             }
             for audit in audits
             if getattr(audit, "branch_match_audit", None)
+        }
+    )
+    return TriggerResult(
+        strategy_version="v2-contract-trigger-20260427",
+        selected_groups=selected,
+        selected_branch_ids={
+            audit.group_id: str(audit.selected_branch_id)
+            for _group, audit in passed
+            if getattr(audit, "selected_branch_id", None)
+            and str(audit.group_id) in final_selected_ids
         },
+        branch_selection_audit=branch_selection_audit,
         candidates=sorted(
             audits,
             key=lambda a: (a.gate_passed, a.final_score, a.group_id),
