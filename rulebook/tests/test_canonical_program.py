@@ -64,6 +64,7 @@ from method.EEA.rulebook.common.core.data_structures import (
     PredSqlFeatures,
     PromotionTestResult,
     ReplayMetrics,
+    TriggerCandidateAudit,
     TriggerSignature,
 )
 from method.EEA.rulebook.common.learning.pattern_formation import (
@@ -83,6 +84,7 @@ from method.EEA.rulebook.common.learning.promotion import (
 )
 from method.EEA.rulebook.common.runtime.runtime import (
     _compiler_dry_run_gate,
+    _select_groups_with_shared_current_transform,
     build_runtime_case_view,
     build_current_case_signals,
     build_runtime_rewrite_guard,
@@ -105,6 +107,7 @@ from method.EEA.rulebook.common.learning.shared_program_synthesizer import (
 from method.EEA.rulebook.common.runtime.trigger_contract import (
     ensure_materialized_trigger_contract,
     is_contract_runtime_executable,
+    materialize_library_runtime_contracts,
 )
 from method.EEA.rulebook.common.analysis.structure_family import cached_ast_signature
 from method.EEA.rulebook.common.core.vocabulary import (
@@ -3884,7 +3887,7 @@ def test_replay_metrics_count_only_pure_llm_rows_as_llm_selected() -> None:
     assert metrics.fallback_selected_rate == 1 / 3
 
 
-def test_unresolved_axes_block_pattern_promotion_but_allow_runtime_family() -> None:
+def test_unresolved_axes_block_formal_promotion_but_allow_runtime_pattern_audit() -> None:
     family = build_family_from_groups([_singleton("206"), _singleton("249")])
     program = family.instantiation_program.synthesized_program
     assert program is not None
@@ -3914,12 +3917,12 @@ def test_unresolved_axes_block_pattern_promotion_but_allow_runtime_family() -> N
 
     promoted = apply_promotion_decision(family, result)
 
-    assert promoted.group_type == GroupType.FAMILY
+    assert promoted.group_type == GroupType.PATTERN
     assert promoted.runtime_usable is True
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
-def test_formal_replay_blocker_prevents_pattern_promotion() -> None:
+def test_formal_replay_blocker_keeps_pattern_runtime_visible_for_audit() -> None:
     family = build_family_from_groups(
         [_singleton("206"), _singleton("249"), _singleton("253")]
     )
@@ -3958,8 +3961,9 @@ def test_formal_replay_blocker_prevents_pattern_promotion() -> None:
 
     promoted = apply_promotion_decision(family, result)
 
-    assert promoted.group_type == GroupType.FAMILY
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.group_type == GroupType.PATTERN
+    assert promoted.runtime_usable is True
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
 def test_support2_runtime_can_use_full_group_while_formal_uses_cross(monkeypatch) -> None:
@@ -4048,12 +4052,12 @@ def test_support2_runtime_can_use_full_group_while_formal_uses_cross(monkeypatch
     assert "formal_compile_coverage_below_pattern_threshold" in (
         result.formal_promotion_blocker or ""
     )
-    assert promoted.group_type == GroupType.FAMILY
+    assert promoted.group_type == GroupType.PATTERN
     assert promoted.runtime_usable is True
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
-def test_replay_failed_family_is_retained_offline_without_superseding_singletons() -> None:
+def test_replay_audit_visible_pattern_does_not_supersede_singletons() -> None:
     singleton_a = _singleton("206")
     singleton_b = _singleton("249")
     family = build_family_from_groups([singleton_a, singleton_b])
@@ -4077,14 +4081,75 @@ def test_replay_failed_family_is_retained_offline_without_superseding_singletons
 
     integrate_promoted_groups(library, [promoted])
 
-    assert [group.group_id for group in library.experience_families] == [
+    assert [group.group_id for group in library.patterns] == [
         promoted.group_id
     ]
-    assert library.experience_families[0].runtime_usable is False
+    assert library.patterns[0].runtime_usable is True
+    assert library.patterns[0].lifecycle.promotion_state == "runtime_visible_replay_audit_only"
+    materialize_library_runtime_contracts(library)
+    assert library.patterns[0].runtime_usable is True
     assert [group.status for group in library.singletons] == [
         GroupStatus.ACTIVE,
         GroupStatus.ACTIVE,
     ]
+
+
+def test_same_root_transform_selection_requires_shared_subset(monkeypatch) -> None:
+    from method.EEA.rulebook.common.runtime import runtime as runtime_module
+
+    groups = [_singleton("206"), _singleton("249"), _singleton("253")]
+    for group in groups:
+        group.group_type = GroupType.PATTERN
+    audits = [
+        TriggerCandidateAudit(
+            group_id=group.group_id,
+            group_type=group.group_type,
+            gate_passed=True,
+            final_score=float(index),
+        )
+        for index, group in enumerate(groups)
+    ]
+
+    key_map = {
+        groups[0].group_id: {("shared",), ("left",)},
+        groups[1].group_id: {("shared",), ("right",)},
+        groups[2].group_id: {("other",)},
+    }
+    monkeypatch.setattr(
+        runtime_module,
+        "_current_transform_keys_for_group",
+        lambda group, _case_view: (key_map[group.group_id], "ok"),
+    )
+    audit = {}
+
+    selected, reason = _select_groups_with_shared_current_transform(
+        list(zip(groups, audits)),
+        max_selected=3,
+        case_view=None,
+        audit=audit,
+    )
+
+    assert reason == ""
+    assert [group.group_id for group in selected] == [groups[1].group_id, groups[0].group_id]
+    assert audit["resolution"] == "max_shared_current_transform_subset"
+    assert audit["dropped_transform_group_ids"] == [groups[2].group_id]
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_current_transform_keys_for_group",
+        lambda group, _case_view: ({(group.group_id,)}, "ok"),
+    )
+    audit = {}
+    selected, reason = _select_groups_with_shared_current_transform(
+        list(zip(groups, audits)),
+        max_selected=3,
+        case_view=None,
+        audit=audit,
+    )
+
+    assert selected == []
+    assert reason == "ambiguous_current_transform"
+    assert audit["resolution"] == "same_root_distinct_current_transforms"
 
 
 def test_replay_one_holdout_derives_holdout_in_training_from_memory() -> None:
@@ -4147,8 +4212,9 @@ def test_apply_promotion_rechecks_formal_support_shape() -> None:
 
     promoted = apply_promotion_decision(family, result)
 
-    assert promoted.group_type == GroupType.FAMILY
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.group_type == GroupType.PATTERN
+    assert promoted.runtime_usable is True
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
 def test_deterministic_allowed_metrics_do_not_promote_formal_pattern() -> None:
@@ -4190,8 +4256,9 @@ def test_deterministic_allowed_metrics_do_not_promote_formal_pattern() -> None:
 
     promoted = apply_promotion_decision(family, result)
 
-    assert promoted.group_type == GroupType.FAMILY
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.group_type == GroupType.PATTERN
+    assert promoted.runtime_usable is True
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
 def test_apply_promotion_requires_formal_support_protocol_for_pattern() -> None:
@@ -4220,8 +4287,9 @@ def test_apply_promotion_requires_formal_support_protocol_for_pattern() -> None:
 
     promoted = apply_promotion_decision(family, result)
 
-    assert promoted.group_type == GroupType.FAMILY
-    assert promoted.lifecycle.promotion_state == "runtime_family_replay_gated"
+    assert promoted.group_type == GroupType.PATTERN
+    assert promoted.runtime_usable is True
+    assert promoted.lifecycle.promotion_state == "runtime_visible_replay_audit_only"
 
 
 def test_deterministic_only_metrics_can_promote_formal_pattern() -> None:

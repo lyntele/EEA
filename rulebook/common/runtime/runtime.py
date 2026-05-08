@@ -2629,15 +2629,18 @@ def _select_groups_with_shared_current_transform(
     case_view: Optional[RuntimeCaseView],
     audit: Dict[str, Any],
 ) -> Tuple[List[GroupSummary], str]:
-    """Select same-root memories only when they share a current transform."""
+    """Select the largest same-root subset that shares a current transform."""
 
     transform_audit: Dict[str, Any] = {}
     keys_by_group: Dict[str, Set[Tuple[str, ...]]] = {}
+    item_by_group_id: Dict[str, Tuple[GroupSummary, TriggerCandidateAudit]] = {}
     for item in selection_pool:
         group, _candidate_audit = item
+        group_id = str(group.group_id)
+        item_by_group_id[group_id] = item
         keys, reason = _current_transform_keys_for_group(group, case_view)
-        keys_by_group[str(group.group_id)] = set(keys)
-        transform_audit[str(group.group_id)] = {
+        keys_by_group[group_id] = set(keys)
+        transform_audit[group_id] = {
             "reason": reason,
             "transform_key_count": len(keys),
             "transform_keys": [
@@ -2650,22 +2653,72 @@ def _select_groups_with_shared_current_transform(
             ][:8],
         }
     audit["current_transform_audit"] = transform_audit
-    non_empty_key_sets = [keys for keys in keys_by_group.values() if keys]
-    if len(non_empty_key_sets) != len(selection_pool):
-        audit["resolution"] = (
-            "same_root_transform_key_incomplete"
-            if non_empty_key_sets
-            else "same_root_no_transform_key"
-        )
+    key_to_group_ids: Dict[Tuple[str, ...], Set[str]] = {}
+    for group_id, keys in keys_by_group.items():
+        for key in keys:
+            key_to_group_ids.setdefault(key, set()).add(group_id)
+    if not key_to_group_ids:
+        audit["resolution"] = "same_root_no_transform_key"
         return [], "ambiguous_current_transform"
-    common_keys = set.intersection(*non_empty_key_sets) if non_empty_key_sets else set()
-    if not common_keys:
+
+    def key_hash(key: Tuple[str, ...]) -> str:
+        return hashlib.sha1(
+            json.dumps(key, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()[:12]
+
+    def best_item_sort_key(group_id: str) -> Tuple[float, int, int, str]:
+        return _group_sort_key(item_by_group_id[group_id])
+
+    ranked_keys = sorted(
+        key_to_group_ids,
+        key=lambda key: (
+            len(key_to_group_ids[key]),
+            max(best_item_sort_key(group_id) for group_id in key_to_group_ids[key]),
+            key_hash(key),
+        ),
+        reverse=True,
+    )
+    selected_key = ranked_keys[0]
+    selected_group_ids = key_to_group_ids[selected_key]
+    if len(selected_group_ids) < 2:
         audit["resolution"] = "same_root_distinct_current_transforms"
+        audit["transform_key_groups"] = [
+            {
+                "transform_key_hash": key_hash(key),
+                "group_ids": sorted(key_to_group_ids[key]),
+                "group_count": len(key_to_group_ids[key]),
+            }
+            for key in ranked_keys[:12]
+        ]
         return [], "ambiguous_current_transform"
-    bucket_items = sorted(selection_pool, key=_group_sort_key, reverse=True)
+    bucket_items = sorted(
+        [item_by_group_id[group_id] for group_id in selected_group_ids],
+        key=_group_sort_key,
+        reverse=True,
+    )
     selected = [group for group, _audit in bucket_items[: max(1, max_selected)]]
-    audit["resolution"] = "same_root_current_transform"
-    audit["common_transform_key_count"] = len(common_keys)
+    selected_ids = {str(group.group_id) for group in selected}
+    dropped_ids = [
+        str(group.group_id)
+        for group, _audit in selection_pool
+        if str(group.group_id) not in selected_ids
+    ]
+    audit["resolution"] = (
+        "same_root_current_transform"
+        if len(selected_ids) == len(selection_pool)
+        else "max_shared_current_transform_subset"
+    )
+    audit["selected_transform_key_hash"] = key_hash(selected_key)
+    audit["selected_transform_group_ids"] = sorted(selected_ids)
+    audit["dropped_transform_group_ids"] = sorted(dropped_ids)
+    audit["transform_key_groups"] = [
+        {
+            "transform_key_hash": key_hash(key),
+            "group_ids": sorted(key_to_group_ids[key]),
+            "group_count": len(key_to_group_ids[key]),
+        }
+        for key in ranked_keys[:12]
+    ]
     audit["selected_group_ids"] = [str(group.group_id) for group in selected]
     return selected, ""
 

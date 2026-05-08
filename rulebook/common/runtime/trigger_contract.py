@@ -1,9 +1,9 @@
 """Runtime trigger-contract materialization and validation.
 
 Legacy trigger signatures are useful migration inputs, but runtime matching
-must consume only an executable ``trigger_contract``.  This module keeps that
-boundary explicit so a memory object cannot be marked runtime-usable while its
-contract is empty or only audit-level evidence.
+must consume only an executable ``trigger_contract`` when the memory object is
+already executable.  Replay-audit visible patterns may remain runtime-visible
+with invalid contracts so runtime/replay can record why they fail to trigger.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import GroupSummary, LibraryStateV2, TriggerContract
+from method.EEA.rulebook.common.core.vocabulary import GroupType
 
 
 OUTPUT_DECREASE_PROGRAM_TYPES = {
@@ -286,11 +287,15 @@ def materialize_library_runtime_contracts(
         if not group.runtime_usable:
             continue
         report["checked"] += 1
+        was_runtime_visible_pattern = group.group_type == GroupType.PATTERN
         _, validation = ensure_materialized_trigger_contract(group, schema_view=schema_view)
         if validation.get("status") == "materialized_from_legacy_signature":
             report["materialized"] += 1
         if not validation.get("runtime_executable"):
             report["blocked"] += 1
+            if was_runtime_visible_pattern:
+                group.runtime_usable = True
+                group.runtime_contract_status = str(validation.get("status") or "blocked")
     return library, report
 
 

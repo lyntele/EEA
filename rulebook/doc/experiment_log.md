@@ -861,3 +861,37 @@ TODO / 自检项：
 - `method.EEA.rulebook.api` 必须可导入 runtime/update/evolution/reporting 公开入口。
 - DeepEye post-selection 主链的 `run_single_db_e2e.py --help` 必须正常。
 - DeepEye 主链不得再引用 `method.EEA.rulebook.common.*_v2`、`prompts_v2`、`pool_coverage/versioning/trigger_observability` 旧路径。
+
+## 2026-05-08 Phase A：解除 replay hard gate 与修复同根 transform 选择
+
+背景：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260508_r4` 已证明调用与在线积累正常，但 runtime 只有 `ready=1/18`，finalize 后 `patterns=10` 却 `promoted_runtime_objects=0`。
+- 主要次生黑盒包括：同根候选因全体 transform key 求交集被 `ambiguous_current_transform` 全挡、pattern 被 promotion/replay hard gate 挡在 runtime 外、replay row 缺少 trigger 失败诊断。
+
+本次改动：
+
+- runtime 同根选择由全体 transform key 交集改为最大同心子集：
+  - 按当前 case 上 dry-run 得到的 transform key 反向分组。
+  - 选择覆盖 memory 数最多的 transform key 对应子集进入 compiler。
+  - audit 记录 `max_shared_current_transform_subset`、选中 key hash、选中/丢弃 group ids 和 key 覆盖分布。
+- pattern promotion/replay 暂时从 runtime hard gate 降级为审计：
+  - 多成员 pattern 候选直接进入 runtime 观测路径；replay/formal 不再负责提前决定是否可见。
+  - trigger contract materialization 失败仍记录 `runtime_contract_status` / `runtime_blockers`，但 `apply_promotion_decision` 和 `materialize_library_runtime_contracts` 都不再把 pattern 改回 `runtime_usable=False`。
+  - replay/formal blockers 仍写入 replay history 和 quarantine reason，但不再阻止 runtime 可见。
+  - promotion state 标记为 `runtime_visible_replay_audit_only`。
+  - audit-only runtime-visible pattern 不废弃 source singleton，避免未验证 pattern 吃掉可用 singleton 触发路径。
+- replay row 增加 trigger 诊断：
+  - 写入 `rewrite_enabled_reason`、`trigger_blocker_counts`、`top_candidate_reasons`、`selected_group_ids`、`selected_branch_ids`、`memory_selection_audit` 和 compiler empty reason 摘要。
+
+未改动：
+
+- 未修 DISTINCT / redundant JOIN cleanup 编译。
+- 未 materialize admission branch specs 到 runtime branch。
+- 未收紧 root membership closure。
+- 未去字面化 transform key。
+
+预期验证：
+
+- focus18 中 `ambiguous_current_transform` 不应再因为少数不同 transform 把可用同心子集全部挡掉。
+- pattern 应能进入 runtime 观测路径；若仍 no_match，可从 replay/runtime audit 直接看到是 source signal、branch 缺失、binder dry-run 还是 compiler action 缺失。

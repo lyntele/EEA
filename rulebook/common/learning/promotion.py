@@ -176,6 +176,45 @@ def _candidate_empty_reasons(candidate_sets: Sequence[Any]) -> List[Dict[str, st
     return rows
 
 
+def _replay_trigger_diagnostics(plan: Mapping[str, Any]) -> Dict[str, Any]:
+    """Compact runtime trigger diagnostics for replay rows."""
+
+    audit_summary = _payload(plan.get("runtime_audit_summary"))
+    trigger = _payload(audit_summary.get("trigger"))
+    compiler = _payload(audit_summary.get("compiler"))
+    memory_selection = _payload(
+        _payload(trigger.get("branch_selection_audit")).get("_memory_selection")
+    )
+    top_candidates: List[Dict[str, Any]] = []
+    for row in trigger.get("top_candidates") or []:
+        payload = _payload(row)
+        if not payload:
+            continue
+        top_candidates.append(
+            {
+                "group_id": payload.get("group_id"),
+                "group_type": payload.get("group_type"),
+                "gate_passed": payload.get("gate_passed"),
+                "top_reasons": list(payload.get("top_reasons") or [])[:12],
+                "hard_gate_reasons": list(payload.get("hard_gate_reasons") or [])[:12],
+                "matched_branch_ids": payload.get("matched_branch_ids") or {},
+                "branch_blockers": list(payload.get("branch_blockers") or [])[:12],
+                "compiler_candidate_reasons": list(
+                    payload.get("compiler_candidate_reasons") or []
+                )[:12],
+            }
+        )
+    return {
+        "rewrite_enabled_reason": audit_summary.get("rewrite_enabled_reason"),
+        "trigger_blocker_counts": trigger.get("blocker_counts") or {},
+        "top_candidate_reasons": top_candidates[:8],
+        "selected_group_ids": list(trigger.get("selected_group_ids") or []),
+        "selected_branch_ids": trigger.get("selected_branch_ids") or {},
+        "memory_selection_audit": memory_selection,
+        "compiler_empty_reason_counts": compiler.get("empty_reason_counts") or {},
+    }
+
+
 def _not_actionable_reason(
     *,
     plan: Mapping[str, Any],
@@ -760,9 +799,14 @@ def _replay_one_holdout(
     selected_branch_values = sorted(set(selected_branch_ids.values()))
     selected_bundle_ids = _action_bundle_ids(actions)
     empty_reasons = _candidate_empty_reasons(plan.get("compiler_candidate_sets") or [])
+    trigger_diagnostics = _replay_trigger_diagnostics(plan)
     row.update(
         {
             "plan_reason": plan.get("reason"),
+            "rewrite_enabled_reason": trigger_diagnostics.get("rewrite_enabled_reason"),
+            "trigger_blocker_counts": trigger_diagnostics.get("trigger_blocker_counts"),
+            "top_candidate_reasons": trigger_diagnostics.get("top_candidate_reasons"),
+            "replay_trigger_diagnostics": trigger_diagnostics,
             "source_memory_object": {
                 "group_id": memory.group_id,
                 "group_type": str(getattr(memory.group_type, "value", memory.group_type)),
@@ -1318,6 +1362,31 @@ def _formal_support_shape_ok(group: GroupSummary, result: PromotionTestResult) -
     )
 
 
+def _pattern_has_admission_evidence(group: GroupSummary) -> bool:
+    signals = _payload(getattr(group, "formation_signals", None))
+    admission = _payload(signals.get("pattern_admission"))
+    if not admission:
+        return False
+    return bool(
+        admission.get("admit_pattern")
+        or admission.get("accepted_case_ids")
+        or admission.get("branch_specs")
+    )
+
+
+def _pattern_has_synthesized_program(group: GroupSummary) -> bool:
+    program = getattr(getattr(group, "instantiation_program", None), "synthesized_program", None)
+    return program is not None
+
+
+def _runtime_visible_under_replay_audit_policy(group: GroupSummary) -> bool:
+    if group.group_type == GroupType.PATTERN and len(group.case_ids or []) >= PROMOTION_SUPPORT_MIN:
+        return True
+    if group.group_type != GroupType.FAMILY:
+        return False
+    return bool(_pattern_has_synthesized_program(group) or _pattern_has_admission_evidence(group))
+
+
 def _runtime_branch_support(branch: Dict[str, Any], fallback_case_ids: Sequence[str]) -> List[str]:
     support = [str(case_id) for case_id in (branch.get("support_case_ids") or []) if str(case_id)]
     _ = fallback_case_ids
@@ -1665,11 +1734,13 @@ def apply_promotion_decision(
             }
         )
         promoted.group_type = GroupType.PATTERN
-        promoted.runtime_usable = bool(promoted.runtime_usable)
+        promoted.runtime_usable = True if can_promote_pattern else bool(promoted.runtime_usable)
         if not promoted.runtime_usable:
             promoted.runtime_blockers = list(promoted.runtime_blockers or []) or [
                 "no_runtime_usable_branch"
             ]
+        else:
+            promoted.runtime_blockers = []
         promoted.confidence = Confidence.HIGH if can_promote_pattern else Confidence.MEDIUM
         promoted.lifecycle.promotion_state = (
             "promoted_pattern_replay_gated"
@@ -1679,7 +1750,36 @@ def apply_promotion_decision(
         promoted.lifecycle.quarantine_reason = (
             None if can_promote_pattern else result.formal_promotion_blocker
         )
-        ensure_materialized_trigger_contract(promoted)
+        _contract_group, contract_audit = ensure_materialized_trigger_contract(promoted)
+        if not bool(contract_audit.get("runtime_executable")):
+            promoted.runtime_usable = True
+            promoted.runtime_contract_status = str(contract_audit.get("status") or "blocked")
+        return promoted
+    if _runtime_visible_under_replay_audit_policy(promoted):
+        current_status = getattr(promoted.instantiation_program, "shared_status", "none")
+        promoted.instantiation_program = promoted.instantiation_program.model_copy(
+            update={
+                "shared_status": (
+                    current_status
+                    if current_status in {"formal_validated", "branch_runtime_validated", "compilable"}
+                    else "replay_audit_visible"
+                )
+            }
+        )
+        promoted.group_type = GroupType.PATTERN
+        promoted.runtime_usable = True
+        promoted.runtime_blockers = []
+        promoted.confidence = Confidence.MEDIUM
+        promoted.lifecycle.promotion_state = "runtime_visible_replay_audit_only"
+        promoted.lifecycle.quarantine_reason = ";".join(
+            str(item)
+            for item in (result.formal_promotion_blocker, result.reason)
+            if str(item or "").strip()
+        ) or None
+        _contract_group, contract_audit = ensure_materialized_trigger_contract(promoted)
+        if not bool(contract_audit.get("runtime_executable")):
+            promoted.runtime_usable = True
+            promoted.runtime_contract_status = str(contract_audit.get("status") or "blocked")
         return promoted
     promoted.runtime_usable = False
     promoted.group_type = GroupType.PATTERN
@@ -1708,9 +1808,15 @@ def integrate_promoted_groups(
         if group.status != GroupStatus.ACTIVE:
             continue
         member_case_ids = {str(case_id) for case_id in group.case_ids}
+        replay_audit_only_visible = (
+            str(getattr(group.lifecycle, "promotion_state", "") or "")
+            == "runtime_visible_replay_audit_only"
+        )
         runtime_superseded_case_ids = (
-            _runtime_usable_branch_support_case_ids(group) if group.runtime_usable else set()
-        ) or (member_case_ids if group.runtime_usable else set())
+            set()
+            if replay_audit_only_visible
+            else (_runtime_usable_branch_support_case_ids(group) if group.runtime_usable else set())
+        ) or (member_case_ids if group.runtime_usable and not replay_audit_only_visible else set())
         existing_same = [
             existing
             for existing in (library.patterns + library.experience_families)
