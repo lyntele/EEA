@@ -1071,3 +1071,22 @@ RUN2 q249 no-match 根因：
 - `q268/q277` 应继续由 pattern 触发，而不是退回 singleton。
 - `q285/q302/q307` 需要确认是否保持可修。
 - final library 应至少出现一个 pattern；否则继续检查 admission response、pattern materialization 和 promotion/finalize 链路。
+
+### 2026-05-09 追加：LLM API 波动下的 update 稳定性
+
+现象：
+
+- `toxicology_focus18_postsel_v1_biasrec_gatefix_20260509_053737` 中 `q198/q207/q268` 出现 `update=error`。
+- 错误来自 `RuntimeError: Failed to parse LLM JSON response: LLM call failed: Internal Server Error`。
+- 这类错误会让当前错例没有沉淀成 singleton，破坏“逐例在线积累”的阶段 1 验证前提。
+
+修复：
+
+- EEA `LLMClient` 的底层请求重试次数通过 `RULEBOOK_LLM_MAX_RETRIES` 控制。
+- 默认从 1 次提高到 3 次。
+- 该修改只影响 EEA 自己的 auditor/extractor/admission 等 LLM 调用；DeepEye rewrite/selector 使用的 `app.llm.llm` 仍由接入端控制。
+
+验证要求：
+
+- 重新跑 focus18，若仍有 `update=error`，该 run 不作为阶段 1 收益结论。
+- 至少要求在线 update 不丢关键前缀 case，才能评估 pattern 触发和最终收益。

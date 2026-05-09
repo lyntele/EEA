@@ -72,7 +72,15 @@ def _get_client() -> LLMClient:
     if _CLIENT is None:
         _strip_proxy_env()
         _CONFIG = load_config()
-        _CLIENT = LLMClient(_CONFIG.llm, timeout=_CONFIG.rulebook.llm_timeout)
+        try:
+            max_retries = max(0, int(os.getenv("RULEBOOK_LLM_MAX_RETRIES", "3")))
+        except ValueError:
+            max_retries = 3
+        _CLIENT = LLMClient(
+            _CONFIG.llm,
+            timeout=_CONFIG.rulebook.llm_timeout,
+            max_retries=max_retries,
+        )
     return _CLIENT
 
 
