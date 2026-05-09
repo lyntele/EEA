@@ -3374,6 +3374,12 @@ def _preserve_dependency_clauses_in_hint(raw_hint: str, instantiated_hint: str) 
         return raw.strip()
     if "select distinct" in raw_lower and "distinct" not in hint_lower:
         additions.append("Also add SELECT DISTINCT when dropping the output side would otherwise duplicate result rows.")
+    if (
+        "answer_unit_preserve" in raw_lower or "preserve the current answer unit" in raw_lower
+    ) and "answer unit" not in hint_lower:
+        additions.append(
+            "Preserve the current answer unit and SELECT expression semantics; only re-ground aliases if the join route changes."
+        )
     if has_join_cleanup_dependency and not has_join_cleanup_hint:
         additions.append("Also remove any JOIN block whose alias becomes unreferenced after the selected output side is dropped.")
     if not additions:

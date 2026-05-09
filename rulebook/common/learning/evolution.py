@@ -168,6 +168,102 @@ def _pattern_action_family_key(group: GroupSummary) -> Tuple[str, str]:
     return op_family, ""
 
 
+def _pattern_bias_shape(group: GroupSummary) -> str:
+    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
+    payload = _payload(brc)
+    return str(payload.get("answer_shape_hint") or "").strip().lower()
+
+
+def _pattern_recognition_signal_set(group: GroupSummary) -> Set[str]:
+    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
+    payload = _payload(brc)
+    return {
+        str(item).strip()
+        for item in (payload.get("recognition_signals") or [])
+        if str(item).strip()
+    }
+
+
+def _signal_jaccard(left: Set[str], right: Set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(len(left | right), 1)
+
+
+def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) -> bool:
+    left_cases = {str(case_id) for case_id in (left.case_ids or [])}
+    right_cases = {str(case_id) for case_id in (right.case_ids or [])}
+    shared_cases = left_cases & right_cases
+    if len(shared_cases) < 2 and not (left_cases <= right_cases or right_cases <= left_cases):
+        return False
+    if _pattern_action_family_key(left) != _pattern_action_family_key(right):
+        return False
+    left_shape = _pattern_bias_shape(left)
+    right_shape = _pattern_bias_shape(right)
+    if left_shape and right_shape and left_shape != right_shape:
+        return False
+    return _signal_jaccard(
+        _pattern_recognition_signal_set(left),
+        _pattern_recognition_signal_set(right),
+    ) >= 0.6
+
+
+def _merge_same_root_pattern_component(component: Sequence[GroupSummary]) -> GroupSummary:
+    base = sorted(
+        component,
+        key=lambda group: (
+            len({str(case_id) for case_id in group.case_ids or []}),
+            bool(group.runtime_usable),
+            str(group.version),
+        ),
+        reverse=True,
+    )[0]
+    case_ids = sorted(
+        {
+            str(case_id)
+            for group in component
+            for case_id in (group.case_ids or [])
+        },
+        key=lambda value: (0, int(value)) if value.isdigit() else (1, value),
+    )
+    return base.model_copy(
+        update={
+            "case_ids": case_ids,
+            "support": len(case_ids),
+        }
+    )
+
+
+def _merge_overlapping_same_root_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
+    rows = list(patterns or [])
+    if len(rows) <= 1:
+        return rows
+    visited: Set[int] = set()
+    merged: List[GroupSummary] = []
+    for idx, pattern in enumerate(rows):
+        if idx in visited:
+            continue
+        stack = [idx]
+        component_indexes: Set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current in component_indexes:
+                continue
+            component_indexes.add(current)
+            for other_idx, other in enumerate(rows):
+                if other_idx in component_indexes:
+                    continue
+                if _patterns_are_same_abstract_root(rows[current], other):
+                    stack.append(other_idx)
+        visited.update(component_indexes)
+        component = [rows[item] for item in sorted(component_indexes)]
+        if len(component) == 1:
+            merged.append(component[0])
+        else:
+            merged.append(_merge_same_root_pattern_component(component))
+    return merged
+
+
 def _nested_pattern_supersedes(left: GroupSummary, right: GroupSummary) -> bool:
     left_cases = {str(case_id) for case_id in (left.case_ids or [])}
     right_cases = {str(case_id) for case_id in (right.case_ids or [])}
@@ -227,6 +323,7 @@ def _merge_patterns_without_absorbing_singletons(
     for pattern in patterns:
         by_id[str(pattern.group_id)] = pattern
     deduped = _deduplicate_nested_patterns(by_id.values())
+    deduped = _merge_overlapping_same_root_patterns(deduped)
     library.patterns = sorted(
         deduped,
         key=lambda group: (

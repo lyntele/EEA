@@ -27,7 +27,7 @@ import hashlib
 import json
 import re
 from itertools import combinations, permutations
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import (
     ActionCandidate,
@@ -1717,6 +1717,10 @@ def _target_relation_edges_for_action(
     args = _payload(canonical_op.get("arguments"))
     shared = _payload(args.get("shared_arguments"))
     rows: List[Dict[str, Any]] = []
+    for relation in args.get("target_equality_relations") or []:
+        payload = _payload(relation)
+        if payload:
+            rows.append(payload)
     for relation in shared.get("target_equality_relations") or []:
         payload = _payload(relation)
         if payload:
@@ -1729,6 +1733,17 @@ def _target_relation_edges_for_action(
             payload = _payload(relation)
             if payload:
                 rows.append(payload)
+    relation_delta = _payload(_payload(args.get("operation_signature")).get("relation_delta"))
+    relation_effect = _payload(_payload(args.get("repair_effect_signature")).get("relation_effect"))
+    for expr in [
+        *list(relation_delta.get("target_relation_equalities") or []),
+        *list(relation_delta.get("added_relation_equalities") or []),
+        *list(relation_effect.get("target_relation_paths") or []),
+        *list(relation_effect.get("added_relation_equalities") or []),
+    ]:
+        edge = _relation_edge_from_equality(str(expr or ""))
+        if edge:
+            rows.append(edge)
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
     for relation in rows:
@@ -1740,6 +1755,35 @@ def _target_relation_edges_for_action(
         seen.add(key)
         out.append(relation)
     return out[:8]
+
+
+def _relation_edge_from_equality(expr: str) -> Optional[Dict[str, Any]]:
+    text = str(expr or "").strip()
+    if not text:
+        return None
+    match = re.fullmatch(
+        r"\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*",
+        text,
+    )
+    if not match:
+        return None
+    left_table, left_column, right_table, right_column = match.groups()
+    left = {"table": left_table, "column": left_column}
+    right = {"table": right_table, "column": right_column}
+    canonical_key = "=".join(
+        sorted(
+            [
+                f"{left_table.lower()}.{left_column.lower()}",
+                f"{right_table.lower()}.{right_column.lower()}",
+            ]
+        )
+    )
+    return {
+        "left": left,
+        "right": right,
+        "canonical_key": canonical_key,
+        "expression": f"{left_table}.{left_column} = {right_table}.{right_column}",
+    }
 
 
 def _program_bundles_from_group(group: GroupSummary) -> List[Dict[str, Any]]:
@@ -2076,6 +2120,8 @@ def _annotate_canonical_candidates(
         }:
             args["target_relation_edges"] = target_relation_edges
         if candidate_set.primitive == ActionPrimitive.REROUTE_FACT:
+            if _reroute_conflicts_current_answer_unit(case_view, args):
+                continue
             scopes = list(args.get("required_edit_scopes") or [])
             for scope in ("FROM", "JOIN"):
                 if scope not in scopes:
@@ -2093,6 +2139,7 @@ def _annotate_canonical_candidates(
                         "preserve_aggregation_grain",
                     }
                 )
+                args.pop("target_output_refs", None)
             if args.get("target_output_refs") and not preserve_answer_unit and "SELECT" not in scopes:
                 scopes.append("SELECT")
             args["required_edit_scopes"] = scopes
@@ -3177,6 +3224,33 @@ def _relation_key_set(relations: Sequence[Dict[str, Any]]) -> set[str]:
     }
 
 
+def _current_relation_key_set(case_view: RuntimeCaseView) -> set[str]:
+    sql = str(getattr(case_view.pred_manifestation, "top1_sql", "") or "")
+    alias_map = _sql_alias_map(sql)
+    try:
+        from method.EEA.rulebook.common.analysis.structure_family import cached_ast_signature
+
+        ast = cached_ast_signature(sql) or {}
+    except Exception:
+        ast = {}
+    keys: set[str] = set()
+    for row in ast.get("join_edges") or []:
+        on_expr = str(_payload(row).get("on") or "")
+        for match in re.finditer(
+            r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)",
+            on_expr,
+        ):
+            left_alias, left_col, right_alias, right_col = match.groups()
+            left_table = alias_map.get(left_alias.lower(), left_alias)
+            right_table = alias_map.get(right_alias.lower(), right_alias)
+            edge = _relation_edge_from_equality(
+                f"{left_table}.{left_col} = {right_table}.{right_col}"
+            )
+            if edge:
+                keys.add(_relation_key_from_payload(edge))
+    return keys
+
+
 def _output_refs_same(
     source_refs: Sequence[Dict[str, Any]],
     target_refs: Sequence[Dict[str, Any]],
@@ -3193,6 +3267,101 @@ def _output_refs_same(
     return bool(source or target)
 
 
+def _output_ref_columns(
+    refs: Sequence[Dict[str, Any]],
+) -> List[str]:
+    return [
+        str(_payload(ref).get("column") or "").strip().lower()
+        for ref in refs or []
+        if str(_payload(ref).get("column") or "").strip()
+    ]
+
+
+def _canonical_op_preserves_answer_unit_under_reroute(canonical_op: Dict[str, Any]) -> bool:
+    args = _payload(canonical_op.get("arguments"))
+    shape = _payload(args.get("output_shape_delta"))
+    if not _answer_unit_preserve_for_reroute(shape):
+        return False
+    skeleton = _payload(args.get("skeleton"))
+    output_contract = str(skeleton.get("output_contract") or "").strip().upper()
+    source_cols = _output_ref_columns(args.get("source_output_refs") or [])
+    target_cols = _output_ref_columns(args.get("target_output_refs") or [])
+    same_output_column = bool(source_cols and target_cols and source_cols == target_cols)
+    has_route_delta = bool(_target_relation_edges_for_action(canonical_op))
+    return has_route_delta and (output_contract == "UNCHANGED" or same_output_column)
+
+
+def _selected_output_columns(case_view: RuntimeCaseView) -> List[str]:
+    alias_map = _sql_alias_map(str(getattr(case_view.pred_manifestation, "top1_sql", "") or ""))
+    cols: List[str] = []
+    for expr in getattr(case_view.pred_manifestation, "columns", None) or []:
+        _table, column = _expr_table_column(str(expr or ""), alias_map)
+        if column:
+            cols.append(column.strip().lower())
+    return cols
+
+
+def _selected_output_ref_keys(case_view: RuntimeCaseView) -> List[Tuple[str, str]]:
+    alias_map = _sql_alias_map(str(getattr(case_view.pred_manifestation, "top1_sql", "") or ""))
+    keys: List[Tuple[str, str]] = []
+    for expr in getattr(case_view.pred_manifestation, "columns", None) or []:
+        table, column = _expr_table_column(str(expr or ""), alias_map)
+        if column:
+            keys.append((str(table or "").strip().lower(), column.strip().lower()))
+    return keys
+
+
+def _output_ref_keys(refs: Sequence[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    return [
+        (
+            str(_payload(ref).get("table") or "").strip().lower(),
+            str(_payload(ref).get("column") or "").strip().lower(),
+        )
+        for ref in refs or []
+        if str(_payload(ref).get("column") or "").strip()
+    ]
+
+
+def _reroute_conflicts_current_answer_unit(
+    case_view: RuntimeCaseView,
+    args: Dict[str, Any],
+) -> bool:
+    shape = _current_output_shape_for_compiler(case_view)
+    if not bool(shape.get("has_aggregate")):
+        return False
+    current_keys = _selected_output_ref_keys(case_view)
+    target_keys = _output_ref_keys(args.get("target_output_refs") or [])
+    if not current_keys or not target_keys:
+        return False
+    return current_keys != target_keys
+
+
+def _canonical_op_reroute_variant(canonical_op: Dict[str, Any]) -> Dict[str, Any]:
+    args = _payload(canonical_op.get("arguments"))
+    relation_delta = _payload(_payload(args.get("operation_signature")).get("relation_delta"))
+    relation_effect = _payload(_payload(args.get("repair_effect_signature")).get("relation_effect"))
+    source_edges = [
+        _payload(item)
+        for item in (args.get("source_equality_relations") or [])
+        if _payload(item)
+    ]
+    target_edges = _target_relation_edges_for_action(canonical_op)
+    for expr in [
+        *list(relation_delta.get("source_relation_equalities") or []),
+        *list(relation_effect.get("source_relation_paths") or []),
+    ]:
+        edge = _relation_edge_from_equality(str(expr or ""))
+        if edge:
+            source_edges.append(edge)
+    return {
+        "source_equality_relations": source_edges,
+        "target_equality_relations": target_edges,
+        "source_output_refs": [_payload(item) for item in (args.get("source_output_refs") or [])],
+        "target_output_refs": [_payload(item) for item in (args.get("target_output_refs") or [])],
+        "output_shape_delta": _payload(args.get("output_shape_delta")),
+    }
+
+
 def _variant_requires_relation_reroute(variant: Dict[str, Any], case_view: RuntimeCaseView) -> bool:
     source_relations = [_payload(item) for item in (variant.get("source_equality_relations") or [])]
     target_relations = [_payload(item) for item in (variant.get("target_equality_relations") or [])]
@@ -3202,12 +3371,14 @@ def _variant_requires_relation_reroute(variant: Dict[str, Any], case_view: Runti
         return False
     if source_keys and target_keys <= source_keys:
         return False
-    source_refs = [_payload(item) for item in (variant.get("source_output_refs") or [])]
-    target_refs = [_payload(item) for item in (variant.get("target_output_refs") or [])]
-    output_changed = not _output_refs_same(source_refs, target_refs)
-    sql = str(getattr(case_view.pred_manifestation, "top1_sql", "") or "")
-    compound_or_nested_scope = bool(re.search(r"\bUNION\b|\bINTERSECT\b|\bEXCEPT\b|\bFROM\s*\(", sql, flags=re.IGNORECASE))
-    return output_changed or compound_or_nested_scope
+    current_keys = _current_relation_key_set(case_view)
+    if not current_keys:
+        return False
+    if target_keys <= current_keys:
+        return False
+    if source_keys and not (source_keys & current_keys):
+        return False
+    return True
 
 
 def _enumerate_reroute_fact(
@@ -3216,10 +3387,16 @@ def _enumerate_reroute_fact(
     group_id: str,
     group_type: GroupType,
     member_variants: Sequence[Dict[str, Any]],
+    canonical_op: Optional[Dict[str, Any]] = None,
     repair_program: Sequence[Dict[str, Any]] = (),
 ) -> ActionCandidateSet:
     candidates: List[ActionCandidate] = []
-    for variant in member_variants or []:
+    variants = list(member_variants or [])
+    if not variants and canonical_op:
+        fallback = _canonical_op_reroute_variant(canonical_op)
+        if fallback.get("target_equality_relations"):
+            variants = [fallback]
+    for variant in variants:
         payload = _payload(variant)
         if not _variant_requires_relation_reroute(payload, case_view):
             continue
@@ -3448,6 +3625,14 @@ def _enumerate_change_grain(
     elif source_has_distinct and not target_has_distinct:
         aggregate_rewrite = "COUNT_DISTINCT_TO_COUNT"
     target_refs = _target_output_refs_for_action(canonical_op)
+    current_keys = _selected_output_ref_keys(case_view)
+    target_keys = _output_ref_keys(target_refs)
+    if bool(_current_output_shape_for_compiler(case_view).get("has_aggregate")) and current_keys and target_keys and current_keys != target_keys:
+        return ActionCandidateSet(
+            primitive=ActionPrimitive.CHANGE_GRAIN,
+            candidates=[],
+            empty_reason="aggregate_answer_unit_mismatch",
+        )
     target_anchor = (
         str((target_refs[0] or {}).get("expression") or "")
         if target_refs
@@ -3766,6 +3951,7 @@ def _enumerate_for_canonical_op(
             group_id=group.group_id,
             group_type=group.group_type,
             member_variants=matched_variants,
+            canonical_op=canonical_op,
             repair_program=repair_program,
         )
         if reroute_set.candidates:
@@ -3829,6 +4015,7 @@ def _enumerate_for_canonical_op(
             group_id=group.group_id,
             group_type=group.group_type,
             member_variants=matched_variants,
+            canonical_op=canonical_op,
             repair_program=repair_program,
         )
         if reroute_set.candidates:
@@ -3853,12 +4040,39 @@ def _enumerate_for_canonical_op(
         if ranking_set.candidates:
             sets.append(ranking_set)
     elif lowering_family == "select_replace":
+        if _canonical_op_preserves_answer_unit_under_reroute(canonical_op):
+            reroute_set = _enumerate_reroute_fact(
+                case_view=case_view,
+                group_id=group.group_id,
+                group_type=group.group_type,
+                member_variants=matched_variants,
+                canonical_op=canonical_op,
+                repair_program=repair_program,
+            )
+            if reroute_set.candidates:
+                sets = [reroute_set]
+            else:
+                sets = []
+        else:
+            sets = []
         preferred_refs = _target_output_refs_for_action(
             canonical_op,
             member_variants=matched_variants,
         )
-        sets = [
-            _enumerate_replace_select_slot(
+        if not sets:
+            sets = [
+                _enumerate_replace_select_slot(
+                    case_view=case_view,
+                    skeleton=skeleton,
+                    slots=slots,
+                    group_id=group.group_id,
+                    group_type=group.group_type,
+                    memory_text=memory_text,
+                    repair_program=repair_program,
+                    preferred_target_refs=preferred_refs,
+                )
+            ]
+            switch_set = _enumerate_switch_canonical_field(
                 case_view=case_view,
                 skeleton=skeleton,
                 slots=slots,
@@ -3868,19 +4082,8 @@ def _enumerate_for_canonical_op(
                 repair_program=repair_program,
                 preferred_target_refs=preferred_refs,
             )
-        ]
-        switch_set = _enumerate_switch_canonical_field(
-            case_view=case_view,
-            skeleton=skeleton,
-            slots=slots,
-            group_id=group.group_id,
-            group_type=group.group_type,
-            memory_text=memory_text,
-            repair_program=repair_program,
-            preferred_target_refs=preferred_refs,
-        )
-        if switch_set.candidates:
-            sets.append(switch_set)
+            if switch_set.candidates:
+                sets.append(switch_set)
         change_grain_set = _enumerate_change_grain(
             case_view=case_view,
             group_id=group.group_id,
@@ -3905,10 +4108,13 @@ def _enumerate_for_canonical_op(
             group_id=group.group_id,
             group_type=group.group_type,
             member_variants=matched_variants,
+            canonical_op=canonical_op,
             repair_program=repair_program,
         )
         if reroute_set.candidates:
-            sets.append(reroute_set)
+            existing_reroute = any(cs.primitive == ActionPrimitive.REROUTE_FACT for cs in sets)
+            if not existing_reroute:
+                sets.append(reroute_set)
     else:
         return [
             ActionCandidateSet(

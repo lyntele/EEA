@@ -1656,3 +1656,88 @@ r16 验证：
 
 - 审查阻塞项已修；必要硬约束仍满足：不退化 7/18 且无 regression。
 - 期望目标 `>=9/18` 未达成，剩余主要瓶颈不是 RoleGraph trigger，而是 source-route pattern 的运行时识别和可执行修复动作还不稳定。
+
+### 2026-05-09 r17：source-route answer-unit preserve 修复，focus18 达到 8/18
+
+运行：
+
+- `toxicology_focus18_postsel_v1_dmxapi_r17_20260509_204440`
+- 在线 18 题完整跑完；官方 baseline / rewrite_only / full_pipeline evaluation 已落盘。
+- final freeze 在官方评估后中止；本轮目标是在线触发与 rewrite 效果，不以 final freeze 为验收对象。
+
+本轮修复：
+
+- `REROUTE_FACT` 枚举不再要求 output 同时变化。只要修复轨迹里 `target_relation_equalities` 相比 source relation 发生变化，就可以形成 route repair candidate。
+- singleton 没有 member variant 时，从 canonical op 的 `operation_signature.relation_delta` / `repair_effect_signature.relation_effect` 中反推出 `target_relation_edges`，避免 source-route singleton 永远枚举不出 reroute candidate。
+- 对“source-route + 输出形状不变 + output_contract=UNCHANGED 或 source/target 输出列语义相同”的 `select_replace`，不再按 SELECT 替换执行，而是降到 `REROUTE_FACT + answer_unit_preserve`。
+- hint 后处理增加契约保持：如果原始结构动作带 `answer_unit_preserve`，最终给 rewrite 的 hint 必须包含“保留当前答案单位和 SELECT 语义，只在 join route 改变时重绑定 alias”的约束，防止 hint instantiation LLM 丢掉 preserve 约束。
+
+r17 结果：
+
+- `final_correct = 8/18`
+- `runtime ready = 9/18`
+- 修对：`249,253,268,277,285,302,307,338`
+- regression：`0`
+- 官方 EX：baseline `0/18`，rewrite/full pipeline `8/18 = 44.44%`
+
+关键案例：
+
+- q338 从 r16 的错误“把 `atom_id` 改成 `molecule_id`”变为正确 route-only rewrite：
+  `SELECT DISTINCT a.atom_id FROM bond b JOIN atom a ON b.molecule_id = a.molecule_id ...`
+- q338 runtime action 现在是 `REROUTE_FACT`，`answer_unit_preserve=True`，required scopes 只有 `FROM/JOIN`，不再产生 `REPLACE_SELECT_SLOT` / `SWITCH_CANONICAL_FIELD`。
+- q335 仍未修对，但失败形态改善：它不再把 `COUNT(DISTINCT m.molecule_id)` 改成 `COUNT(bond_id)`，answer unit 被保住；失败原因是命中 `grp-sing-toxicology-269` 后采用了 q269 的 molecule-bridge route，结果保留了 `molecule` 表，执行为 211，而 gold 的 atom-bond direct route 为 273。
+
+库形态：
+
+- 在线库中 patterns 已明显去重：`patterns=3`，`singletons=18`。
+- RoleGraph 主 pattern：`[206,249,253,268,277,302,307]`，不再保存 n=2/3/4/6/7 的长串嵌套版本。
+- source-route pattern 已形成两个小组：`[269,335]` 与 `[328,338]`，说明 closure 收紧后不再混成大 root，但 source-route branch 选择还没统一到“按当前答案单位选择 route 分支”。
+
+当前结论：
+
+- `doc/pattern_recongnize.md` 的必要硬约束继续满足：不低于 7/18、无 regression、pattern 去重生效、RoleGraph 收益保持。
+- r17 首次把 source-route 的 q338 修对，说明 `REROUTE_FACT + answer_unit_preserve` 的主链路已经可用。
+- 未达成期望 `>=9/18`：q335 暴露的是 source-route 分支选择问题，不是 rewrite LLM 不遵守 preserve。下一步应让 branch 选择区分“当前答案单位需要保留但输出表可重绑定”与“历史 case 目标输出单位不同”的情况，避免 q269 这类 count-bond 记忆驱动 q335 的 count-molecule 问题。
+
+### 2026-05-09 r18：收紧 reroute 当前绑定，去掉 q335 误触发
+
+审查反馈：
+
+- r17 的 `REROUTE_FACT` fallback 仍有过宽风险：它从历史 canonical op 直接枚举目标 route，没有充分检查当前 SQL 是否确实需要这条 route。
+- 对 aggregate answer unit，历史 target output 如果是另一个聚合主体，不能被当作 answer-unit-preserve reroute；q335 命中 q269 后虽然保住了 `COUNT(DISTINCT m.molecule_id)`，但 route 仍按 q269 的 molecule bridge 走，执行错误。
+
+本轮补充修复：
+
+- `REROUTE_FACT` 必须和当前 SQL 的实际 join route 绑定：目标 relation 不能已经存在于当前 SQL，且历史 source route 至少要和当前 SQL 的 join route 有交集。
+- 如果当前 SELECT 是 aggregate，且历史 target output refs 的列集合与当前 aggregate 主体不一致，则阻断该 reroute / grain candidate，避免把 `COUNT(DISTINCT molecule_id)` 推向 `COUNT(bond_id)` 这类答案单位变化。
+- `answer_unit_preserve=True` 时不再把 `target_output_refs` 传给 rewrite hint，避免 hint 同时说“保留当前答案单位”和“改成历史 target output”。
+- online pattern 去重继续收紧：同 action family、同 answer shape、recognition signal 高重叠且 case 集有交集的 pattern 会合并保存，避免 RoleGraph 从嵌套重复变成重叠重复。
+
+r18 结果：
+
+- 运行：`toxicology_focus18_postsel_v1_dmxapi_r18_20260509_212128`
+- `final_correct = 8/18`
+- `runtime ready = 8/18`
+- 修对：`249,253,268,277,285,302,307,338`
+- `ready_false = []`
+- q335 从 r17 的 `ready but false` 变成 `no_match`，不再误触发。
+- q338 保持修对，rewrite 为 route-only：保留 `SELECT DISTINCT a.atom_id`，删除 `connected`，直接 `JOIN atom a ON b.molecule_id = a.molecule_id`。
+- 官方 EX：baseline `0/18`，rewrite/full pipeline `8/18 = 44.44%`。
+
+去重检查：
+
+- r18 落盘在线库在本次去重补丁前仍有 6 个 pattern，其中 RoleGraph 有 3 个重叠版本。
+- 对 r18 library 静态套用新去重逻辑后，pattern 从 6 个降为 4 个；RoleGraph 合并为一个保存对象，case 集为 `[206,249,253,268,277,302]`。
+- 这说明新增的 overlap-merge 能解决“不是严格子集但同根重叠”的重复保存问题；后续真实 run 会在在线演化时直接应用。
+
+审查后补丁：
+
+- reroute 当前 relation 绑定改为 fail-closed：如果当前 SQL 解析不出任何 join relation key，不再允许历史 route fallback 通过。
+- aggregate answer-unit mismatch 从“只比较列名”升级为“表+列”比较，避免同名列但不同实体的聚合主体被误认为一致。
+- overlap pattern merge 增加共享 case 下限：非子集关系至少共享 2 个 case 才能合并，降低一个桥接 case 把不同 root 串起来的风险。
+- 静态探针确认：q335 仍 `passthrough_no_match`；q338 仍 `ready`，动作仍为 `REROUTE_FACT + answer_unit_preserve`，target output refs 不再传入 hint。
+
+当前剩余：
+
+- q335 的正确修复需要一个更准确的 source-route branch：当前系统能阻止 q269 误触发，但还不能从已有记忆中推出 gold 所需的 atom-bond direct route 且重绑定 `COUNT(DISTINCT molecule_id)` 到可保留完整答案域的表。
+- RoleGraph 主 pattern 仍缺 q285/307 的完整合并证据，虽然这两个 case 在线已能修对；这属于 pattern 支持集完整度问题，不影响当前 8/18 在线收益。
