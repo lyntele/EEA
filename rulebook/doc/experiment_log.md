@@ -1210,3 +1210,45 @@ RUN2 q249 no-match 根因：
 - `q249` 不应再被 `unsupported_singleton_program_type` 挡掉。
 - `q268/q277/q285/q302/q307` 的 pattern 触发应保持。
 - 若仍有 no-match，应继续按 runtime audit 中的具体 gate reason 定位，而不是放宽整体阈值。
+
+### 2026-05-09 追加：local evolution 深 replay 导致在线阶段不可用
+
+验证对象：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260509_101951_primaryfix`
+
+现象：
+
+- `q249` 已恢复 `runtime=ready matched=1 s1=yes final=True update=accumulated`。
+- `q253` 也为 `runtime=ready matched=2 s1=yes`，但 DeepEye selector 仍选回 S0，因此 `final=False`。
+- 从 `q249/q253/q263` 开始，每条 case 的 online update 非常慢。
+- 中断栈明确停在 `update_from_selected_sql -> _local_evolve_library -> evolve_library_with_replay -> run_promotion_test -> _replay_one_holdout -> prepare_rewrite_plan -> run_action_compiler`。
+
+根因：
+
+- 当前 local_evolve 在每个新错例 update 后都会立即执行完整 replay-gated promotion。
+- replay 内部会对候选 pattern 的成员做 LOO / full-group / branch replay，并调用 `action_compiler`、`hint_instantiation`、`memory_rewrite`。
+- 这会导致在线阶段每个关键 case 都触发多次 4 万字符级 prompt 和下游 rewrite LLM 调用。
+- 对“逐例在线积累”的目标来说，local_evolve 的职责应是让新形成的 pattern/contract 对后续 case 可见；完整 replay 质量评估应在 final_evolve_and_freeze 做。
+
+修复：
+
+- `local_evolve` 默认改为 replay-deferred：
+  - 仍然执行 singleton -> pattern formation。
+  - 仍然 materialize trigger contract，使后续 case 可以在线触发。
+  - 将候选 pattern 标记为 `runtime_visible_local_evolve_audit_only`。
+  - 不在每个 case 的 update 阶段做完整 `run_promotion_test`。
+- `final_evolve_and_freeze` 保持原来的 replay-gated promotion，不受影响。
+- 若需要恢复旧行为，可设置 `EEA_LOCAL_EVOLVE_REPLAY=1`。
+
+设计边界：
+
+- 这不是放弃 replay/promotion，而是把 replay 从在线热路径移到最终冻结边界。
+- 在线阶段仍由 bias recognition + branch required signals + binder/compiler 控制是否真正 rewrite。
+- source singleton 保持可用，避免 pattern 质量不稳时破坏已有 singleton 收益。
+
+下一轮要求：
+
+- focus18 冷启动应明显加速，不能再在 `q249/q253/q263` 的 update 阶段长时间卡住 replay。
+- `q268/q277/q285/q302/q307` 应能看到前缀形成的 RoleGraph pattern。
+- final_evolve 阶段仍应产生 replay/promotion 诊断，用于判断哪些 pattern 真正稳定。

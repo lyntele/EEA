@@ -7,6 +7,7 @@ Experience-family formation is disabled as a runtime/promotion source.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -23,7 +24,7 @@ from method.EEA.rulebook.common.runtime.trigger_contract import (
     ensure_materialized_trigger_contract,
     materialize_library_runtime_contracts,
 )
-from method.EEA.rulebook.common.core.vocabulary import GroupStatus, GroupType
+from method.EEA.rulebook.common.core.vocabulary import Confidence, GroupStatus, GroupType
 
 
 def _payload(value: Any) -> Any:
@@ -50,6 +51,26 @@ def _library_counts(library: LibraryStateV2) -> Dict[str, int]:
         "singletons": len(library.singletons or []),
         "cases_processed": int(library.cases_processed or 0),
     }
+
+
+def _local_evolve_replay_enabled() -> bool:
+    raw = str(os.getenv("EEA_LOCAL_EVOLVE_REPLAY", "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummary, Dict[str, Any]]:
+    promoted = group.model_copy(deep=True)
+    promoted.group_type = GroupType.PATTERN
+    promoted.runtime_usable = True
+    promoted.runtime_blockers = []
+    promoted.confidence = Confidence.MEDIUM
+    promoted.lifecycle.promotion_state = "runtime_visible_local_evolve_audit_only"
+    promoted.lifecycle.quarantine_reason = "local_evolve_replay_deferred_to_final_freeze"
+    promoted, contract_audit = ensure_materialized_trigger_contract(promoted)
+    if not bool(contract_audit.get("runtime_executable")):
+        promoted.runtime_usable = True
+        promoted.runtime_contract_status = str(contract_audit.get("status") or "blocked")
+    return promoted, contract_audit
 
 
 def _compact_pattern_report(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -287,7 +308,48 @@ def evolve_library_with_replay(
     }
 
     can_run_replay = bool(case_loader is not None and db_path)
-    if (
+    local_replay_deferred = (
+        event_kind == "local_evolve"
+        and family_runtime_policy == "replay_gated"
+        and int(working_library.cases_processed or 0) >= int(promotion_min_support)
+        and not _local_evolve_replay_enabled()
+    )
+    if local_replay_deferred:
+        promoted_groups: List[GroupSummary] = []
+        report["promotion_skipped_reason"] = "local_evolve_replay_deferred_to_final_freeze"
+        for family in family_candidates:
+            promoted, contract_audit = _mark_local_evolve_runtime_visible(family)
+            promoted_groups.append(promoted)
+            result_payload = {
+                "group_id": promoted.group_id,
+                "eligible": False,
+                "reason": "local_evolve_replay_deferred_to_final_freeze",
+                "formal_promotion_blocker": "local_evolve_replay_deferred_to_final_freeze",
+                "runtime_family_evidence_mode": "local_evolve_audit_visible",
+                "contract_audit": _payload(contract_audit),
+                "replay_metrics": {
+                    "version": int(promoted.version or 0),
+                    "sample_size": 0,
+                    "leave_one_out_done": False,
+                },
+                "formal_replay_metrics": {
+                    "version": int(promoted.version or 0),
+                    "sample_size": 0,
+                    "leave_one_out_done": False,
+                },
+                "promoted_group": {
+                    "group_id": promoted.group_id,
+                    "group_type": str(getattr(promoted.group_type, "value", promoted.group_type)),
+                    "runtime_usable": bool(promoted.runtime_usable),
+                    "status": str(getattr(promoted.status, "value", promoted.status)),
+                    "promotion_state": promoted.lifecycle.promotion_state,
+                },
+            }
+            report["promotion_results"].append(result_payload)
+            if promoted.runtime_usable:
+                report["promoted_runtime_objects"].append(result_payload["promoted_group"])
+        integrate_promoted_groups(working_library, promoted_groups)
+    elif (
         family_runtime_policy == "replay_gated"
         and int(working_library.cases_processed or 0) >= int(promotion_min_support)
         and can_run_replay
