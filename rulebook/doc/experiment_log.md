@@ -1528,3 +1528,47 @@ RUN2 q249 no-match 根因：
 - q268 应从 singleton fallback 切到 `grp-pat-...`。
 - q277/q285/q302/q307 中至少再有 2 个由 `grp-pat-...` 触发。
 - 总收益不低于 r6 的 7/18，且无 regression。
+
+### 2026-05-09 r10 在线结果与剩余计划项收尾
+
+运行：
+
+- `toxicology_focus18_postsel_v1_dmxapi_r10_20260509_153406`
+- 在线 18 条完整跑完；final freeze 因 replay/rewrite 调用过重被中止，不作为本轮验收对象。
+
+在线结果：
+
+- `enhanced_correct = 7/18`
+- `regression = 0`
+- 修对：`249,253,268,277,285,302,307`
+- pattern 路径修对：`253,268,277,285,302,307`
+- singleton 路径修对：`249`
+
+结论：
+
+- WU2/WU3 的两段触发已生效：RoleGraph pattern 不再只是 final library 里的事后对象，已经在线触发并产生收益。
+- WU5a/WU5b 已生效：q302 从上一轮未修对变为 pattern 触发修对，rewrite 中包含 DISTINCT / JOIN cleanup 约束。
+- source-route 组仍未完成：`326/328/335/338` 在线仍 no_match。
+
+source-route 断点：
+
+- q328 后已经形成 source-route pattern：`263/269/328`。
+- q338 后又形成 source-route pattern：`269/335/338`。
+- 但 q335/q338 到达时 runtime top candidates 没有 pattern 候选，说明问题在 source-route pattern 的在线识别/契约可见性，而不是 rewrite 后改坏。
+- q335 的目标是 route repair 但必须保留 `COUNT(DISTINCT molecule)` 这类 answer unit；因此 WU5c 需要同时完成 source-route recognition 与 `REROUTE_FACT + answer_unit_preserve`。
+
+本次修复：
+
+- `JOIN_REROUTE` / `FACT_ROUTE_REROUTE` / `SELECT_DROP_DISTINCT` 接入 canonical lowering，避免 source-route singleton/pattern 被 unsupported op type 卡住。
+- source-route bias contract 归一化：aggregate answer-unit 信号不再作为 anti-signal；`has_join_chain_via_bridge_table` 被补为 source-route 正向识别信号。
+- source-route fallback contract：当多个成员的 action contract 指向 reroute 时，补 `wrong_join_route` / `preserved_aggregate_unit` 的 fallback recognition。
+- REROUTE_FACT rewrite contract：若 `answer_unit_preserve=True`，rewrite 必须保留 SELECT 聚合表达式、COUNT/DISTINCT 语义、GROUP BY 和输出粒度。
+- REROUTE_FACT deterministic rewrite：在 answer-unit preserve 场景中保留原 SELECT 表达式，只改 join route。
+- pattern 嵌套去重：不再用完整 recognition_signals 作为 root key；真子集 pattern 默认被同 action family 的超集替代，避免 RoleGraph 保存 `[206,249]`, `[206,249,253]`, ... 多个嵌套版本。
+
+下一轮快速验收：
+
+- 在线部分保持 `enhanced_correct >= 7/18` 且 `regression=0`。
+- RoleGraph 收益仍至少 6 个走 pattern。
+- q335/q338 至少出现 source-route pattern candidate，理想状态为 `bias_recognized=True` 或 `pattern_recognized_branch_unbindable`，不再是完全 no pattern candidate。
+- library snapshots 中 RoleGraph 嵌套 pattern 明显减少，最终只应保留最大超集或少数真正不同 action family 的 pattern。

@@ -133,9 +133,55 @@ def _pattern_root_key(group: GroupSummary) -> Tuple[str, str, str]:
     envelope = _payload(getattr(program, "program_envelope", None)) or {}
     return (
         str(brc_payload.get("stable_bias_key") or brc_payload.get("bias_motif") or ""),
-        json.dumps(brc_payload.get("recognition_signals") or contract_payload.get("canonical_discriminants") or [], sort_keys=True, ensure_ascii=False),
+        str(
+            _payload(getattr(group, "formation_signals", None))
+            .get("pattern_admission", {})
+            .get("primary_repair_interface")
+            or ""
+        ),
         str(action_contract.get("op_family") or (envelope.get("action_envelope") or {}).get("op_family") or ""),
     )
+
+
+def _pattern_action_family_key(group: GroupSummary) -> Tuple[str, str]:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    envelope = _payload(getattr(program, "program_envelope", None)) or {}
+    contract_payload = _payload(getattr(group, "trigger_contract", None)) or {}
+    action_contract = _payload(contract_payload.get("action_contract")) or {}
+    primitives = sorted(
+        str(item)
+        for item in (
+            _payload(envelope.get("action_envelope")).get("allowed_primitives")
+            or action_contract.get("allowed_primitives")
+            or []
+        )
+        if str(item)
+    )
+    op_family = str(
+        action_contract.get("op_family")
+        or _payload(envelope.get("action_envelope")).get("op_family")
+        or ""
+    )
+    return op_family, ",".join(primitives)
+
+
+def _nested_pattern_supersedes(left: GroupSummary, right: GroupSummary) -> bool:
+    left_cases = {str(case_id) for case_id in (left.case_ids or [])}
+    right_cases = {str(case_id) for case_id in (right.case_ids or [])}
+    if not left_cases or not left_cases < right_cases:
+        return False
+    left_key = _pattern_root_key(left)
+    right_key = _pattern_root_key(right)
+    if any(left_key) and any(right_key) and left_key == right_key:
+        return True
+    left_family = _pattern_action_family_key(left)
+    right_family = _pattern_action_family_key(right)
+    # When the smaller pattern has no stronger contradictory action family,
+    # keep only the broader admitted root. This prevents online admission from
+    # leaving [A,B], [A,B,C], ... versions of the same abstract pattern.
+    if not any(left_family) or not any(right_family):
+        return True
+    return left_family == right_family
 
 
 def _deduplicate_nested_patterns(patterns: Iterable[GroupSummary]) -> List[GroupSummary]:
@@ -146,9 +192,6 @@ def _deduplicate_nested_patterns(patterns: Iterable[GroupSummary]) -> List[Group
         left_cases = {str(case_id) for case_id in (left.case_ids or [])}
         if not left_cases:
             continue
-        left_key = _pattern_root_key(left)
-        if not any(left_key):
-            continue
         for right in rows:
             right_id = str(right.group_id)
             if left_id == right_id:
@@ -156,9 +199,7 @@ def _deduplicate_nested_patterns(patterns: Iterable[GroupSummary]) -> List[Group
             right_cases = {str(case_id) for case_id in (right.case_ids or [])}
             if len(right_cases) <= len(left_cases):
                 continue
-            if left_key != _pattern_root_key(right):
-                continue
-            if left_cases < right_cases:
+            if _nested_pattern_supersedes(left, right):
                 superseded.add(left_id)
                 break
     return [pattern for pattern in rows if str(pattern.group_id) not in superseded]

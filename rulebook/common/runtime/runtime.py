@@ -1939,7 +1939,7 @@ def _runtime_program_type(contract: Dict[str, Any]) -> str:
 
 def _program_type_atom_from_op_type(op_type: str) -> str:
     normalized = str(op_type or "").strip().upper()
-    if normalized in {"SELECT_DROP_SLOT", "DROP_SELECT_SLOT"}:
+    if normalized in {"SELECT_DROP_SLOT", "DROP_SELECT_SLOT", "SELECT_DROP_DISTINCT"}:
         return "select_drop"
     if normalized in {"SELECT_REPLACE_SLOT", "REPLACE_SELECT_SLOT"}:
         return "select_replace"
@@ -1949,7 +1949,7 @@ def _program_type_atom_from_op_type(op_type: str) -> str:
         return "where_side_edit"
     if normalized == "INSERT_BRIDGE":
         return "join_bridge"
-    if normalized == "REROUTE_FACT":
+    if normalized in {"REROUTE_FACT", "JOIN_REROUTE", "FACT_ROUTE_REROUTE"}:
         return "fact_route_reroute"
     return ""
 

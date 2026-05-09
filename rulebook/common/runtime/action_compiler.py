@@ -1147,6 +1147,8 @@ def _primitive_for_lowering_family(lowering_family: str) -> ActionPrimitive:
         return ActionPrimitive.DROP_SIDE
     if lowering_family == "join_bridge":
         return ActionPrimitive.INSERT_BRIDGE
+    if lowering_family in {"join_reroute", "fact_route_reroute"}:
+        return ActionPrimitive.REROUTE_FACT
     if lowering_family == "select_add":
         return ActionPrimitive.ADD_SELECT_SLOT
     if lowering_family == "select_output_patch":

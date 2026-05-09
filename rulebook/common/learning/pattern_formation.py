@@ -2448,6 +2448,41 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
     ]
     sigs = sorted(dict.fromkeys(sigs))
     anti = sorted(dict.fromkeys(anti))
+    motif_text = " ".join(
+        [
+            str(brc.get("bias_motif") or ""),
+            str(brc.get("answer_shape_hint") or ""),
+            " ".join(sigs),
+            " ".join(anti),
+        ]
+    ).lower()
+    source_route_bias = any(
+        token in motif_text
+        for token in (
+            "source_route",
+            "wrong_join_route",
+            "join_route",
+            "join_path",
+            "indirect",
+            "bridge",
+            "reroute",
+        )
+    )
+    if source_route_bias:
+        # Aggregate answer-unit signals are valid positive context for
+        # source-route fixes. They must not become anti-signals, otherwise
+        # count-preserving route repairs such as q335 are blocked before the
+        # answer-unit-preserve branch can bind.
+        aggregate_signals = {
+            "has_aggregate_in_select",
+            "answer_unit_count_distinct",
+            "answer_unit_count_plain",
+            "answer_unit_scalar_aggregate",
+        }
+        anti = [signal for signal in anti if signal not in aggregate_signals]
+        if "has_join_chain_via_bridge_table" not in sigs:
+            sigs.append("has_join_chain_via_bridge_table")
+        sigs = sorted(dict.fromkeys(sigs))[:6]
     if not (3 <= len(sigs) <= 6):
         return {}
     try:
@@ -2474,8 +2509,13 @@ def _attach_validated_bias_recognition_contract(response: Dict[str, Any]) -> Dic
 
 def _fallback_bias_recognition_contract(groups: Sequence[GroupSummary]) -> Optional[BiasRecognitionContract]:
     votes: Counter[str] = Counter()
+    route_votes = 0
     for group in groups:
         contract = _model_dump(getattr(group, "trigger_contract", None))
+        action_contract = _model_dump(contract.get("action_contract") or {})
+        action_text = json.dumps(action_contract, ensure_ascii=False, default=str).lower()
+        if any(token in action_text for token in ("reroute", "join_reroute", "source_route")):
+            route_votes += 1
         signal_rows: List[str] = []
         signal_rows.extend(str(item) for item in (contract.get("required_signals") or []) if str(item))
         signal_rows.extend(str(item) for item in (contract.get("decisive_pred_signals") or []) if str(item))
@@ -2487,11 +2527,19 @@ def _fallback_bias_recognition_contract(groups: Sequence[GroupSummary]) -> Optio
             if mapped:
                 votes[mapped] += 1
     selected = [signal for signal, _count in votes.most_common(6)]
+    if route_votes >= 2:
+        for signal in (
+            "has_join_chain_via_bridge_table",
+            "has_predicate_outside_aggregate_scope",
+            "has_aggregate_in_select",
+        ):
+            if signal not in selected:
+                selected.append(signal)
     if len(selected) < 3:
         return None
     return BiasRecognitionContract(
-        bias_motif="fallback_from_runtime_signals",
-        answer_shape_hint="other",
+        bias_motif="wrong_join_route" if route_votes >= 2 else "fallback_from_runtime_signals",
+        answer_shape_hint="preserved_aggregate_unit" if route_votes >= 2 else "other",
         recognition_signals=sorted(selected[:6]),
         anti_signals=[],
         min_signal_overlap=0.6,

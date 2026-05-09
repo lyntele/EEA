@@ -34,9 +34,12 @@ COMPILER_SUPPORTED_CANONICAL_OPS = frozenset(
         "REPLACE_SELECT_SLOT",
         "SELECT_DROP_SLOT",
         "DROP_SELECT_SLOT",
+        "SELECT_DROP_DISTINCT",
         "JOIN_ADD_BRIDGE",
         "JOIN_ADD_TABLE",
         "BRIDGE_ADD_TABLE",
+        "JOIN_REROUTE",
+        "FACT_ROUTE_REROUTE",
         "WHERE_DROP_CONDITION",
         "WHERE_REPLACE_CONDITION",
     }
@@ -72,6 +75,10 @@ def _lowering_family(op_type: Any, locus: Any = "") -> str:
         return "select_replace"
     if op in {"SELECT_DROP_SLOT", "DROP_SELECT_SLOT"}:
         return "select_drop"
+    if op in {"SELECT_DROP_DISTINCT"}:
+        return "select_drop"
+    if op in {"JOIN_REROUTE", "FACT_ROUTE_REROUTE"}:
+        return "join_bridge"
     if op in {"JOIN_ADD_BRIDGE", "JOIN_ADD_TABLE", "BRIDGE_ADD_TABLE"}:
         return "join_bridge"
     if op in {"WHERE_DROP_CONDITION", "WHERE_REPLACE_CONDITION"}:
@@ -82,6 +89,10 @@ def _lowering_family(op_type: Any, locus: Any = "") -> str:
         return "select_replace"
     if locus_u == "SELECT" and "DROP" in op and "SLOT" in op:
         return "select_drop"
+    if locus_u == "SELECT" and "DROP" in op and "DISTINCT" in op:
+        return "select_drop"
+    if locus_u in {"JOIN", "BRIDGE", "FROM"} and "REROUTE" in op:
+        return "join_bridge"
     if locus_u in {"JOIN", "BRIDGE"} and ("BRIDGE" in op or "JOIN" in op) and "ADD" in op:
         return "join_bridge"
     if locus_u in {"WHERE", "PREDICATE", "SCOPE"} and (

@@ -1320,6 +1320,38 @@ def _rewrite_contract_prompt_payload(
                             "binding_status": "provided_by_action_contract",
                         }
                     )
+        elif primitive == "REROUTE_FACT":
+            preserve_answer_unit = bool(args.get("answer_unit_preserve"))
+            if preserve_answer_unit:
+                aggregate_exprs = [
+                    expr
+                    for expr in selected_exprs
+                    if re.search(r"\b(count|sum|avg|min|max)\s*\(", expr, flags=re.IGNORECASE)
+                ]
+                contract["preserve_constraints"].append(
+                    "For this route repair, preserve the current answer unit: do not change SELECT aggregation, COUNT/DISTINCT semantics, GROUP BY, or output grain."
+                )
+                for expr in aggregate_exprs:
+                    contract.setdefault("required_presence_checks", []).append(
+                        {
+                            "action_id": action_id,
+                            "scope": "SELECT",
+                            "pattern": re.sub(r"\\\s+", r"\\s+", re.escape(expr.strip())),
+                            "reason": "answer_unit_preserve requires the aggregate SELECT expression to remain",
+                        }
+                    )
+            contract["primary_edits"].append(
+                {
+                    "action_id": action_id,
+                    "primitive": primitive,
+                    "edit": "reroute_join_path",
+                    "required": True,
+                    "arguments": _compact_action_candidate_arguments(args),
+                    "selected_candidate_id": payload.get("selected_candidate_id"),
+                    "binding_status": "provided_by_action_contract",
+                    "preserve_answer_unit": preserve_answer_unit,
+                }
+            )
         else:
             contract["primary_edits"].append(
                 {
@@ -2365,6 +2397,19 @@ def _select_prefix_for_sql(sql: str) -> str:
     return "SELECT DISTINCT" if re.search(r"\bselect\s+distinct\b", str(sql or ""), flags=re.IGNORECASE) else "SELECT"
 
 
+def _reroute_actions_preserve_answer_unit(actions: List[Any]) -> bool:
+    for action in actions or []:
+        payload = _payload_for_prompt(action)
+        if not isinstance(payload, dict):
+            continue
+        if _enum_name(payload.get("primitive")) != "REROUTE_FACT":
+            continue
+        args = _payload_for_prompt(payload.get("arguments") or {})
+        if isinstance(args, dict) and bool(args.get("answer_unit_preserve")):
+            return True
+    return False
+
+
 def _build_join_from_target_edges(
     *,
     start_table: str,
@@ -2424,7 +2469,9 @@ def _rewrite_reroute_fact_from_target_edges(sql: str, actions: List[Any]) -> Opt
         for ref in _ordered_target_output_refs(_target_output_refs_from_reroute_actions(actions))
         if str(ref.get("table") or "").strip() and str(ref.get("column") or "").strip()
     ]
-    if not output_refs:
+    preserve_answer_unit = _reroute_actions_preserve_answer_unit(actions)
+    preserved_select_exprs = _selected_exprs(sql) if preserve_answer_unit else []
+    if not output_refs and not preserved_select_exprs:
         return None
     allowed_tables = {
         table.lower()
@@ -2435,17 +2482,27 @@ def _rewrite_reroute_fact_from_target_edges(sql: str, actions: List[Any]) -> Opt
     }
     allowed_tables.update(str(ref.get("table") or "").strip().lower() for ref in output_refs)
     allowed_tables.discard("")
-    start_table = str(output_refs[0].get("table") or "").strip()
+    start_table = (
+        str(output_refs[0].get("table") or "").strip()
+        if output_refs
+        else sorted(allowed_tables)[0]
+        if allowed_tables
+        else ""
+    )
     from_clause, extra_conditions = _build_join_from_target_edges(
         start_table=start_table,
         target_edges=target_edges,
     )
     if not from_clause:
         return None
-    select_exprs = [
-        f"{str(ref.get('table')).strip()}.{str(ref.get('column')).strip()}"
-        for ref in output_refs
-    ]
+    select_exprs = (
+        preserved_select_exprs
+        if preserve_answer_unit and preserved_select_exprs
+        else [
+            f"{str(ref.get('table')).strip()}.{str(ref.get('column')).strip()}"
+            for ref in output_refs
+        ]
+    )
     filters, tail = _extract_where_filters_for_reroute(
         sql,
         target_edges,
