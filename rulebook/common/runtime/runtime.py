@@ -1370,6 +1370,11 @@ def _runtime_branch_rows(group: GroupSummary) -> List[Dict[str, Any]]:
     ]
 
 
+def _runtime_branch_support(branch: Mapping[str, Any], fallback_case_ids: Sequence[str]) -> List[str]:
+    support = [str(case_id) for case_id in (branch.get("support_case_ids") or []) if str(case_id)]
+    return support or [str(case_id) for case_id in fallback_case_ids if str(case_id)]
+
+
 def _runtime_branch_id(branch: Mapping[str, Any]) -> str:
     return str(branch.get("branch_id") or branch.get("bundle_id") or "").strip()
 

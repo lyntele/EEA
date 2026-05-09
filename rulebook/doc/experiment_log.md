@@ -1457,3 +1457,31 @@ RUN2 q249 no-match 根因：
 - q268 应至少有一个 `grp-pat-...` 进入 matched group。
 - q277/q285/q302/q307 应继续验证 pattern 路径是否稳定。
 - 若仍失败，下一层看是否是 pattern 与 singleton 同时进入后 current-transform 选择偏向 singleton。
+
+### 2026-05-09 r8 中断观察：runtime helper 缺失
+
+中断点：
+
+- `toxicology_focus18_postsel_v1_dmxapi_r8_20260509_144639`
+- 已跑到 q268。
+
+现象：
+
+- q268 `runtime=error`。
+- `eea_runtime_response.json` 中：
+  - `reason = retrieval_exception:NameError`
+  - `blocked_reasons = retrieval_error:NameError: name '_runtime_branch_support' is not defined`
+
+根因：
+
+- `Resolve equivalent runtime branches` 在 runtime 里引用了 promotion 模块中已有的 `_runtime_branch_support` 语义，但 runtime 模块本地没有该 helper。
+
+修复：
+
+- 在 `common/runtime/runtime.py` 本地补 `_runtime_branch_support(branch, fallback_case_ids)`。
+- 语义：优先使用 branch 的 `support_case_ids`，没有时回退到 group 的 `case_ids`。
+
+下一轮 r9：
+
+- 重新跑到 q268，确认不再 runtime error。
+- 若 q268 pattern 仍不进 matched group，再继续看 current-transform 选择是否偏向 singleton。
