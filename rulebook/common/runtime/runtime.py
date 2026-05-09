@@ -3206,9 +3206,29 @@ def _preserve_dependency_clauses_in_hint(raw_hint: str, instantiated_hint: str) 
     raw_lower = raw.lower()
     hint_lower = hint.lower()
     additions: List[str] = []
+    has_join_cleanup_dependency = (
+        "unreferenced" in raw_lower and "join" in raw_lower
+    )
+    has_join_cleanup_hint = bool(
+        re.search(
+            r"\b(?:remove|drop)\w*\b[^.]{0,80}\bjoin\b|\bjoin\b[^.]{0,80}\b(?:remove|drop)\w*\b",
+            hint_lower,
+        )
+    )
+    has_join_preserve_conflict = (
+        has_join_cleanup_dependency
+        and "join" in hint_lower
+        and any(
+            token in hint_lower
+            for token in ("retain", "retained", "keep", "kept", "preserve", "preserved", "ensure")
+        )
+        and not has_join_cleanup_hint
+    )
+    if has_join_preserve_conflict:
+        return raw.strip()
     if "select distinct" in raw_lower and "distinct" not in hint_lower:
         additions.append("Also add SELECT DISTINCT when dropping the output side would otherwise duplicate result rows.")
-    if "unreferenced" in raw_lower and "join" in raw_lower and "join" not in hint_lower:
+    if has_join_cleanup_dependency and not has_join_cleanup_hint:
         additions.append("Also remove any JOIN block whose alias becomes unreferenced after the selected output side is dropped.")
     if not additions:
         return hint

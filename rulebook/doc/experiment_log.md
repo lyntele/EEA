@@ -69,6 +69,7 @@ Commit：
   - matched pattern：`grp-pat-toxicology-206-253-93286776`
   - hint 包含：删除 `a2.element`、添加 `SELECT DISTINCT`、删除 alias 失依后的 JOIN block。
   - compiler action 的 `allowed_edit_scope` 为 `SELECT, JOIN`，不再只有 `SELECT`。
+- 随后的真实 focus18 run 发现 q268 的 raw hint 正确，但 hint-instantiation LLM 把 JOIN cleanup 改成了“保留 a2 JOIN”。已补 contract-preservation：当实例化 hint 与 raw hint 的结构依赖相反时，最终 hint 回退到 code-rendered raw hint，避免 LLM 覆盖已绑定 contract。
 
 决策：
 
