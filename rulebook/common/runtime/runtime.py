@@ -3111,6 +3111,21 @@ def _action_argument_text(args: Dict[str, Any], keys: Sequence[str]) -> str:
 
 def _dependency_action_text(args: Dict[str, Any]) -> str:
     notes: List[str] = []
+    cleanup_payloads = [
+        item if isinstance(item, dict) else {"op_id": str(item)}
+        for item in (args.get("cleanup_edits") or [])
+        if item
+    ]
+    if (
+        str(args.get("distinct_dependency") or "") == "SELECT_ENFORCE_DISTINCT"
+        or any(str(item.get("kind") or "") == "enforce_distinct" for item in cleanup_payloads)
+    ):
+        notes.append("also add SELECT DISTINCT to preserve row-result semantics after dropping an output side")
+    if any(
+        str(item.get("kind") or "") == "drop_unreferenced_join_for_dropped_select_alias"
+        for item in cleanup_payloads
+    ):
+        notes.append("also remove any JOIN block whose alias becomes unreferenced after the selected output side is dropped")
     for step in args.get("repair_program") or []:
         row = _payload(step)
         if not bool(row.get("is_dependency") or False):
@@ -3121,7 +3136,11 @@ def _dependency_action_text(args: Dict[str, Any]) -> str:
             notes.append("also preserve/enforce DISTINCT exactly when required by the action")
         elif locus == "JOIN":
             notes.append("also apply the dependent JOIN cleanup carried by the action")
-    cleanup_edits = [str(item) for item in (args.get("cleanup_edits") or []) if str(item)]
+    cleanup_edits = [
+        str(item.get("op_id") or item.get("id") or "")
+        for item in cleanup_payloads
+        if str(item.get("op_id") or item.get("id") or "")
+    ]
     if cleanup_edits:
         notes.append("also remove dependent cleanup edit ids=" + ",".join(cleanup_edits[:4]))
     preserve = [str(item) for item in (args.get("preserve_invariants") or []) if str(item)]
@@ -3145,7 +3164,10 @@ def _render_action_repair_brief(actions: Sequence[Any]) -> str:
             parts.append(f"Replace the current projection with the target field(s) from the action. {detail}".strip())
         elif primitive in {"DROP_SELECT_SLOT", "DROP_SIDE"}:
             detail = _action_argument_text(args, ("from_exprs", "from_expr", "predicate_ref", "drop_condition"))
-            parts.append(f"Remove only the side selected by the action. {detail}".strip())
+            dependency = _dependency_action_text(args)
+            parts.append(
+                f"Remove only the side selected by the action. {detail} {dependency}".strip()
+            )
         elif primitive in {"INSERT_BRIDGE", "REROUTE_FACT"}:
             detail = _action_argument_text(args, ("target_relation_edges", "target_output_refs"))
             preserve = ""
@@ -3170,6 +3192,27 @@ def _render_action_repair_brief(actions: Sequence[Any]) -> str:
         else:
             parts.append(f"Apply structured action {primitive} only with its bound arguments.")
     return " ".join(part for part in parts if part).strip()
+
+
+def _preserve_dependency_clauses_in_hint(raw_hint: str, instantiated_hint: str) -> str:
+    """Keep structured dependency obligations if hint instantiation drops them.
+
+    The instantiation LLM may simplify wording, but it must not erase executable
+    dependencies emitted by the action compiler. This post-check is contract
+    preservation, not case-specific repair logic.
+    """
+    raw = str(raw_hint or "")
+    hint = str(instantiated_hint or "").strip()
+    raw_lower = raw.lower()
+    hint_lower = hint.lower()
+    additions: List[str] = []
+    if "select distinct" in raw_lower and "distinct" not in hint_lower:
+        additions.append("Also add SELECT DISTINCT when dropping the output side would otherwise duplicate result rows.")
+    if "unreferenced" in raw_lower and "join" in raw_lower and "join" not in hint_lower:
+        additions.append("Also remove any JOIN block whose alias becomes unreferenced after the selected output side is dropped.")
+    if not additions:
+        return hint
+    return " ".join([hint, *additions]).strip()
 
 
 def _risk_rank(action: Any) -> int:
@@ -4149,7 +4192,10 @@ def prepare_rewrite_plan(
                 local_schema_view=case_view.local_schema_view,
                 actions=compiler_output.actions,
             )
-            instantiated_hint = inst["instantiated_hint"]
+            instantiated_hint = _preserve_dependency_clauses_in_hint(
+                raw_hint,
+                inst["instantiated_hint"],
+            )
             hint_applicable = inst["applicable"]
             hint_notes = inst["instantiation_notes"]
             rewrite_allowed = bool(inst.get("rewrite_allowed", True))

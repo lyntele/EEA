@@ -39,6 +39,42 @@
 
 ## Pattern 聚类实验
 
+### E-20260509-03：Phase 1 WU5 结构依赖补齐
+
+Commit：
+
+- 待本次提交。
+
+背景：
+
+- `toxicology_focus18_postsel_v1_biasrec_retryfix_20260509_055736` 在 q268 首次证明 pattern runtime 路径可以端到端修对。
+- q302 也能触发 `grp-pat-toxicology-206-253-93286776`，但 EEA 输出 hint 只包含删除 `a2.element`，没有携带 `SELECT DISTINCT` 和 dependent JOIN cleanup。
+- 这不是新的 case 特判，而是已有 WU5 设计没有贯通到 canonical/pattern action 与 post-selection hint：接入端真正消费的是 hint，不能依赖 EEA 内部未暴露的 rewrite contract。
+
+实现变更：
+
+- `common/runtime/action_compiler.py`
+  - canonical/pattern 候选进入 `_annotate_canonical_candidates` 时传入当前 `RuntimeCaseView`。
+  - 对 `DROP_SELECT_SLOT` 候选补充通用 alias cleanup 依赖：如果被删除 SELECT 表达式的表 alias 后续不再被引用，则允许并要求清理对应 JOIN，`required_edit_scopes` 加入 `JOIN`。
+  - 对 `DROP_SELECT_SLOT` / `DROP_SIDE` 的 canonical 候选统一应用 `pair_role_side_output + no_distinct` 推导出的 `SELECT_ENFORCE_DISTINCT` 依赖，避免只在非 canonical 枚举路径生效。
+- `common/runtime/runtime.py`
+  - action brief 渲染时把结构依赖写入 raw hint：`SELECT DISTINCT` 和条件 JOIN cleanup。
+  - hint instantiation 后增加 contract-preservation check：如果 LLM 简化 wording 时丢掉 raw hint 中的依赖义务，则自动补回对应通用依赖句。
+
+验证：
+
+- `python -m py_compile common/runtime/action_compiler.py common/runtime/runtime.py` 通过。
+- 使用 q302 的真实 runtime request 与当前 run 的 `library_latest.json` 做本地 probe：
+  - `status=ready`
+  - matched pattern：`grp-pat-toxicology-206-253-93286776`
+  - hint 包含：删除 `a2.element`、添加 `SELECT DISTINCT`、删除 alias 失依后的 JOIN block。
+  - compiler action 的 `allowed_edit_scope` 为 `SELECT, JOIN`，不再只有 `SELECT`。
+
+决策：
+
+- 保留该改动，作为 WU5 的通用结构依赖实现。
+- 下一轮 focus18 验证重点看 q302 是否从“触发但 hint 不完整”变成“触发且 rewrite 可执行”，同时确认 q249/q268/q277/q285 的 pattern/singleton 触发不退化。
+
 ### E-20260505-01：保守 Pattern Admission
 
 Baseline：

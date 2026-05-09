@@ -539,6 +539,31 @@ def _pair_output_distinct_dependency_args(
     return out
 
 
+def _drop_select_alias_cleanup_dependency_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    exprs = [str(expr).strip() for expr in (args.get("from_exprs") or []) if str(expr).strip()]
+    if args.get("from_expr") is not None and str(args.get("from_expr")).strip():
+        exprs.append(str(args.get("from_expr")).strip())
+    if not exprs:
+        return args
+    out = dict(args)
+    scopes = list(out.get("required_edit_scopes") or [])
+    if "JOIN" not in scopes:
+        scopes.append("JOIN")
+    out["required_edit_scopes"] = scopes
+    cleanup = [
+        item if isinstance(item, dict) else {"op_id": str(item)}
+        for item in (out.get("cleanup_edits") or [])
+        if item
+    ]
+    if not any(
+        str(item.get("kind") or "") == "drop_unreferenced_join_for_dropped_select_alias"
+        for item in cleanup
+    ):
+        cleanup.append({"kind": "drop_unreferenced_join_for_dropped_select_alias"})
+    out["cleanup_edits"] = cleanup
+    return out
+
+
 def _sql_alias_map(sql: str) -> Dict[str, str]:
     aliases: Dict[str, str] = {}
     pattern = re.compile(
@@ -1980,6 +2005,7 @@ def _canonical_base_skeleton(
 def _annotate_canonical_candidates(
     *,
     candidate_set: ActionCandidateSet,
+    case_view: RuntimeCaseView,
     group: GroupSummary,
     canonical_op: Dict[str, Any],
     member_variants: Optional[Sequence[Dict[str, Any]]] = None,
@@ -2092,6 +2118,10 @@ def _annotate_canonical_candidates(
             *list(args.get("cleanup_edits") or []),
             *list(bundle_meta.get("cleanup_op_ids") or []),
         ]
+        if candidate_set.primitive == ActionPrimitive.DROP_SELECT_SLOT:
+            args = _drop_select_alias_cleanup_dependency_args(args)
+        if candidate_set.primitive in {ActionPrimitive.DROP_SELECT_SLOT, ActionPrimitive.DROP_SIDE}:
+            args = _pair_output_distinct_dependency_args(case_view, args)
         args["counts_as_action"] = int(bundle_meta.get("counts_as_action") or 1)
         args["bundle_primary_primitive"] = str(bundle_meta.get("primary_primitive") or "")
         args["bundle_selection_key"] = _bundle_selection_key(args)
@@ -2916,7 +2946,7 @@ def _enumerate_drop_select_slot(
                 candidates.append(
                     ActionCandidate(
                         candidate_id=_hash_cand(f"DROPN|{group_id}|{combo_key}"),
-                        arguments=_pair_output_distinct_dependency_args(case_view, {
+                        arguments=_pair_output_distinct_dependency_args(case_view, _drop_select_alias_cleanup_dependency_args({
                             "from_exprs": exprs,
                             "side_indexes": indexes,
                             "drop_count": drop_count,
@@ -2926,7 +2956,7 @@ def _enumerate_drop_select_slot(
                                 "SELECT",
                                 contract_repair_program,
                             ),
-                        }),
+                        })),
                         provenance=f"group={group_id};pred_select_exprs={combo_key}",
                         source_group_id=group_id,
                         source_group_type=group_type,
@@ -2937,7 +2967,7 @@ def _enumerate_drop_select_slot(
             candidates.append(
                 ActionCandidate(
                     candidate_id=_hash_cand(f"DROP|{group_id}|{expr}"),
-                    arguments=_pair_output_distinct_dependency_args(case_view, {
+                    arguments=_pair_output_distinct_dependency_args(case_view, _drop_select_alias_cleanup_dependency_args({
                         "from_expr": expr,
                         "from_exprs": [expr],
                         "side_index": idx,
@@ -2949,7 +2979,7 @@ def _enumerate_drop_select_slot(
                             "SELECT",
                             contract_repair_program,
                         ),
-                    }),
+                    })),
                     provenance=f"group={group_id};pred_select_expr={expr}",
                     source_group_id=group_id,
                     source_group_type=group_type,
@@ -3888,6 +3918,7 @@ def _enumerate_for_canonical_op(
     return [
         _annotate_canonical_candidates(
             candidate_set=candidate_set,
+            case_view=case_view,
             group=group,
             canonical_op=canonical_op,
             member_variants=matched_variants,
