@@ -1485,3 +1485,46 @@ RUN2 q249 no-match 根因：
 
 - 重新跑到 q268，确认不再 runtime error。
 - 若 q268 pattern 仍不进 matched group，再继续看 current-transform 选择是否偏向 singleton。
+
+### 2026-05-09 r9 中断观察：pattern 分支已可执行，但 root-bias 冲突策略退回 singleton
+
+中断点：
+
+- `toxicology_focus18_postsel_v1_dmxapi_r9_20260509_150202`
+- 已跑到 q306 前后，停止原因是该轮未包含最新 root-bias bucket 选择修复，继续等待 final freeze 意义不大。
+
+观察：
+
+- q253 已经通过 pattern 路径修对：
+  - `matched_group_ids = ["grp-pat-toxicology-206-249-b5991530"]`
+- q268 的 pattern candidate 已通过段 2：
+  - `runtime_branch_selected:join_drop_required`
+  - `compiler_dry_run:passed`
+  - `branch_runtime_usable_count=4`
+  - `bias_recognized=True`
+- 但 q268 最终仍选择 singleton：
+  - `matched_group_ids = ["grp-sing-toxicology-253"]`
+  - `selection_pool_kind = pattern`
+  - `fallback_reason = conflicting_root_bias_contracts`
+  - `resolution = singleton_top1_after_pattern_ambiguity`
+
+根因：
+
+- 多个 pattern root-bias bucket 同时通过时，旧逻辑直接把该状态视为 pattern ambiguity。
+- 即使其中一个 bucket 明显更强，也退回 singleton。
+- 这和阶段一目标冲突：pattern 已经被识别、branch 已经可执行时，应优先让最强 pattern bucket 进入实例化，而不是直接放弃 pattern。
+
+修复：
+
+- 在 `_select_compatible_groups` 的 `root_bias_conflict` 分支中增加 best-pattern-bucket 选择。
+- 只在最强 root bucket 的 rank 明确高于第二名时启用。
+- rank 只使用 `(final_score, type_priority, support_count)`，不使用 `group_id` 这类字面 tie-breaker，避免任意选择。
+- 若最强 bucket 内仍有多个 group，则继续走 shared current transform 选择；否则选择该 bucket 内最高分 pattern。
+- 如果没有明确最强 bucket，仍保持原来的 singleton fallback，避免过宽误触发。
+
+下一轮 r10 验收：
+
+- q253 应保持 pattern 修对。
+- q268 应从 singleton fallback 切到 `grp-pat-...`。
+- q277/q285/q302/q307 中至少再有 2 个由 `grp-pat-...` 触发。
+- 总收益不低于 r6 的 7/18，且无 regression。

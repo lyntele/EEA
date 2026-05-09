@@ -3149,6 +3149,44 @@ def _select_compatible_groups(
             return selected, reason, audit
         audit["resolution"] = "root_bias_conflict"
         if shared_passed:
+            def _root_bucket_rank(bucket: Sequence[tuple[MemoryGroup, dict[str, Any]]]) -> tuple[float, int, int]:
+                return max(_group_sort_key(item)[:3] for item in bucket)
+
+            ranked_root_buckets = sorted(
+                root_buckets.values(),
+                key=_root_bucket_rank,
+                reverse=True,
+            )
+            if ranked_root_buckets and (
+                len(ranked_root_buckets) == 1
+                or _root_bucket_rank(ranked_root_buckets[0])
+                > _root_bucket_rank(ranked_root_buckets[1])
+            ):
+                chosen_bucket = ranked_root_buckets[0]
+                audit["resolution"] = "root_bias_conflict_best_pattern_bucket"
+                audit["selected_root_bias_bucket_group_ids"] = [
+                    str(group.group_id) for group, _audit in chosen_bucket
+                ]
+                if len(chosen_bucket) > 1:
+                    selected, reason = _select_groups_with_shared_current_transform(
+                        chosen_bucket,
+                        max_selected=max_selected,
+                        case_view=case_view,
+                        audit=audit,
+                    )
+                    if selected:
+                        return selected, reason, audit
+                selected = [
+                    group
+                    for group, _audit in sorted(
+                        chosen_bucket,
+                        key=_group_sort_key,
+                        reverse=True,
+                    )[: max(1, max_selected)]
+                ]
+                audit["selected_group_ids"] = [str(group.group_id) for group in selected]
+                audit["fallback_reason"] = "best_pattern_root_bias_bucket"
+                return selected, "", audit
             fallback = _singleton_fallback("conflicting_root_bias_contracts")
             if fallback is not None:
                 return fallback
