@@ -1171,3 +1171,42 @@ RUN2 q249 no-match 根因：
 - EEA JSON 解析器增加最后一级 YAML-like fallback，处理 LLM 偶发输出的非严格 JSON 对象，例如 unquoted enum value。
 - `RULEBOOK_LLM_JSON_ATTEMPTS` 允许配置 JSON 解析重试次数，默认仍为 3。
 - 该修改是通用 update 稳定性修复，不改变 trigger、pattern、action 规则。
+
+### 2026-05-09 追加：q249 再次 no-match 的实现 bug
+
+验证对象：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260509_100441_jsonfix`
+
+现象：
+
+- 该 run 在 `q249` 再次出现 `runtime=no_match`。
+- runtime 审计中 `grp-sing-toxicology-206` 的 source/binder 已匹配，但被 `singleton_exact:unsupported_singleton_program_type` 挡掉。
+
+根因：
+
+- 当前 `grp-sing-toxicology-206` 的 synthesized `program_type` 为 `select_drop+select_output_patch`。
+- `select_drop` 是主修复动作，`select_output_patch` 是 DISTINCT 这类依赖动作。
+- singleton exact gate 错误地把整个复合 `program_type` 当成“主修复类型”做白名单判断，导致依赖动作影响触发。
+- 这和上一轮 `select_drop+where_side_edit` 的问题同源：trigger 应判断主修复类型是否可执行，依赖动作应该留给 compiler/rewrite 处理，不能在触发阶段硬挡。
+
+修复：
+
+- runtime 新增从 executable ops 中抽取“非依赖主动作”的程序类型。
+- 若复合 `program_type` 含有 dependency atom 导致完整字符串不在允许集合内，则回退到 canonical ops 的非依赖主动作判断。
+- `SELECT_OUTPUT_PATCH` 等依赖动作不再影响 singleton exact trigger。
+- 这不是新增 case/db 规则，而是把 trigger gate 从“完整轨迹字符串”改回“主修复动作”。
+
+局部验证：
+
+- 使用同一 run 的 `q249` runtime request 和当前 library 重新 probe：
+  - `status=ready`
+  - `matched_group_ids=["grp-sing-toxicology-206"]`
+  - hint 包含删除第二输出列、添加 `DISTINCT`、清理失依 JOIN。
+
+下一轮要求：
+
+- 重新冷启动跑 focus18。
+- `q249` 不应再被 `unsupported_singleton_program_type` 挡掉。
+- `q268/q277/q285/q302/q307` 的 pattern 触发应保持。
+- 若仍有 no-match，应继续按 runtime audit 中的具体 gate reason 定位，而不是放宽整体阈值。

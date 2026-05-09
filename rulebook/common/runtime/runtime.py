@@ -1890,6 +1890,52 @@ def _runtime_program_type(contract: Dict[str, Any]) -> str:
     return str(synthesized.get("program_type") or "").strip()
 
 
+def _program_type_atom_from_op_type(op_type: str) -> str:
+    normalized = str(op_type or "").strip().upper()
+    if normalized in {"SELECT_DROP_SLOT", "DROP_SELECT_SLOT"}:
+        return "select_drop"
+    if normalized in {"SELECT_REPLACE_SLOT", "REPLACE_SELECT_SLOT"}:
+        return "select_replace"
+    if normalized == "DROP_SIDE":
+        return "role_side_selection"
+    if normalized == "MOVE_CONDITION":
+        return "where_side_edit"
+    if normalized == "INSERT_BRIDGE":
+        return "join_bridge"
+    if normalized == "REROUTE_FACT":
+        return "fact_route_reroute"
+    return ""
+
+
+def _op_is_dependency(op: Any) -> bool:
+    payload = _payload(op)
+    arguments = _payload(payload.get("arguments"))
+    signature = _payload(arguments.get("operation_signature"))
+    return bool(payload.get("is_dependency") or signature.get("is_dependency"))
+
+
+def _primary_program_type_from_executable_ops(
+    group: GroupSummary,
+    contract: Dict[str, Any],
+) -> str:
+    program = getattr(getattr(group, "instantiation_program", None), "synthesized_program", None)
+    ops = getattr(program, "ops", None)
+    if ops is None and isinstance(program, dict):
+        ops = program.get("ops")
+    if ops is None:
+        action_contract = _payload(contract.get("action_contract"))
+        synthesized = _payload(action_contract.get("synthesized_program"))
+        ops = synthesized.get("ops")
+    atoms = {
+        atom
+        for op in (ops or [])
+        if not _op_is_dependency(op)
+        for atom in [_program_type_atom_from_op_type(_payload(op).get("op_type"))]
+        if atom
+    }
+    return "+".join(sorted(atoms))
+
+
 def _canonical_program_type_from_memory(group: GroupSummary) -> str:
     signals = _payload(getattr(group, "formation_signals", None))
     canonical_ir = _payload(signals.get("canonical_repair_ir"))
@@ -1904,20 +1950,13 @@ def _canonical_program_type_from_memory(group: GroupSummary) -> str:
     ]
     if not primary_ops:
         primary_ops = ops
-    op_types = {str(op.get("op_type") or "").upper() for op in primary_ops if str(op.get("op_type") or "")}
-    if "SELECT_DROP_SLOT" in op_types:
-        return "select_drop"
-    if "SELECT_REPLACE_SLOT" in op_types:
-        return "select_replace"
-    if "DROP_SIDE" in op_types:
-        return "role_side_selection"
-    if "MOVE_CONDITION" in op_types:
-        return "where_side_edit"
-    if "INSERT_BRIDGE" in op_types:
-        return "join_bridge"
-    if "REROUTE_FACT" in op_types:
-        return "fact_route_reroute"
-    return ""
+    atoms = {
+        atom
+        for op in primary_ops
+        for atom in [_program_type_atom_from_op_type(str(op.get("op_type") or ""))]
+        if atom
+    }
+    return "+".join(sorted(atoms))
 
 
 def _dry_run_candidate_signature(candidate: Any) -> Tuple[Any, ...]:
@@ -1982,7 +2021,14 @@ def _singleton_canonical_exact_check(
         atom.strip() for atom in str(program_type or "").split("+") if atom.strip()
     }
     if not program_type_atoms or not program_type_atoms <= allowed_program_types:
-        reasons.append("unsupported_singleton_program_type")
+        primary_program_type = _primary_program_type_from_executable_ops(singleton, contract)
+        if not primary_program_type:
+            primary_program_type = _canonical_program_type_from_memory(singleton)
+        primary_atoms = {
+            atom.strip() for atom in str(primary_program_type or "").split("+") if atom.strip()
+        }
+        if not primary_atoms or not primary_atoms <= allowed_program_types:
+            reasons.append("unsupported_singleton_program_type")
 
     source_contract = _payload(contract.get("source_case_contract"))
     if not source_contract:
