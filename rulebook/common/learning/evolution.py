@@ -67,10 +67,101 @@ def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummar
     promoted.lifecycle.promotion_state = "runtime_visible_local_evolve_audit_only"
     promoted.lifecycle.quarantine_reason = "local_evolve_replay_deferred_to_final_freeze"
     promoted, contract_audit = ensure_materialized_trigger_contract(promoted)
+    program = getattr(promoted.instantiation_program, "synthesized_program", None)
+    envelope = getattr(program, "program_envelope", None) if program is not None else None
+    envelope_payload = _payload(envelope)
+    if envelope_payload:
+        updated_branches: List[Dict[str, Any]] = []
+        lightweight_count = 0
+        for branch in envelope_payload.get("runtime_branches") or []:
+            payload = dict(_payload(branch) or {})
+            has_runtime_binding = bool(
+                payload.get("bundled_op_ids")
+                or payload.get("allowed_primitives")
+                or payload.get("bundle_ids")
+            )
+            if has_runtime_binding and payload.get("runtime_usable") is not True:
+                payload["runtime_usable"] = True
+                payload["runtime_validation_policy"] = "local_evolve_lightweight_binder_gated"
+                payload["runtime_blockers"] = []
+                payload["cross_case_replay_pending"] = True
+                lightweight_count += 1
+            elif payload.get("runtime_usable"):
+                lightweight_count += 1
+            updated_branches.append(payload)
+        if updated_branches:
+            envelope_payload["runtime_branches"] = updated_branches
+            envelope_payload["branch_selection_contract"] = {
+                **dict(envelope_payload.get("branch_selection_contract") or {}),
+                "selection_unit": "runtime_branch",
+                "runtime_usable_branch_count": lightweight_count,
+                "runtime_validation_policy": "local_evolve_lightweight_binder_gated",
+            }
+            updated_envelope = (
+                envelope.model_copy(update=envelope_payload)
+                if hasattr(envelope, "model_copy")
+                else envelope_payload
+            )
+            promoted = promoted.model_copy(
+                update={
+                    "instantiation_program": promoted.instantiation_program.model_copy(
+                        update={
+                            "synthesized_program": program.model_copy(
+                                update={"program_envelope": updated_envelope}
+                            )
+                        }
+                    )
+                }
+            )
+            contract_audit = {
+                **dict(contract_audit or {}),
+                "lightweight_runtime_branch_count": lightweight_count,
+                "lightweight_runtime_branch_policy": "local_evolve_lightweight_binder_gated",
+            }
     if not bool(contract_audit.get("runtime_executable")):
         promoted.runtime_usable = True
         promoted.runtime_contract_status = str(contract_audit.get("status") or "blocked")
     return promoted, contract_audit
+
+
+def _pattern_root_key(group: GroupSummary) -> Tuple[str, str, str]:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
+    brc_payload = _payload(brc) or {}
+    contract_payload = _payload(getattr(group, "trigger_contract", None)) or {}
+    action_contract = _payload(contract_payload.get("action_contract")) or {}
+    envelope = _payload(getattr(program, "program_envelope", None)) or {}
+    return (
+        str(brc_payload.get("stable_bias_key") or brc_payload.get("bias_motif") or ""),
+        json.dumps(brc_payload.get("recognition_signals") or contract_payload.get("canonical_discriminants") or [], sort_keys=True, ensure_ascii=False),
+        str(action_contract.get("op_family") or (envelope.get("action_envelope") or {}).get("op_family") or ""),
+    )
+
+
+def _deduplicate_nested_patterns(patterns: Iterable[GroupSummary]) -> List[GroupSummary]:
+    rows = list(patterns or [])
+    superseded: Set[str] = set()
+    for left in rows:
+        left_id = str(left.group_id)
+        left_cases = {str(case_id) for case_id in (left.case_ids or [])}
+        if not left_cases:
+            continue
+        left_key = _pattern_root_key(left)
+        if not any(left_key):
+            continue
+        for right in rows:
+            right_id = str(right.group_id)
+            if left_id == right_id:
+                continue
+            right_cases = {str(case_id) for case_id in (right.case_ids or [])}
+            if len(right_cases) <= len(left_cases):
+                continue
+            if left_key != _pattern_root_key(right):
+                continue
+            if left_cases < right_cases:
+                superseded.add(left_id)
+                break
+    return [pattern for pattern in rows if str(pattern.group_id) not in superseded]
 
 
 def _merge_patterns_without_absorbing_singletons(
@@ -80,8 +171,9 @@ def _merge_patterns_without_absorbing_singletons(
     by_id = {str(group.group_id): group for group in (library.patterns or [])}
     for pattern in patterns:
         by_id[str(pattern.group_id)] = pattern
+    deduped = _deduplicate_nested_patterns(by_id.values())
     library.patterns = sorted(
-        by_id.values(),
+        deduped,
         key=lambda group: (
             int(group.case_ids[0])
             if group.case_ids and str(group.case_ids[0]).isdigit()

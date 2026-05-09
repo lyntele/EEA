@@ -1671,14 +1671,24 @@ def _select_runtime_branch(
         for branch in branches
         if bool(branch.get("runtime_usable"))
     ]
+    candidate_branches = usable
     audit_rows: List[Dict[str, Any]] = []
     blockers: List[str] = []
-    if not usable:
-        reason = "runtime_branch_contract_missing" if not branches else "runtime_usable_branch_missing"
+    if not branches:
+        reason = "runtime_branch_contract_missing"
         return None, audit_rows, [reason], 0
+    if not candidate_branches:
+        candidate_branches = [
+            branch
+            for branch in branches
+            if _runtime_branch_bundle_ids(branch) or branch.get("allowed_primitives")
+        ]
+        if not candidate_branches:
+            return None, audit_rows, ["runtime_usable_branch_missing"], 0
+        blockers.append("runtime_usable_branch_missing_deferred_to_binder")
 
     matched: List[Dict[str, Any]] = []
-    for branch in usable:
+    for branch in candidate_branches:
         branch_id = _runtime_branch_id(branch)
         required = _runtime_branch_required_signals(branch)
         negative = _runtime_branch_negative_signals(branch)
@@ -1712,6 +1722,11 @@ def _select_runtime_branch(
                 "required_misses": missing,
                 "negative_hits": negative_hits,
                 "bundle_ids": sorted(_runtime_branch_bundle_ids(branch)),
+                "runtime_usable": bool(branch.get("runtime_usable")),
+                "runtime_validation_policy": str(
+                    branch.get("runtime_validation_policy")
+                    or "binder_dry_run_fallback"
+                ),
                 "reasons": branch_reasons or ["branch_gate_passed"],
                 "deferred_instantiation_reasons": branch_deferred_reasons,
             }

@@ -1391,3 +1391,36 @@ RUN2 q249 no-match 根因：
 - 修在线 local_evolve 形成 pattern 后的 branch runtime usable materialization。
 - 目标不是扩大 trigger，而是让已经 `bias_recognized=True` 的 pattern 在在线阶段具备可绑定 branch。
 - 同时削减 final freeze 的重复 admission/replay 调用，否则 18 条 focus set 就需要约 1 小时以上，无法支撑后续 145 全量或多库实验。
+
+### 2026-05-09 追加：解除在线 pattern branch usable 死锁
+
+背景：
+
+- r6 证明 bias recognition 已经工作：RoleGraph 后续案例的 pattern candidate 均能 `bias_recognized=True`。
+- 但 runtime 段 2 只检查 `runtime_usable=True` 的 branch。
+- local evolve 为了性能推迟 replay 到 final freeze，导致在线 pattern 的 branch 均未被 replay 标记 usable。
+- 结果是 `bias_recognized=True` 后被 `runtime_usable_branch_missing` / `pattern_recognized_branch_unbindable` 挡掉，只能退回 singleton。
+
+修复：
+
+- local evolve 形成 audit-visible pattern 时，对已有 executable binding 的 branch 标记：
+  - `runtime_usable=True`
+  - `runtime_validation_policy=local_evolve_lightweight_binder_gated`
+  - `cross_case_replay_pending=True`
+- 这不是 formal replay 通过，只表示该 branch 可进入 runtime 的段 2 binder 检查。
+- runtime `_select_runtime_branch` 不再把 `runtime_usable=False` 当作绝对硬门。
+  - 若没有 replay-usable branch，但存在带 bundle / allowed primitive 的 branch，则进入 binder dry-run fallback。
+  - 只有当前 case 的 branch required signals 命中且 binder dry-run 成功，才允许该 branch 进入 selection。
+
+同时修复：
+
+- local evolve 合并 pattern 时增加同根嵌套去重。
+- 同一 root key 下，如果一个 pattern 的 case_ids 是另一个 pattern 的真子集，则保留超集，丢弃子集。
+- 目标是避免 RoleGraph 这类 pattern 每进一个新 case 就留下一个嵌套旧版本。
+
+下一轮 r7 验收：
+
+- `q268/q277/q285/q302/q307` 中至少 3 个 `matched_group_ids` 应包含 `grp-pat-...`。
+- pattern candidate 不应再因为 `runtime_usable_branch_missing` 全部进入 diagnostic-only。
+- RoleGraph final library 不应再保留 5 个嵌套子集 pattern。
+- 收益至少保持 r6：`enhanced_correct >= 7/18`，`regressed_qids=[]`。
