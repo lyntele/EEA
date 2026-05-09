@@ -1127,3 +1127,47 @@ RUN2 q249 no-match 根因：
 
 - 重新跑 focus18，若仍有 `update=error`，该 run 不作为阶段 1 收益结论。
 - 至少要求在线 update 不丢关键前缀 case，才能评估 pattern 触发和最终收益。
+
+### 2026-05-09 追加：Phase 1 focus18 r6 观察
+
+验证对象：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260509_080224_phase1wu5b`
+
+总体结果：
+
+- `baseline_correct=0/18`
+- `enhanced_correct=2/18`
+- 改善题：`249/277`
+- 退化题：无
+- runtime：`ready=7, no_match=11`
+- rewrite：`attempted=7, parse_fail=3, selector_choose_s1=2, selector_keep_s0=2`
+- update：`called=18, accumulated=17, error=1`
+- final library：`patterns=10, singletons=18, families=0, runtime_usable_patterns=10`
+
+关键正向信号：
+
+- final library 不再是纯 singleton，已经形成 10 个 pattern，且没有旧版本那种 16-case 巨型 pattern。
+- `q268/q277/q285/q302/q307` 均由 `grp-pat-toxicology-206-253-93286776` 这类 pattern 触发，不再只是 singleton 迁移。
+- RoleGraph / pair-output-drop 类 pattern 的 hint 已能携带三类必要动作：删除多余输出列、补 `SELECT DISTINCT`、删除因输出列移除而失依的 JOIN。
+- `q302` 的 EEA hint 已包含 `add SELECT DISTINCT` 和 `remove JOIN block involving a2`，说明 WU5 的 accessory dependency 已进入 runtime hint。
+
+具体失败归因：
+
+- `q249`：由 `grp-sing-toxicology-206` 触发并修对，说明复合 `program_type` gate 修复有效。
+- `q253`：rewrite 生成了可疑似正确的 S1，但 DeepEye S0/S1 selector 选回 S0；这是接入端 selector 问题，不是 EEA 未触发。
+- `q268/q285/q302`：EEA 已触发并给出正确方向 hint，但 DeepEye rewrite LLM 三次 `Internal Server Error`，最终没有可用 S1；这是 rewrite/API 稳定性问题。
+- `q277`：pattern 触发，rewrite 第三次成功，selector 选 S1，最终修对。
+- `q307`：pattern 触发并产生 S1，但 online update 阶段 `error_instance_extractor` 返回非严格 JSON，导致 `update=error`；官方 reconcile 后补收，但这说明在线积累稳定性仍不足。
+- `q335/q338`：存在相关 source-route/scope pattern，但当前在线触发仍 no_match；原因集中在 branch 不可绑定、`JOIN_DROP_TABLE` 等 canonical op 未能 materialize 成可执行分支/action，而不是 RoleGraph 触发问题。
+
+本轮结论：
+
+- Phase 1 的 RoleGraph 主链路已经打通：在线积累 -> pattern 形成 -> bias recognition trigger -> branch/action hint。
+- Phase 1 还不能判定完成，因为在线 update 仍有 1 个 error，source-route/scope 类 branch/action 表达仍未完成，且部分收益被 DeepEye rewrite API 和 selector 吞掉。
+
+随后修复：
+
+- EEA JSON 解析器增加最后一级 YAML-like fallback，处理 LLM 偶发输出的非严格 JSON 对象，例如 unquoted enum value。
+- `RULEBOOK_LLM_JSON_ATTEMPTS` 允许配置 JSON 解析重试次数，默认仍为 3。
+- 该修改是通用 update 稳定性修复，不改变 trigger、pattern、action 规则。

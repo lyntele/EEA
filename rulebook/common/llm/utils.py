@@ -163,9 +163,24 @@ def _parse_json_block(text: str) -> Any:
     except Exception:
         pass
 
-    parsed = ast.literal_eval(normalized)
-    if isinstance(parsed, (dict, list)):
-        return parsed
+    try:
+        parsed = ast.literal_eval(normalized)
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    except Exception:
+        pass
+
+    # Some OpenAI-compatible endpoints occasionally return YAML-like objects
+    # despite explicit JSON instructions, e.g. unquoted enum values. Treat this
+    # only as a final parser fallback so strict JSON remains the primary path.
+    try:
+        import yaml  # type: ignore
+
+        parsed = yaml.safe_load(normalized)
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    except Exception:
+        pass
     raise ValueError("No valid JSON block found in LLM response")
 
 
@@ -248,7 +263,12 @@ def call_llm(
         return completion
 
     last_err: Optional[Exception] = None
-    for attempt in range(3):
+    try:
+        json_attempts = max(1, int(os.getenv("RULEBOOK_LLM_JSON_ATTEMPTS", "3")))
+    except ValueError:
+        json_attempts = 3
+
+    for attempt in range(json_attempts):
         retry_suffix = ""
         if attempt > 0:
             retry_suffix = (
@@ -275,7 +295,7 @@ def call_llm(
         {
             **trace_base,
             "status": "error",
-            "attempts": 3,
+            "attempts": json_attempts,
             "error": f"{type(last_err).__name__}: {last_err}",
         }
     )
