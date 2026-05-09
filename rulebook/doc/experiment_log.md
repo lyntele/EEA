@@ -1316,3 +1316,78 @@ RUN2 q249 no-match 根因：
 - `q268/q277` 应继续出现 pattern 触发。
 - runtime audit 中至少应出现一个 transform key 覆盖多个同根 group，而不是每个 group 都被 alias 字面拆开。
 - focus18 完整冷启动必须重新跑完，阶段一是否关闭以 r6 的 P0 验收清单为准。
+
+### 2026-05-09 r6：DMXAPI focus18 阶段一验收
+
+运行：
+
+- 结果目录：`method/deepeye/DeepEye-SQL/workspace/rulebook_runs/toxicology_focus18_postsel_v1_dmxapi_r6_20260509_124318`
+- Provider / model：DMXAPI，`Qwen3-Next-80B-A3B-Instruct`
+- post-selection 策略：rewrite guard 通过后直接输出 S1，不再跑 S0/S1 selector。
+
+结果：
+
+- `baseline_correct = 0/18`
+- `enhanced_correct = 7/18`
+- `improved_qids = [249, 253, 268, 277, 285, 302, 307]`
+- `regressed_qids = []`
+- `runtime ready = 7`，`no_match = 11`
+- `rewrite attempted = 7`
+- `direct_accept_s1 = 7`
+- `online_update = 18 accumulated / 18 called`
+- `finalize status = ok`
+- `final library = 7 patterns + 18 singletons + 0 families`
+
+达成项：
+
+- `q249` 恢复 ready，并修对。
+- `q253` 恢复 ready，并修对。
+- `q268/q277/q285/q302/q307` 均 ready 并修对。
+- `unsupported_singleton_program_type` 没有再阻断 RoleGraph 收益链。
+- `SELECT DISTINCT` 和 dependent JOIN cleanup 已进入真实 rewrite，q249/q253/q268/q277/q285/q302/q307 的 S1 都直接输出并通过执行。
+- 没有 regression。
+- final freeze 能生成 pattern，且其中两个 pattern 为 `runtime_branch_replay_gated`。
+
+未达成项：
+
+- 在线 ready 的 7 个 case 全部由 singleton 触发，不是 pattern 触发：
+  - `q249 -> grp-sing-toxicology-206`
+  - `q253 -> grp-sing-toxicology-249 / grp-sing-toxicology-206`
+  - `q268 -> grp-sing-toxicology-253 / grp-sing-toxicology-249`
+  - `q277/q285/q302/q307 -> later singleton pairs`
+- 因此阶段一“让现有收益由 pattern 路径而非 singleton 路径完成”的目标未完成。
+- 总耗时超过 1 小时；在线 18 条完成后，final freeze 又花费大量时间。
+- `eea_llm_trace.jsonl` 显示本轮共有：
+  - `shared_insight_judge = 140`
+  - `pattern_admission_judge = 16`
+  - `action_compiler = 39`
+  - `hint_instantiation = 39`
+  - `memory_rewrite = 32`
+  - 最大 prompt：`action_compiler 70509 chars`，`pattern_admission_judge 61666 chars`，`shared_insight_judge 53502 chars`
+  - 总 prompt chars 约 `7.7M`
+
+关键根因：
+
+- pattern 不是完全没被识别。
+- 以 `q268` 为例，runtime audit 中 pattern candidate 已经出现：
+  - `grp-pat-toxicology-206-253-93286776`
+  - `grp-pat-toxicology-206-249-b5991530`
+- 它们的状态是：
+  - `bias_recognized = true`
+  - `required_hit_count = 3`
+  - `required_miss_count = 0`
+  - 但 `gate_passed = false`
+  - hard gate reason 为 `pattern_recognized_branch_unbindable` / `runtime_usable_branch_missing`
+- 也就是说，阶段一当前卡点不是 bias recognition，也不是 trigger 粗筛；而是在线 local pattern 的 branch 没有及时 materialize 成 runtime usable branch，runtime 只能退回 singleton。
+
+阶段一结论：
+
+- 收益侧达成 RUN1 水平：7/18，0 regression。
+- pattern 构建侧有进展：final library 有 7 个 pattern，且部分有 branch replay gated。
+- 但阶段一不能关闭，因为在线收益仍来自 singleton；pattern 只在 final freeze 后出现可用状态，没能在逐例在线 runtime 中承担主路径。
+
+下一步：
+
+- 修在线 local_evolve 形成 pattern 后的 branch runtime usable materialization。
+- 目标不是扩大 trigger，而是让已经 `bias_recognized=True` 的 pattern 在在线阶段具备可绑定 branch。
+- 同时削减 final freeze 的重复 admission/replay 调用，否则 18 条 focus set 就需要约 1 小时以上，无法支撑后续 145 全量或多库实验。
