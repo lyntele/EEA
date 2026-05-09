@@ -1284,3 +1284,35 @@ RUN2 q249 no-match 根因：
 - `q253` 应恢复 singleton 触发。
 - `q268/q277/...` 仍应能看到 localfast 形成的 pattern。
 - 若 pattern branch unbindable，必须回退到 singleton，而不是 no_match。
+
+### 2026-05-09 追加：阶段一收尾前的 transform key 去字面化
+
+背景：
+
+- 阶段一的“最大同心子集”机制已经替代了旧的全交集判断，但 `_candidate_transform_key` 仍保留了 alias / 列名 / 具体表达式级字段。
+- 这会把同一个可执行修复动作按 `from_expr=a2.element AS element1`、`from_expr=a2.element AS element2` 这类 SQL 表达差异拆成不同 transform key。
+- 对 toxicology 的 RoleGraph pattern 来说，这会削弱 q206/q249/q253/q268/q277 等同根修复的聚合与 runtime 选择。
+
+修复：
+
+- 在 `common/runtime/runtime.py` 的 `_TRANSFORM_ARGUMENT_NON_EXECUTABLE_KEYS` 中补充以下字段：
+  - `from_expr` / `from_exprs`
+  - `source_alias` / `target_alias`
+  - `source_columns` / `target_columns`
+  - `source_table` / `target_table`
+  - `source_table_column` / `target_table_column`
+  - `source_expression` / `target_expression`
+- 这些字段不再参与 current transform key 的 identity，只作为 compiler/rewrite 的具体绑定信息保留在 candidate arguments 里。
+
+设计边界：
+
+- 这不是放宽 trigger，也不是合并不同动作。
+- transform key 仍保留 primitive、repair program 中的语义级可执行字段和必要参数。
+- alias / 表达式 / 具体列名只影响当前 SQL 如何落地，不应决定“多个 memory 是否在当前 case 上枚举出同一类 transform”。
+
+下一轮 r6 验收重点：
+
+- `q249` 应保持 ready，不能再被 `unsupported_singleton_program_type` 或 transform key 分裂影响。
+- `q268/q277` 应继续出现 pattern 触发。
+- runtime audit 中至少应出现一个 transform key 覆盖多个同根 group，而不是每个 group 都被 alias 字面拆开。
+- focus18 完整冷启动必须重新跑完，阶段一是否关闭以 r6 的 P0 验收清单为准。
