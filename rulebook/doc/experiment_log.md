@@ -1017,3 +1017,57 @@ TODO / 自检项：
 
 - WU2 fallback 只在已有 runtime signals 足够时生成 contract；如果 LLM admission 大面积不产 `bias_recognition_contract` 且已有 signals 不足 3 个，pattern 仍不会走两段 trigger。
 - WU5 DISTINCT 目前按“当前 S0 是 pair-role-side 输出且无 DISTINCT”携带依赖；这是现象级机制，不绑定 toxicology，但仍需 r6 验证是否过宽。
+
+### 2026-05-09 追加：bias recognition 首轮验证校准
+
+验证对象：
+
+- `toxicology_focus18_postsel_v1_biasrec_20260508_183507`
+- `toxicology_focus18_postsel_v1_biasrecfix_20260508_190932`
+
+RUN1 结果：
+
+- `baseline_correct=0/18`
+- `enhanced_correct=7/18`
+- 改善题：`249/253/268/277/285/302/307`
+- 退化题：无
+- 但 final library 仍为 `patterns=0, singletons=18`。
+
+RUN1 根因：
+
+- final evolution 已经召回出强 role-side component：`206/249/253/268/277/285/302/307`。
+- 该 component 内部 28 个 pair 全部为 `compatible`，不是聚类召回失败。
+- pattern admission 阶段统一失败，错误为 `bad character range \\- at position 9`。
+- 具体原因是 `_sanitize_bias_text` 中的正则字符类写成 `r"[^a-z0-9_\\- ]+"`，Python `re` 会把其中的 `\\- ` 解释成非法范围。
+
+修复：
+
+- `_sanitize_bias_text` 改为 `r"[^a-z0-9_ -]+"`，把 `-` 放在字符类末尾，避免非法 range。
+
+RUN2 观察：
+
+- regex 修复后，pattern admission 不再 fast-fail，在线 update 开始真实进入 LLM admission / bias contract 抽取，因此运行明显变慢。
+- RUN2 未完整跑完，实测已完成到 `q277` 后，尚未生成 `summary.json`。
+- 已触发并修对：`253/268/277`。
+- `q268/q277` 首次由 `grp-pat-toxicology-206-253-93286776` 这类 pattern 触发并修对，说明 `bias_recognition_contract` 路径首次真实进入 runtime。
+- `q263/q269` 被 `bias_anti_signal_hit:has_aggregate_in_select` 拦下，说明 anti-signal 在区分 role-side 输出类与 aggregate/source-route 类时生效。
+
+RUN2 q249 no-match 根因：
+
+- `q249` 没有触发不是泛泛的“新演化状态影响”，而是 singleton exact gate 中的 `unsupported_singleton_program_type`。
+- regex 修复后，admission / synthesis 会把 `grp-sing-toxicology-206` 的 program type 从单一 `select_drop` 升级为复合 `select_drop+where_side_edit`。
+- 旧 gate 只接受 7 个单一 program type 字符串，不接受由已知原子 type 组成的复合轨迹。
+- 这会导致 source/binder 已匹配的 singleton 被硬挡。
+
+修复：
+
+- singleton exact gate 不再按完整字符串白名单判断。
+- 现在将 `program_type` 按 `+` 拆成原子 type，只要每个 atom 都属于已有允许集合，就允许继续进入后续 shape / binder / compiler 检查。
+- 这是对复合修复轨迹的通用兼容，不增加 case/db 特判。
+
+下一轮 r6 验收重点：
+
+- `q249` 应恢复 ready。
+- `q268/q277` 应继续由 pattern 触发，而不是退回 singleton。
+- `q285/q302/q307` 需要确认是否保持可修。
+- final library 应至少出现一个 pattern；否则继续检查 admission response、pattern materialization 和 promotion/finalize 链路。

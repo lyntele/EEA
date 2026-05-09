@@ -2428,7 +2428,7 @@ def _bias_signal_from_runtime_signal(signal: str) -> Optional[str]:
 
 def _sanitize_bias_text(value: Any, limit: int = 80) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_\\- ]+", "", text)
+    text = re.sub(r"[^a-z0-9_ -]+", "", text)
     return re.sub(r"\\s+", "_", text)[:limit]
 
 

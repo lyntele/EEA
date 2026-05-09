@@ -1969,7 +1969,7 @@ def _singleton_canonical_exact_check(
     program_type = _runtime_program_type(contract)
     if not program_type:
         program_type = _canonical_program_type_from_memory(singleton)
-    if program_type not in {
+    allowed_program_types = {
         "select_drop",
         "select_replace",
         "output_decrease",
@@ -1977,7 +1977,11 @@ def _singleton_canonical_exact_check(
         "where_side_edit",
         "join_bridge",
         "fact_route_reroute",
-    }:
+    }
+    program_type_atoms = {
+        atom.strip() for atom in str(program_type or "").split("+") if atom.strip()
+    }
+    if not program_type_atoms or not program_type_atoms <= allowed_program_types:
         reasons.append("unsupported_singleton_program_type")
 
     source_contract = _payload(contract.get("source_case_contract"))
