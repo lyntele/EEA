@@ -1252,3 +1252,35 @@ RUN2 q249 no-match 根因：
 - focus18 冷启动应明显加速，不能再在 `q249/q253/q263` 的 update 阶段长时间卡住 replay。
 - `q268/q277/q285/q302/q307` 应能看到前缀形成的 RoleGraph pattern。
 - final_evolve 阶段仍应产生 replay/promotion 诊断，用于判断哪些 pattern 真正稳定。
+
+### 2026-05-09 追加：localfast 不应吸收源 singleton
+
+验证对象：
+
+- `toxicology_focus18_postsel_v1_qwen3coderflash_20260509_105908_localfast`
+
+现象：
+
+- `q249` 已修对并快速 update。
+- 但 `q253` 变成 `runtime=no_match`。
+- runtime 审计显示：
+  - `grp-sing-toxicology-206` / `grp-sing-toxicology-249` 均被 `status_not_active` 或 `runtime_usable_false` 挡住。
+  - `grp-pat-toxicology-206-249-b5991530` 被 `pattern_recognized_branch_unbindable` 挡住。
+
+根因：
+
+- localfast 将新形成的 pattern 标记为 runtime visible 后，仍调用 `integrate_promoted_groups`。
+- `integrate_promoted_groups` 会把 runtime usable pattern 的源 singleton 吸收/废弃。
+- 但 localfast 的 pattern 只是 audit-visible，branch 可能还未稳定可绑定；此时废弃源 singleton 会破坏原本可用的 singleton 收益。
+
+修复：
+
+- local_evolve 的 replay-deferred pattern 合并时不再调用 `integrate_promoted_groups`。
+- 新增 `_merge_patterns_without_absorbing_singletons`：只把 audit-visible pattern 放入 `library.patterns`，不修改 `library.singletons` 的 active/runtime 状态。
+- final_evolve 仍使用原来的 `integrate_promoted_groups`，只有最终 replay/promotion 后才允许正式吸收 source singleton。
+
+下一轮要求：
+
+- `q253` 应恢复 singleton 触发。
+- `q268/q277/...` 仍应能看到 localfast 形成的 pattern。
+- 若 pattern branch unbindable，必须回退到 singleton，而不是 no_match。

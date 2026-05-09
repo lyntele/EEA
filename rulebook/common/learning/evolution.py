@@ -73,6 +73,24 @@ def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummar
     return promoted, contract_audit
 
 
+def _merge_patterns_without_absorbing_singletons(
+    library: LibraryStateV2,
+    patterns: Iterable[GroupSummary],
+) -> None:
+    by_id = {str(group.group_id): group for group in (library.patterns or [])}
+    for pattern in patterns:
+        by_id[str(pattern.group_id)] = pattern
+    library.patterns = sorted(
+        by_id.values(),
+        key=lambda group: (
+            int(group.case_ids[0])
+            if group.case_ids and str(group.case_ids[0]).isdigit()
+            else 0,
+            str(group.group_id),
+        ),
+    )
+
+
 def _compact_pattern_report(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "group_id": str(row.get("group_id") or ""),
@@ -348,7 +366,7 @@ def evolve_library_with_replay(
             report["promotion_results"].append(result_payload)
             if promoted.runtime_usable:
                 report["promoted_runtime_objects"].append(result_payload["promoted_group"])
-        integrate_promoted_groups(working_library, promoted_groups)
+        _merge_patterns_without_absorbing_singletons(working_library, promoted_groups)
     elif (
         family_runtime_policy == "replay_gated"
         and int(working_library.cases_processed or 0) >= int(promotion_min_support)
