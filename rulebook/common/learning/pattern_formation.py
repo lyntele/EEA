@@ -1948,6 +1948,9 @@ def _dedupe_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
     for pattern in patterns or []:
         if pattern.group_type != GroupType.PATTERN:
             continue
+        program = getattr(pattern.instantiation_program, "synthesized_program", None)
+        if not list(getattr(program, "ops", []) or []):
+            continue
         key = _pattern_identity_key(pattern)
         existing = by_identity.get(key)
         if existing is None:
@@ -3252,7 +3255,15 @@ def _build_pattern_admission_candidates(
     by_id: Dict[str, GroupSummary],
 ) -> Tuple[List[GroupSummary], List[Dict[str, Any]]]:
     candidate_edges = [
-        pair for pair in pair_scores.values() if pair.branchable_for_pattern
+        pair
+        for pair in pair_scores.values()
+        if pair.branchable_for_pattern
+        if pair.left_group_id in by_id and pair.right_group_id in by_id
+        and _pair_supports_root_membership(
+            pair,
+            left=by_id[pair.left_group_id],
+            right=by_id[pair.right_group_id],
+        )
     ]
     reports: List[Dict[str, Any]] = []
     patterns: List[GroupSummary] = []

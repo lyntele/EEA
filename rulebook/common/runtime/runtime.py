@@ -1121,12 +1121,6 @@ def _is_deferable_compiler_dry_run_reason(reason: str) -> bool:
         return False
     if _is_deferable_instantiation_reason(reason):
         return True
-    if reason.startswith("compiler_dry_run_no_candidates:"):
-        return "binder_exception" not in reason and "compiler_exception" not in reason
-    if reason.startswith("compiler_dry_run_missing_required_bundles:"):
-        return True
-    if reason.startswith("branch_binder_missing_bundles:"):
-        return True
     return False
 
 

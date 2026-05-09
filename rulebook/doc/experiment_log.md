@@ -1624,3 +1624,35 @@ r14/r15 校准：
 - source-route pattern 的 branch 表达仍偏弱，`grp-pat-toxicology-269-335` 对 q338 的 bias overlap 只有 `1/5` 或 `0/5`，说明 recognition_signals 仍没有抽到“直接关系替代桥表路径”的运行时可见核心信号。
 - q338 触发后 rewrite hint 能表达“改 SELECT / 去 bridge”，但生成 SQL 未通过执行，下一步应看 `eea_rewrite_result.json` 与 rewritten SQL，区分是 action candidate 指向不准还是 rewrite prompt 没落实。
 - r15 `enhanced_correct` 仍未达到期望 `>=9/18`；进入下一轮时优先处理 source-route 的运行时识别与实例化，而不是继续放宽 RoleGraph gate。
+
+### 2026-05-09 审查修复与 r16 验证
+
+审查发现：
+
+- `branch_binder_no_candidates` 已经不再 defer，但相邻的 `branch_binder_missing_bundles`、`compiler_dry_run_missing_required_bundles`、`compiler_dry_run_no_candidates` 仍可能被延迟，和“branch 严实例化”不一致。
+- 初始 component union 仍允许所有 `partial`，而计划要求 partial 必须叠加强 root 证据。
+- admission-only pattern 过滤只在 local evolution merge 路径存在，formation / promotion 路径仍可能漏入。
+- nested pattern 主动作族识别只看 op 顶层 `is_dependency`，没有看 operation/shared signature 内的 dependency 标记。
+
+修复：
+
+- compiler dry-run 的 no-candidate / missing-bundle 不再作为 deferable reason；可执行性失败必须阻断 trigger。
+- pattern 初始连通边复用 `_pair_supports_root_membership`，因此 `partial` 必须含 `shared_primary_repair_locus` 或 `shared_root_effect_axis_with_same_target_invariant_family` 才能 seed component。
+- `_dedupe_patterns` 与 `integrate_promoted_groups` 都过滤无 `synthesized_program.ops` 的 pattern，避免 `ops=[]/branches=[]` 的 admission-only 对象进入库。
+- nested pattern 去重的 action family key 同时读取 `op.arguments.operation_signature/shared_signature.is_dependency`，避免 dependency op 被当成 root 主动作。
+
+r16 验证：
+
+- 运行：`toxicology_focus18_postsel_v1_dmxapi_r16_20260509_200826`
+- 在线阶段完整；final freeze 按当前策略中止，不作为在线验收。
+- `final_correct = 7/18`
+- `runtime ready = 8/18`
+- 修对：`249,253,268,277,285,302,307`
+- regression：`0`
+- pattern 中不再出现 recognition 与 anti 的交集。
+- q338 仍 `runtime=ready` 但未修对，仍属于 source-route 实例化 / rewrite 质量问题。
+
+当前结论：
+
+- 审查阻塞项已修；必要硬约束仍满足：不退化 7/18 且无 regression。
+- 期望目标 `>=9/18` 未达成，剩余主要瓶颈不是 RoleGraph trigger，而是 source-route pattern 的运行时识别和可执行修复动作还不稳定。

@@ -156,7 +156,9 @@ def _pattern_action_family_key(group: GroupSummary) -> Tuple[str, str]:
     core_ops = []
     for op in list(getattr(program, "ops", []) or []):
         payload = _payload(op)
-        if payload.get("is_dependency"):
+        args = _payload(payload.get("arguments"))
+        signature = _payload(args.get("operation_signature") or args.get("shared_signature"))
+        if payload.get("is_dependency") or signature.get("is_dependency"):
             continue
         op_type = str(payload.get("op_type") or "").upper()
         if op_type:

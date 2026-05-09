@@ -1814,8 +1814,14 @@ def integrate_promoted_groups(
     Replay-failed strict patterns may be retained as offline audit candidates,
     but experience-family runtime memory is no longer produced by this path.
     """
+    def has_executable_program(group: GroupSummary) -> bool:
+        program = getattr(group.instantiation_program, "synthesized_program", None)
+        return bool(list(getattr(program, "ops", []) or []))
+
     for group in promoted_groups:
         if group.status != GroupStatus.ACTIVE:
+            continue
+        if group.group_type == GroupType.PATTERN and not has_executable_program(group):
             continue
         member_case_ids = {str(case_id) for case_id in group.case_ids}
         replay_audit_only_visible = (
