@@ -148,21 +148,22 @@ def _pattern_action_family_key(group: GroupSummary) -> Tuple[str, str]:
     envelope = _payload(getattr(program, "program_envelope", None)) or {}
     contract_payload = _payload(getattr(group, "trigger_contract", None)) or {}
     action_contract = _payload(contract_payload.get("action_contract")) or {}
-    primitives = sorted(
-        str(item)
-        for item in (
-            _payload(envelope.get("action_envelope")).get("allowed_primitives")
-            or action_contract.get("allowed_primitives")
-            or []
-        )
-        if str(item)
-    )
     op_family = str(
         action_contract.get("op_family")
         or _payload(envelope.get("action_envelope")).get("op_family")
         or ""
     )
-    return op_family, ",".join(primitives)
+    core_ops = []
+    for op in list(getattr(program, "ops", []) or []):
+        payload = _payload(op)
+        if payload.get("is_dependency"):
+            continue
+        op_type = str(payload.get("op_type") or "").upper()
+        if op_type:
+            core_ops.append(op_type)
+    if core_ops:
+        return op_family, ",".join(sorted(set(core_ops)))
+    return op_family, ""
 
 
 def _nested_pattern_supersedes(left: GroupSummary, right: GroupSummary) -> bool:
@@ -184,8 +185,19 @@ def _nested_pattern_supersedes(left: GroupSummary, right: GroupSummary) -> bool:
     return left_family == right_family
 
 
+def _pattern_has_executable_program(group: GroupSummary) -> bool:
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    if program is None:
+        return False
+    return bool(list(getattr(program, "ops", []) or []))
+
+
 def _deduplicate_nested_patterns(patterns: Iterable[GroupSummary]) -> List[GroupSummary]:
-    rows = list(patterns or [])
+    rows = [
+        pattern
+        for pattern in (patterns or [])
+        if _pattern_has_executable_program(pattern)
+    ]
     superseded: Set[str] = set()
     for left in rows:
         left_id = str(left.group_id)

@@ -1169,8 +1169,6 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
     branchable_for_pattern = bool(broad_retrieval_reasons) and semantic_relation in {
         "compatible",
         "partial",
-        "direct_merge_veto",
-        "core_program_signature_conflict",
     }
     pair = PairScore(
         left_group_id=left.group_id,
@@ -2448,6 +2446,7 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
     ]
     sigs = sorted(dict.fromkeys(sigs))
     anti = sorted(dict.fromkeys(anti))
+    anti = [signal for signal in anti if signal not in set(sigs)]
     motif_text = " ".join(
         [
             str(brc.get("bias_motif") or ""),
@@ -2483,6 +2482,7 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
         if "has_join_chain_via_bridge_table" not in sigs:
             sigs.append("has_join_chain_via_bridge_table")
         sigs = sorted(dict.fromkeys(sigs))[:6]
+        anti = [signal for signal in anti if signal not in set(sigs)]
     if not (3 <= len(sigs) <= 6):
         return {}
     try:

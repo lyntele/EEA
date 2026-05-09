@@ -1125,8 +1125,6 @@ def _is_deferable_compiler_dry_run_reason(reason: str) -> bool:
         return "binder_exception" not in reason and "compiler_exception" not in reason
     if reason.startswith("compiler_dry_run_missing_required_bundles:"):
         return True
-    if reason.startswith("branch_binder_no_candidates:"):
-        return "binder_exception" not in reason and "compiler_exception" not in reason
     if reason.startswith("branch_binder_missing_bundles:"):
         return True
     return False
@@ -2447,8 +2445,11 @@ def _gate_group(
             passed = False
             reasons.append("runtime_group_missing_executable_repair_contract")
     if group.group_type == GroupType.SINGLETON and int(contract.get("max_actions") or 1) > 1:
-        passed = False
-        reasons.append("singleton_contract_max_actions_gt_one")
+        if source_trigger_passed or binder_dry_run_success:
+            reasons.append("singleton_multi_action_contract_deferred_to_compiler")
+        else:
+            passed = False
+            reasons.append("singleton_contract_max_actions_gt_one")
     if group.group_type == GroupType.PATTERN:
         generic_required = required_signals <= {"pred.select_arity_present=True"}
         decisive_optional_hit = any(

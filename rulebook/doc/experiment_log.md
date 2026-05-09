@@ -1572,3 +1572,55 @@ source-route 断点：
 - RoleGraph 收益仍至少 6 个走 pattern。
 - q335/q338 至少出现 source-route pattern candidate，理想状态为 `bias_recognized=True` 或 `pattern_recognized_branch_unbindable`，不再是完全 no pattern candidate。
 - library snapshots 中 RoleGraph 嵌套 pattern 明显减少，最终只应保留最大超集或少数真正不同 action family 的 pattern。
+
+### 2026-05-09 r11-r15：完成 pattern 去重与 source-route 候选拆分，稳定基线为 7/18
+
+运行与中断：
+
+- r11：`toxicology_focus18_postsel_v1_dmxapi_r11_20260509_174227`，中断于早期退化排查。
+- r12：`toxicology_focus18_postsel_v1_dmxapi_r12_20260509_175620`，在线完整，final freeze 中止。
+- r13：`toxicology_focus18_postsel_v1_dmxapi_r13_20260509_183147`，在线完整，final freeze 中止。
+- r14：`toxicology_focus18_postsel_v1_dmxapi_r14_20260509_190516`，在线完整，final freeze 中止。
+- r15：`toxicology_focus18_postsel_v1_dmxapi_r15_20260509_193352`，完整结束并生成 `summary.json`。
+
+r11 退化根因：
+
+- q253/q268 触发到了 pattern，但 selected branch 的 binder dry-run 实际无候选。
+- 旧逻辑把 `branch_binder_no_candidates` 当作可延迟到 compiler 的原因，导致 pattern 以 `gate_passed=True` 压过可工作的 singleton，最终 `action_count=0`。
+- 修复：`branch_binder_no_candidates` 不再是 deferable；bias 已识别但 branch 无候选时必须保持 `pattern_recognized_branch_unbindable` / no pass，让 selection 回退到可编译对象。
+
+r12 结果：
+
+- 在线结果恢复到 `7/18`，无 regression。
+- 修对：`249,253,268,277,285,302,307`。
+- q253/q268 不再出现 no_action 退化。
+- source-route 仍未形成收益，原因是构建阶段把 `269/326/328/335/338` 与其他弱相关 case 混进一个大 component，admission 整体拒绝。
+
+r13 改动与结果：
+
+- 将 pattern 候选连通边从 `{compatible, partial, direct_merge_veto, core_program_signature_conflict}` 收紧为 `{compatible, partial}`。
+- 目的：direct-merge veto / core conflict 不能作为 root seed，只能作为审计或后续 branch 证据，避免 source-route 被大杂烩 component 整体拒绝。
+- nested pattern 去重改为看主动作族 / core op，不让 dependency/accessory primitive 阻止超集替代。
+- 在线结果一度达到 `8/18`，新增 q338，但该收益来自 `grp-sing-toxicology-326` singleton，不是 source-route pattern。
+- 形成了 `grp-pat-toxicology-269-335-6c28b752` source-route pattern，说明 source-route 小 component 开始能被构建出来。
+
+r14/r15 校准：
+
+- 过滤 `ops=[] / branches=[]` 的无执行 pattern，避免 admission-only 对象进入 runtime library。
+- bias recognition contract 校验中删除 recognition 与 anti 的交集，避免同一信号既要求命中又要求排除。
+- q338 在 r14 变 no_match，定位为 q326 singleton 被抽成多动作程序后触发被 `singleton_contract_max_actions_gt_one` 硬挡。
+- 修复：多动作 singleton 在 source trigger / binder 证据成立时不再一票否决，交给 compiler dry-run 做实例化校验。
+- r15 结果：`enhanced_correct=7/18`，`regression=0`，q338 runtime ready 但 rewrite 后未修对，因此不计收益。
+
+当前状态：
+
+- 必要硬约束满足：不低于 r10/r12 的 7 个稳定收益，且无 regression。
+- pattern 去重已改善：无执行程序 pattern 被过滤；RoleGraph 不再保存长串嵌套版本。
+- source-route 已能形成小 pattern，但在线收益尚不稳定；q338 的一次收益来自 singleton，r15 证明触发可到达但 rewrite/动作实例化还未稳定。
+- final freeze 不是本轮优化目标；r15 final library 中 branch runtime 状态会被 replay-gated 策略重写，在线判断仍以 `.state/work/qid_*/eea_runtime_response.json` 和 per-case summary 为准。
+
+剩余问题：
+
+- source-route pattern 的 branch 表达仍偏弱，`grp-pat-toxicology-269-335` 对 q338 的 bias overlap 只有 `1/5` 或 `0/5`，说明 recognition_signals 仍没有抽到“直接关系替代桥表路径”的运行时可见核心信号。
+- q338 触发后 rewrite hint 能表达“改 SELECT / 去 bridge”，但生成 SQL 未通过执行，下一步应看 `eea_rewrite_result.json` 与 rewritten SQL，区分是 action candidate 指向不准还是 rewrite prompt 没落实。
+- r15 `enhanced_correct` 仍未达到期望 `>=9/18`；进入下一轮时优先处理 source-route 的运行时识别与实例化，而不是继续放宽 RoleGraph gate。
