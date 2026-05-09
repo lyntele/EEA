@@ -1424,3 +1424,36 @@ RUN2 q249 no-match 根因：
 - pattern candidate 不应再因为 `runtime_usable_branch_missing` 全部进入 diagnostic-only。
 - RoleGraph final library 不应再保留 5 个嵌套子集 pattern。
 - 收益至少保持 r6：`enhanced_correct >= 7/18`，`regressed_qids=[]`。
+
+### 2026-05-09 r7 中断观察：branch usable 已解锁，但等价 branch 被误判 ambiguous
+
+中断点：
+
+- `toxicology_focus18_postsel_v1_dmxapi_r7_20260509_143152`
+- 已跑到 q268。
+
+观察：
+
+- `runtime_usable_branch_missing` 已经消失。
+- q268 的 pattern candidate 已有 usable branch：
+  - `grp-pat-toxicology-206-253-93286776`: `branch_runtime_usable_count=3`
+  - `grp-pat-toxicology-206-249-b5991530`: `branch_runtime_usable_count=2`
+- 但仍未进入 selection，原因变成 `branch_selection_ambiguous`。
+
+根因：
+
+- 多个 branch 同时 gate_passed，但它们指向同一个 bundle/action。
+- 例如 q268 中多个 branch 的 `bundle_ids` 都是 `bundle:0b216f98` 或 `bundle:26d3db30`。
+- 这不是多个不同修复程序冲突，而是 admission 产出的 branch label 更细，但落地动作相同。
+
+修复：
+
+- runtime branch selection 在多个 matched branches 存在时，按 `(bundle_ids, allowed_primitives)` 形成 branch signature。
+- 如果所有 matched branches signature 相同，则视为等价 branch，选择一个 canonical branch，不再报 `branch_selection_ambiguous`。
+- 如果 signature 不同，仍然保持 ambiguous hard gate。
+
+下一轮 r8 验收：
+
+- q268 应至少有一个 `grp-pat-...` 进入 matched group。
+- q277/q285/q302/q307 应继续验证 pattern 路径是否稳定。
+- 若仍失败，下一层看是否是 pattern 与 singleton 同时进入后 current-transform 选择偏向 singleton。

@@ -1740,6 +1740,33 @@ def _select_runtime_branch(
         return matched[0], audit_rows, blockers, len(usable)
     if not matched:
         return None, audit_rows, blockers or ["runtime_branch_no_match"], len(usable)
+    signature_to_branches: Dict[Tuple[Tuple[str, ...], Tuple[str, ...]], List[Dict[str, Any]]] = {}
+    for branch in matched:
+        signature = (
+            tuple(sorted(_runtime_branch_bundle_ids(branch))),
+            tuple(sorted(str(item) for item in (branch.get("allowed_primitives") or []) if str(item))),
+        )
+        signature_to_branches.setdefault(signature, []).append(branch)
+    if len(signature_to_branches) == 1:
+        equivalent = sorted(
+            matched,
+            key=lambda branch: (
+                len(_runtime_branch_support(branch, group.case_ids)),
+                _runtime_branch_id(branch),
+            ),
+            reverse=True,
+        )
+        selected = equivalent[0]
+        selected_id = _runtime_branch_id(selected)
+        for row in audit_rows:
+            if str(row.get("branch_id") or "") == selected_id:
+                row["reasons"] = [
+                    *list(row.get("reasons") or []),
+                    "equivalent_branch_bundle_selected",
+                ]
+            elif row.get("gate_passed"):
+                row["equivalent_to_selected_branch_id"] = selected_id
+        return selected, audit_rows, blockers, len(usable)
     return None, audit_rows, ["branch_selection_ambiguous"], len(usable)
 
 
