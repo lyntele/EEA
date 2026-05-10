@@ -1796,3 +1796,23 @@ r19 后补丁：
 
 - 在线收益和 pattern 路径已经稳定达到 r18 水平；RoleGraph 的 pattern 化目标基本达成。
 - 还未完成的是 A 的真实在线减负验收与 q335 source-route 召回。下一轮必须先看 `pattern_extension_count` 是否大于 0，以及 final freeze LLM trace 是否下降；如果仍慢，问题不在 admission 扩充，而在 final freeze formal/LOO replay 仍重跑完整 compiler/rewrite。
+
+### 2026-05-10 r19 复用产物局部验证与补丁
+
+复用验证结论：
+
+- D/E 已在 r19 实测有效：`path_choice` 正常落盘，`promotion_replay_rows` 中出现 `lightweight_validated_in_local_evolve`。
+- A 的 f3a2b3a 后补丁已做局部函数级验证：从 r19 `final_library.json` 中取 RoleGraph pattern，临时移除 q302，再用 q302 singleton 走 `_try_extend_existing_pattern`，结果 `extended=True`，recognition overlap `6/6=1.0`，成功扩回 `[206,249,253,268,277,285,302,307]`。
+- B 的 dedup 函数本身有效：对 r19 `final_library.json` 静态调用 `_merge_patterns_without_absorbing_singletons`，RoleGraph 8-case 与 7-case 真子集会合并，只保留 8-case；`pattern_dedup_audit=12`。
+
+新定位：
+
+- r19 final library 中 8-case validated pattern 与 7-case audit-only pattern 并存，不是 dedup 判据错，而是 replay-gated promotion 分支 `integrate_promoted_groups` 之后没有再跑 same-root dedup。
+- 已补：`evolve_library_with_replay` 在 replay-gated promotion 和 no-replay integrate 分支之后都会调用 `_merge_patterns_without_absorbing_singletons`。下次 final freeze 不应再保留 RoleGraph 7-case 子集副本。
+- 上一轮从 `library_snapshots/step_*.json` 直接验证失败，是因为 snapshot 是 compact 版本，不含 `core_interface/instantiation_program/trigger_signature`，不能作为 full `LibraryStateV2` 输入。快速验证应使用 `final_library.json` 或 case work 中完整 `eea_update_response` 里的非 compact 对象；compact snapshot 只能看计数，不能跑构建逻辑。
+
+下一步快速验收方式：
+
+- 不需要先跑完整 18 条。先构造一个 7-case RoleGraph 小序列，或直接复用 r19 full `final_library.json` 做局部 extension/dedup probe。
+- 若要验证在线 A 是否真正减少 LLM 调用，跑最小序列 `206,249,253,268,277,302` 即可：期望 q302 的 `pattern_extension_count=1`，并且本轮 `pattern_admission_judge` 调用数低于 r19 同前缀。
+- 只有这个小序列通过后，才值得跑完整 focus18 r20。

@@ -712,6 +712,7 @@ def evolve_library_with_replay(
             if promoted.runtime_usable:
                 report["promoted_runtime_objects"].append(result_payload["promoted_group"])
         integrate_promoted_groups(working_library, promoted_groups)
+        _merge_patterns_without_absorbing_singletons(working_library, working_library.patterns)
     else:
         if family_runtime_policy != "replay_gated":
             report["promotion_skipped_reason"] = f"family_runtime_policy={family_runtime_policy}"
@@ -723,6 +724,7 @@ def evolve_library_with_replay(
         # do not remove or deactivate their source singletons. Runtime admission
         # still requires a later replay-gated cycle.
         integrate_promoted_groups(working_library, family_candidates)
+        _merge_patterns_without_absorbing_singletons(working_library, working_library.patterns)
 
     report["library_counts_after"] = _library_counts(working_library)
     report["pattern_dedup_audit"] = last_pattern_dedup_audit()
