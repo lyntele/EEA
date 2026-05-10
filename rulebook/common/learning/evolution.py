@@ -12,14 +12,17 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import GroupSummary, LibraryStateV2
 from method.EEA.rulebook.common.learning.pattern_formation import form_offline_families
 from method.EEA.rulebook.common.learning.promotion import (
     CaseLoader,
+    PATTERN_PRE_CONDITION_SELF_RECALL_MIN,
     apply_promotion_decision,
     integrate_promoted_groups,
+    _member_case_views_for_group,
+    _pattern_precondition_self_recall,
     run_promotion_test,
 )
 from method.EEA.rulebook.common.runtime.trigger_contract import (
@@ -64,7 +67,11 @@ def _local_evolve_replay_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummary, Dict[str, Any]]:
+def _mark_local_evolve_runtime_visible(
+    group: GroupSummary,
+    *,
+    member_case_views: Optional[Mapping[str, Any]] = None,
+) -> Tuple[GroupSummary, Dict[str, Any]]:
     promoted = group.model_copy(deep=True)
     promoted.group_type = GroupType.PATTERN
     promoted.runtime_usable = True
@@ -73,6 +80,54 @@ def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummar
     promoted.lifecycle.promotion_state = "runtime_visible_local_evolve_audit_only"
     promoted.lifecycle.quarantine_reason = "local_evolve_replay_deferred_to_final_freeze"
     promoted, contract_audit = ensure_materialized_trigger_contract(promoted)
+    if member_case_views:
+        self_recall = _pattern_precondition_self_recall(promoted, member_case_views)
+        contract_audit = {
+            **dict(contract_audit or {}),
+            "precondition_self_recall": _payload(self_recall),
+        }
+        try:
+            recall_rate = float(self_recall.get("rate") or 0.0)
+        except Exception:
+            recall_rate = 0.0
+        if recall_rate < PATTERN_PRE_CONDITION_SELF_RECALL_MIN:
+            promoted.runtime_usable = False
+            blocker = (
+                "pattern_pre_condition_self_recall_below_threshold:"
+                f"{recall_rate:.3f}"
+            )
+            promoted.runtime_blockers = [*list(promoted.runtime_blockers or []), blocker]
+            promoted.runtime_contract_status = "blocked"
+            promoted.lifecycle.promotion_state = "audit_only_precondition_self_recall_failed"
+            promoted.lifecycle.quarantine_reason = blocker
+            contract_audit = {
+                **contract_audit,
+                "runtime_executable": False,
+                "status": "blocked",
+                "self_recall_gate": {
+                    "passed": False,
+                    "rate": recall_rate,
+                    "threshold": PATTERN_PRE_CONDITION_SELF_RECALL_MIN,
+                    "blocker": blocker,
+                },
+            }
+            return promoted, contract_audit
+        contract_audit = {
+            **contract_audit,
+            "self_recall_gate": {
+                "passed": True,
+                "rate": recall_rate,
+                "threshold": PATTERN_PRE_CONDITION_SELF_RECALL_MIN,
+            },
+        }
+    else:
+        contract_audit = {
+            **dict(contract_audit or {}),
+            "precondition_self_recall": {
+                "schema_version": "pattern-precondition-self-recall-v1",
+                "reason": "not_run_missing_member_case_views",
+            },
+        }
     program = getattr(promoted.instantiation_program, "synthesized_program", None)
     envelope = getattr(program, "program_envelope", None) if program is not None else None
     envelope_payload = _payload(envelope)
@@ -604,6 +659,7 @@ def compact_evolution_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "pattern_extension_candidates": list(
             formation.get("pattern_extension_candidates") or []
         )[:20],
+        "online_self_recall_audit": dict(report.get("online_self_recall_audit") or {}),
         "pattern_dedup_audit": list(report.get("pattern_dedup_audit") or [])[:50],
         "candidate_pattern_count": int(report.get("candidate_pattern_count") or 0),
         "candidate_evolved_object_count": int(report.get("candidate_evolved_object_count") or 0),
@@ -794,9 +850,45 @@ def evolve_library_with_replay(
     if local_replay_deferred:
         promoted_groups: List[GroupSummary] = []
         report["promotion_skipped_reason"] = "local_evolve_replay_deferred_to_final_freeze"
+        online_self_recall_audit: Dict[str, Any] = {
+            "schema_version": "online-self-recall-audit-v1",
+            "checked_group_count": 0,
+            "passed_group_ids": [],
+            "blocked_group_ids": [],
+            "not_run_group_ids": [],
+            "rates_by_group_id": {},
+            "threshold": PATTERN_PRE_CONDITION_SELF_RECALL_MIN,
+        }
         for family in family_candidates:
-            promoted, contract_audit = _mark_local_evolve_runtime_visible(family)
+            member_case_views: Optional[Dict[str, Any]] = None
+            if can_run_replay:
+                member_case_views = _member_case_views_for_group(
+                    group=family,
+                    case_loader=case_loader,  # type: ignore[arg-type]
+                    db_path=str(db_path),
+                    database_dir=database_dir,
+                )
+            promoted, contract_audit = _mark_local_evolve_runtime_visible(
+                family,
+                member_case_views=member_case_views,
+            )
             promoted_groups.append(promoted)
+            self_recall = _payload(
+                (contract_audit or {}).get("precondition_self_recall") or {}
+            )
+            if self_recall.get("reason") == "not_run_missing_member_case_views":
+                online_self_recall_audit["not_run_group_ids"].append(promoted.group_id)
+            else:
+                online_self_recall_audit["checked_group_count"] += 1
+                try:
+                    recall_rate = float(self_recall.get("rate") or 0.0)
+                except Exception:
+                    recall_rate = 0.0
+                online_self_recall_audit["rates_by_group_id"][promoted.group_id] = recall_rate
+                if recall_rate >= PATTERN_PRE_CONDITION_SELF_RECALL_MIN:
+                    online_self_recall_audit["passed_group_ids"].append(promoted.group_id)
+                else:
+                    online_self_recall_audit["blocked_group_ids"].append(promoted.group_id)
             result_payload = {
                 "group_id": promoted.group_id,
                 "eligible": False,
@@ -825,6 +917,7 @@ def evolve_library_with_replay(
             report["promotion_results"].append(result_payload)
             if promoted.runtime_usable:
                 report["promoted_runtime_objects"].append(result_payload["promoted_group"])
+        report["online_self_recall_audit"] = online_self_recall_audit
         _merge_patterns_without_absorbing_singletons(working_library, promoted_groups)
     elif (
         family_runtime_policy == "replay_gated"
