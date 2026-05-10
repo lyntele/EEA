@@ -1816,3 +1816,33 @@ r19 后补丁：
 - 不需要先跑完整 18 条。先构造一个 7-case RoleGraph 小序列，或直接复用 r19 full `final_library.json` 做局部 extension/dedup probe。
 - 若要验证在线 A 是否真正减少 LLM 调用，跑最小序列 `206,249,253,268,277,302` 即可：期望 q302 的 `pattern_extension_count=1`，并且本轮 `pattern_admission_judge` 调用数低于 r19 同前缀。
 - 只有这个小序列通过后，才值得跑完整 focus18 r20。
+
+### 2026-05-10 涌现原则审计第 1 步：移除 motif↔anti_signal 硬编码互斥表
+
+背景：
+
+- 在系统盘点"预定义规则与硬编码"时确认 `_BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS` 是从 q335/q338 等具体案例反推出来的规则——"source_route / wrong_join_route / bridge_table_misuse motif 不能把 has_aggregate_in_select / answer_unit_scalar_aggregate 设为 anti_signal"。
+- 这违反 EEA 的核心设计原则："信号必须从案例中涌现，不能用预定义规则去拟合特定案例"。bias 之间的相容性必须由多案例聚合给出，不应靠人手维一张静态对照表。
+- 同时 r19 anti-signal 校验段落里还有一段 source-route 专用补丁：当 motif 文本命中 source_route / bridge / reroute 等关键词时，强行删除 aggregate 类 anti_signal、强行注入 has_join_chain_via_bridge_table、把 sigs 截到 6 项。这段同样是案例拟合。
+- prompt 端镜像了同一规则："Forbidden anti_signal example: for source-route / wrong-join-route / bridge-table-misuse patterns, do not set has_aggregate_in_select or answer_unit_scalar_aggregate as anti_signals."
+
+实现改动：
+
+- `pattern_formation.py` 删除 `_BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS` 字典定义。
+- `pattern_formation.py::_validated_bias_recognition_contract_payload` 删除：motif_text 拼接、incompatible 集合扫描、source_route_bias 补丁段、anti_signals_dropped_by_motif_conflict 输出字段。函数仅保留：词表过滤、去重、anti 不与 sig 重叠、3-6 个 sig 数量约束、min_signal_overlap 阈值规范化。
+- `pattern_admission_judge.py` 删除 prompt 中 "Forbidden anti_signal example" 段。保留前一条抽象指引（"Choose anti_signals only when their presence means the current case exposes a different or opposing bias_motif"），因为这不是案例特定规则。
+
+验证：
+
+- 全部测试基线对比：改动前 / 改动后均 19 项 pre-existing 失败，集合完全一致；本次改动 0 回归、未意外改变行为。
+- pre-existing 失败列表与 `experience_families` 已禁用 / runtime gate 名称变更等历史改造一致，与本次改动无关。
+
+涌现机制的替代路径（待实现）：
+
+- bias 之间的相容性应由多案例共现给出否定证据：若某 pattern 的 anti_signal 在历次新案例中频繁出现却没造成误触发，自动降权 / 退役；若频繁误触发，自动加强。
+- 该机制属于"涌现原则审计"后续步骤，不在本次改动范围内。本次仅去掉硬规则，先看涌现机制能否自我支撑——即在没有人工互斥表的情况下，q335/q338 等 source-route 案例的 anti_signals 是否仍通过 admission judge 的多案例上下文形成合理设置。
+
+下一步：
+
+- 在 r19 已有库基础上，dump 所有 pattern 的 `bias_recognition_contract` 看 motif/anti_signals 文本分布，作为修改 2（词表开放化）的输入证据。
+- 若 r20 在线 trigger 因移除补丁而退化（某些 source-route pattern 因 anti_signals 含 aggregate 信号被自身排除），那就是涌现机制确实欠缺信号——届时再考虑修改 4（信号生成路径重写），而不是把硬规则加回来。

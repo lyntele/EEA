@@ -200,11 +200,6 @@ Bias recognition contract:
 - Choose anti_signals only when their presence means the current case exposes a
   different or opposing bias_motif. Do not use a signal as anti merely because
   it marks a branch/accessory detail inside the same bias.
-- Forbidden anti_signal example: for source-route / wrong-join-route /
-  bridge-table-misuse patterns, do not set has_aggregate_in_select or
-  answer_unit_scalar_aggregate as anti_signals. Those route mistakes often
-  occur in aggregate SQL; aggregate preservation is a branch/invariant, not an
-  opposing bias.
 """
 
 

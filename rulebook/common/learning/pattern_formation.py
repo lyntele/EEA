@@ -70,16 +70,6 @@ PATTERN_ADMISSION_PAIR_PER_RELATION_LIMIT = 2
 PATTERN_ADMISSION_COMPACT_PAIR_PER_RELATION_LIMIT = 1
 PATTERN_ADMISSION_MAX_REPRESENTATIVE_PAIRS = 40
 
-_BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS: Dict[str, Set[str]] = {
-    "wrong_join_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
-    "indirect_via_bridge_table": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
-    "bridge_table_misuse": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
-    "source_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
-    "join_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
-    "misuses_aggregate_subject": {"has_aggregate_in_select"},
-}
-
-
 def _model_dump(obj: Any) -> Dict[str, Any]:
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
@@ -2459,55 +2449,6 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
     sigs = sorted(dict.fromkeys(sigs))
     anti = sorted(dict.fromkeys(anti))
     anti = [signal for signal in anti if signal not in set(sigs)]
-    dropped_by_motif_conflict: List[str] = []
-    motif_text = " ".join(
-        [
-            str(brc.get("bias_motif") or ""),
-            str(brc.get("answer_shape_hint") or ""),
-            " ".join(sigs),
-            " ".join(anti),
-        ]
-    ).lower()
-    incompatible: Set[str] = set()
-    for key, anti_set in _BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS.items():
-        if key in motif_text:
-            incompatible.update(anti_set)
-    if incompatible:
-        before = set(anti)
-        anti = [signal for signal in anti if signal not in incompatible]
-        dropped_by_motif_conflict = sorted(before - set(anti))
-    source_route_bias = any(
-        token in motif_text
-        for token in (
-            "source_route",
-            "wrong_join_route",
-            "join_route",
-            "join_path",
-            "indirect",
-            "bridge",
-            "reroute",
-        )
-    )
-    if source_route_bias:
-        # Aggregate answer-unit signals are valid positive context for
-        # source-route fixes. They must not become anti-signals, otherwise
-        # count-preserving route repairs such as q335 are blocked before the
-        # answer-unit-preserve branch can bind.
-        aggregate_signals = {
-            "has_aggregate_in_select",
-            "answer_unit_count_distinct",
-            "answer_unit_count_plain",
-            "answer_unit_scalar_aggregate",
-        }
-        before = set(anti)
-        anti = [signal for signal in anti if signal not in aggregate_signals]
-        dropped_by_motif_conflict = sorted(
-            set(dropped_by_motif_conflict) | (before - set(anti))
-        )
-        if "has_join_chain_via_bridge_table" not in sigs:
-            sigs.append("has_join_chain_via_bridge_table")
-        sigs = sorted(dict.fromkeys(sigs))[:6]
-        anti = [signal for signal in anti if signal not in set(sigs)]
     if not (3 <= len(sigs) <= 6):
         return {}
     try:
@@ -2523,8 +2464,6 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
         "anti_signals": anti,
         "min_signal_overlap": threshold,
     }
-    if dropped_by_motif_conflict:
-        payload["anti_signals_dropped_by_motif_conflict"] = dropped_by_motif_conflict
     return payload
 
 
