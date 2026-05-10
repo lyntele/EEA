@@ -308,6 +308,14 @@ pre-condition 字段；`error_instance_extractor` prompt 和 parser 已接入；
 
 **依赖**：WU2 完成（admission 输入需 case 级 pre-condition 字段）
 
+**完成状态**：已实现。`pattern_admission_judge` prompt 删除闭词
+`bias_recognition_contract`，改为输出 `pre_question_signature`、
+`pre_sql_signature`、`observed_failure_summary`、`repair_direction`；
+`_pattern_case_card`/`_stable_bias_frame` 已带入 member 的
+`pre_condition_local`；admission 结果写入
+`InstantiationProgram.pattern_recognition_contract`，不再为新 pattern 写入
+新的 `bias_recognition_contract`。
+
 ---
 
 ### 阶段 C：Runtime 触发改造

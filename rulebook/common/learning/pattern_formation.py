@@ -28,6 +28,7 @@ from method.EEA.rulebook.common.core.data_structures import (
     InstantiationProgram,
     LibraryStateV2,
     ModelProfile,
+    PatternRecognitionContract,
     RepairSkeleton,
     RepairSkeletonSemantic,
     RepairSkeletonStructural,
@@ -1735,6 +1736,7 @@ def _stable_bias_frame(group: GroupSummary) -> Dict[str, Any]:
     signals = _signal_payload(group)
     ir = dict((signals.get("canonical_repair_ir") or {}) or {})
     insight = dict((signals.get("repair_insight_signature") or {}) or {})
+    pre_condition = dict((signals.get("pre_condition_local") or {}) or {})
     effects = []
     repair_effect_signature = _model_dump(ir.get("repair_effect_signature") or {})
     for effect in repair_effect_signature.get("effect_candidates") or []:
@@ -1766,6 +1768,20 @@ def _stable_bias_frame(group: GroupSummary) -> Dict[str, Any]:
         "source_misread": insight.get("source_misread"),
         "target_preference": insight.get("target_preference"),
         "repair_interface": insight.get("repair_interface"),
+        "pre_condition_local": {
+            "pre_question_signature_local": _short_text(
+                pre_condition.get("pre_question_signature_local"), limit=220
+            ),
+            "pre_sql_signature_local": _short_text(
+                pre_condition.get("pre_sql_signature_local"), limit=220
+            ),
+            "observed_failure_local": _short_text(
+                pre_condition.get("observed_failure_local"), limit=220
+            ),
+            "repair_direction_local": _short_text(
+                pre_condition.get("repair_direction_local"), limit=220
+            ),
+        },
         "binding_slots": binding_slots,
         "preserve_invariants": list(insight.get("preserve_invariants") or [])[:8],
         "negative_guards": list(insight.get("negative_guards") or [])[:8],
@@ -1788,6 +1804,7 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
     signals = _signal_payload(group)
     ir = dict((signals.get("canonical_repair_ir") or {}) or {})
     insight = dict((signals.get("repair_insight_signature") or {}) or {})
+    pre_condition = dict((signals.get("pre_condition_local") or {}) or {})
     program_core = []
     for op in (ir.get("program_ops") or [])[:6]:
         payload = _model_dump(op)
@@ -1853,6 +1870,20 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
             "preserve_invariants": list(insight.get("preserve_invariants") or [])[:8],
             "negative_guards": list(insight.get("negative_guards") or [])[:8],
             "axis_links": list(insight.get("axis_links") or [])[:8],
+        },
+        "pre_condition_local": {
+            "pre_question_signature_local": _short_text(
+                pre_condition.get("pre_question_signature_local"), limit=220
+            ),
+            "pre_sql_signature_local": _short_text(
+                pre_condition.get("pre_sql_signature_local"), limit=220
+            ),
+            "observed_failure_local": _short_text(
+                pre_condition.get("observed_failure_local"), limit=220
+            ),
+            "repair_direction_local": _short_text(
+                pre_condition.get("repair_direction_local"), limit=220
+            ),
         },
         "program_core": program_core,
         "effects": effects[:8],
@@ -2321,9 +2352,7 @@ def _call_pattern_admission_judge(
         ).encode("utf-8")
     ).hexdigest()
     if cache_key in _PATTERN_ADMISSION_CACHE:
-        return _attach_validated_bias_recognition_contract(
-            dict(_PATTERN_ADMISSION_CACHE[cache_key])
-        )
+        return dict(_PATTERN_ADMISSION_CACHE[cache_key])
 
     from method.EEA.rulebook.common.llm.utils import call_llm
     from method.EEA.rulebook.common.llm.prompts.pattern_admission_judge import build_pattern_admission_judge_prompt
@@ -2394,7 +2423,6 @@ def _call_pattern_admission_judge(
         },
     )
     response = dict(raw) if isinstance(raw, dict) else {}
-    response = _attach_validated_bias_recognition_contract(response)
     _PATTERN_ADMISSION_CACHE[cache_key] = response
     return response
 
@@ -2426,52 +2454,24 @@ def _bias_signal_from_runtime_signal(signal: str) -> Optional[str]:
     return None
 
 
-def _sanitize_bias_text(value: Any, limit: int = 80) -> str:
-    text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_ -]+", "", text)
-    return re.sub(r"\\s+", "_", text)[:limit]
+def _contract_text(value: Any, limit: int = 200) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
 
 
-def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
-    brc = _model_dump(raw.get("bias_recognition_contract") or {})
-    if not brc:
+def _pattern_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
+    pre_question = _contract_text(raw.get("pre_question_signature"))
+    pre_sql = _contract_text(raw.get("pre_sql_signature"))
+    repair_direction = _contract_text(raw.get("repair_direction"))
+    if not (pre_question and pre_sql and repair_direction):
         return {}
-    sigs = [
-        str(signal)
-        for signal in (brc.get("recognition_signals") or [])
-        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-    ]
-    anti = [
-        str(signal)
-        for signal in (brc.get("anti_signals") or [])
-        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-    ]
-    sigs = sorted(dict.fromkeys(sigs))
-    anti = sorted(dict.fromkeys(anti))
-    anti = [signal for signal in anti if signal not in set(sigs)]
-    if not (3 <= len(sigs) <= 6):
-        return {}
-    try:
-        threshold = float(brc.get("min_signal_overlap", 0.6) or 0.6)
-    except Exception:
-        threshold = 0.6
-    threshold = min(1.0, max(0.0, threshold))
-    payload = {
-        "schema_version": "bias-recognition-v1",
-        "bias_motif": _sanitize_bias_text(brc.get("bias_motif")),
-        "answer_shape_hint": _sanitize_bias_text(brc.get("answer_shape_hint"), limit=40),
-        "recognition_signals": sigs,
-        "anti_signals": anti,
-        "min_signal_overlap": threshold,
+    return {
+        "schema_version": "pattern-recognition-v1",
+        "pre_question_signature": pre_question,
+        "pre_sql_signature": pre_sql,
+        "observed_failure_summary": _contract_text(raw.get("observed_failure_summary")),
+        "repair_direction": repair_direction,
     }
-    return payload
-
-
-def _attach_validated_bias_recognition_contract(response: Dict[str, Any]) -> Dict[str, Any]:
-    payload = _validated_bias_recognition_contract_payload(response)
-    if payload:
-        response["bias_recognition_contract_validated"] = payload
-    return response
 
 
 def _bias_contract_payload(group: GroupSummary) -> Dict[str, Any]:
@@ -3418,17 +3418,17 @@ def _build_pattern_candidate(
         else pattern.instantiation_program.shared_status
     )
     pattern = _materialize_admission_branches(pattern, groups)
-    brc_payload = _validated_bias_recognition_contract_payload(admission_response)
-    brc = (
-        BiasRecognitionContract.model_validate(brc_payload)
-        if brc_payload
-        else _fallback_bias_recognition_contract(groups)
+    recognition_payload = _pattern_recognition_contract_payload(admission_response)
+    recognition_contract = (
+        PatternRecognitionContract.model_validate(recognition_payload)
+        if recognition_payload
+        else None
     )
-    if brc is not None:
+    if recognition_contract is not None:
         pattern = pattern.model_copy(
             update={
                 "instantiation_program": pattern.instantiation_program.model_copy(
-                    update={"bias_recognition_contract": brc}
+                    update={"pattern_recognition_contract": recognition_contract}
                 )
             }
         )

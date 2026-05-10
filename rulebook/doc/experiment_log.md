@@ -1908,3 +1908,23 @@ r19 后补丁：
 
 - `python -m py_compile common/core/data_structures.py common/llm/prompts/error_instance_extractor.py common/llm/nodes.py common/analysis/signal_summary.py common/learning/accumulate.py` 通过。
 - 构造最小 `ErrorInstanceV2` 静态探针，确认 `formation_signals.pre_condition_local.pre_question_signature_local` 和 `trigger_contract.pre_condition.repair_direction_local` 正常落盘。
+
+### 2026-05-10 emergence_refactor WU3：admission 改为涌现 pre-condition 契约
+
+改动目标：
+
+- pattern admission 不再要求 LLM 从 14 个固定现象信号中选择 `recognition_signals`。
+- admission 改为从多个 case 的局部 pre-condition 中抽象出 pattern 级 question/sql signature、audit failure summary 和 repair direction。
+
+实现：
+
+- `pattern_admission_judge` prompt 删除 `BIAS_RECOGNITION_SIGNAL_VOCABULARY` 导入、闭词列表注入和 `bias_recognition_contract` 输出 block。
+- prompt 新增 `pre_question_signature`、`pre_sql_signature`、`observed_failure_summary`、`repair_direction` 的定义和输出要求。
+- `_pattern_case_card` 与 `_stable_bias_frame` 现在向 LLM 输入每个 member 的 `pre_condition_local` 四字段。
+- `_build_pattern_candidate` 将 admission 的四字段校验后写入 `InstantiationProgram.pattern_recognition_contract`；新 pattern 不再写入新的 `bias_recognition_contract`。
+- 删除 admission response 的 `_validated_bias_recognition_contract_payload` / `_attach_validated_bias_recognition_contract` 路径。
+
+验证：
+
+- `python -m py_compile common/learning/pattern_formation.py common/llm/prompts/pattern_admission_judge.py` 通过。
+- prompt 构造探针确认输出中已无 `bias_recognition_contract`，且包含 `pre_question_signature` / `pre_sql_signature` / `repair_direction`。
