@@ -444,6 +444,13 @@ required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-
 - focus18 r21 触发数 ≥ r20 的水平
 - pytest 失败集 ⊆ 19 项 pre-existing
 
+**执行记录（2026-05-10）**：
+- 已删除固定闭词表和 runtime 闭词计算/注入路径。
+- 已同步删除 WU8 中列出的 `_bias_signal_from_runtime_signal` / `_bias_signals_for_group`，因为保留它们会继续把旧闭词映射接入 pattern 扩充，无法满足 WU5 的 0 命中验收。
+- `_try_extend_existing_pattern` 已改为：新 singleton 与已有 pattern 必须都有自然语言 `pattern_recognition_contract` / `pre_condition`，再用 case-local pair root evidence 判断是否可扩入；不再使用 recognition signal jaccard。
+- pattern 去重已改为基于 pre-condition contract + action family，不再用 `recognition_signals` jaccard。
+- `bias_recognition_contract` 数据结构字段仅作为旧库兼容保留，新 admission/runtime/formation 不再写入或读取。
+
 **回滚**：`git revert <WU5 commit>` 即恢复全部被删函数与 vocabulary。物理删除而不留 `_deprecated_` 路径，因为下游 WU6-8 的清理会引用这些函数；保留 deprecated 路径会形成残留依赖。
 
 **工时**：0.5d

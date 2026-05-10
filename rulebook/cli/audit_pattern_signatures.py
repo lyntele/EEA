@@ -102,7 +102,7 @@ def _compact_instantiation(group: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "shared": bool(program.get("shared")),
         "shared_status": program.get("shared_status"),
-        "bias_recognition_contract": program.get("bias_recognition_contract") or {},
+        "legacy_bias_recognition_contract": program.get("bias_recognition_contract") or {},
         "pattern_recognition_contract": program.get("pattern_recognition_contract") or {},
         "runtime_branches": runtime_branches,
     }

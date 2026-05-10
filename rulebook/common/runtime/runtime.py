@@ -49,7 +49,6 @@ from method.EEA.rulebook.common.analysis.role_graph_normalizer import RoleGraphN
 from method.EEA.rulebook.common.runtime.trigger_contract import is_contract_runtime_executable, sanitize_trigger_contract
 from method.EEA.rulebook.common.core.vocabulary import (
     AnswerSlotType,
-    BIAS_RECOGNITION_SIGNAL_VOCABULARY,
     EditScope,
     GrainType,
     GroupType,
@@ -286,9 +285,7 @@ def build_runtime_case_view(
         case_signal_view=case_signal_view,
         case_signal_bundle=case_signal_bundle,
     )
-    return view_obj.model_copy(
-        update={"bias_recognition_signals": compute_bias_recognition_signals(view_obj)}
-    )
+    return view_obj
 
 
 def _memory_schema_tables_from_value(value: Any) -> List[str]:
@@ -509,59 +506,6 @@ def _case_pred_current_summary(case_view: RuntimeCaseView) -> Dict[str, Any]:
         "has_group_by": bool(group_order_profile.get("group_by_count")),
         "has_order_by": bool(group_order_profile.get("order_by_count")),
         "has_limit": group_order_profile.get("limit") is not None,
-    }
-
-
-def compute_bias_recognition_signals(case_view: RuntimeCaseView) -> Dict[str, bool]:
-    """Compute closed-vocabulary phenomenon signals for pattern recognition.
-
-    These signals are intentionally coarse and answer-blind. They are used only
-    to decide whether a pattern's root bias may apply; branch binding and
-    compiler dry-run remain the strict instantiation gate.
-    """
-    current = _case_pred_current_summary(case_view)
-    current_signals = build_current_case_signals(case_view)
-    pred_sql_view, _, _ = _case_signal_parts(case_view)
-    top_sql = str(case_view.pred_manifestation.top1_sql or "")
-    select_arity = _int_or_zero(current.get("select_arity"))
-    join_count_bucket = str(current.get("join_count_bucket") or "")
-    table_count_bucket = str(current.get("table_count_bucket") or "")
-    predicate_count_bucket = str(current.get("predicate_count_bucket") or "")
-    shape = _payload(current.get("output_shape_current"))
-    roles = [str(role).strip() for role in (shape.get("roles") or []) if str(role).strip()]
-    role_homogeneous = bool(roles) and len(set(roles)) == 1
-    has_pair_role_side = (
-        "pred.role_side_pair_output=True" in current_signals
-        or bool(current_signals & {"pred.pair_output=True"})
-    )
-    has_distinct = bool(
-        re.search(r"\bselect\s+distinct\b", top_sql, flags=re.IGNORECASE)
-        or pred_sql_view.get("has_distinct")
-        or _case_output_shape(case_view).get("has_distinct")
-    )
-    has_aggregate = bool(current.get("has_aggregate"))
-    has_distinct_aggregate = bool(current.get("has_distinct_aggregate"))
-    has_group_by = bool(current.get("has_group_by"))
-    has_order_by_limit = bool(current.get("has_order_by")) and bool(current.get("has_limit"))
-    signals = {
-        "has_pair_role_side_output": has_pair_role_side,
-        "same_relation_two_role_sides": "pred.same_relation_two_role_sides=True" in current_signals,
-        "select_arity_ge_2": select_arity >= 2,
-        "no_distinct_on_pair_output": has_pair_role_side and not has_distinct,
-        "select_role_dtype_homogeneous": role_homogeneous,
-        "has_aggregate_in_select": has_aggregate,
-        "answer_unit_count_distinct": has_distinct_aggregate,
-        "answer_unit_count_plain": has_aggregate and not has_distinct_aggregate,
-        "answer_unit_scalar_aggregate": has_aggregate and select_arity <= 1 and not has_group_by,
-        "has_join_chain_via_bridge_table": join_count_bucket in {"2", "3plus"} or table_count_bucket == "3plus",
-        "has_direct_relation_join": join_count_bucket == "1",
-        "has_predicate_outside_aggregate_scope": has_aggregate and predicate_count_bucket != "0" and not has_group_by,
-        "has_group_by": has_group_by,
-        "has_order_by_limit": has_order_by_limit,
-    }
-    return {
-        key: bool(signals.get(key, False))
-        for key in sorted(BIAS_RECOGNITION_SIGNAL_VOCABULARY)
     }
 
 
@@ -1399,73 +1343,6 @@ def _runtime_branch_negative_signals(branch: Mapping[str, Any]) -> Set[str]:
         for sig in (branch.get("negative_signals") or [])
         if str(sig)
     }
-
-
-def _bias_recognition_contract(group: GroupSummary) -> Dict[str, Any]:
-    program = getattr(group, "instantiation_program", None)
-    contract = getattr(program, "bias_recognition_contract", None)
-    return _payload(contract)
-
-
-def _case_bias_recognition_signals(case_view: RuntimeCaseView) -> Dict[str, bool]:
-    signals = dict(getattr(case_view, "bias_recognition_signals", {}) or {})
-    if not signals:
-        signals = compute_bias_recognition_signals(case_view)
-    return {
-        str(key): bool(value)
-        for key, value in signals.items()
-        if str(key) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-    }
-
-
-def _evaluate_bias_recognition(
-    *,
-    group: GroupSummary,
-    case_view: RuntimeCaseView,
-) -> Tuple[Dict[str, Any], bool, List[str]]:
-    contract = _bias_recognition_contract(group)
-    if not contract:
-        return {}, False, []
-    case_signals = _case_bias_recognition_signals(case_view)
-    recognition = [
-        str(signal)
-        for signal in (contract.get("recognition_signals") or [])
-        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-    ]
-    anti = [
-        str(signal)
-        for signal in (contract.get("anti_signals") or [])
-        if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-    ]
-    anti_hits = [signal for signal in anti if case_signals.get(signal)]
-    hits = [signal for signal in recognition if case_signals.get(signal)]
-    total = len(recognition)
-    try:
-        threshold = float(contract.get("min_signal_overlap", 0.6) or 0.6)
-    except Exception:
-        threshold = 0.6
-    overlap = len(hits) / max(total, 1)
-    audit = {
-        "schema_version": "bias-recognition-audit-v1",
-        "bias_motif": str(contract.get("bias_motif") or ""),
-        "answer_shape_hint": str(contract.get("answer_shape_hint") or ""),
-        "recognition_signals": recognition,
-        "anti_signals": anti,
-        "matched_signals": hits,
-        "anti_hits": anti_hits,
-        "hit_count": len(hits),
-        "total": total,
-        "overlap": round(overlap, 6),
-        "min_signal_overlap": threshold,
-    }
-    blockers: List[str] = []
-    if anti_hits:
-        blockers.append("bias_anti_signal_hit:" + ",".join(anti_hits[:6]))
-    if total <= 0 or overlap < threshold:
-        blockers.append(
-            f"bias_recognition_signals_missed:{len(hits)}/{total}@{overlap:.2f}"
-        )
-    return audit, bool(not blockers), blockers
 
 
 def _pattern_recognition_contract(group: GroupSummary) -> Dict[str, Any]:
@@ -2445,8 +2322,6 @@ def _gate_group(
     dry_run_contract = contract
     deferred_instantiation_reasons: List[str] = []
     compiler_candidate_reasons: List[str] = []
-    bias_recognition: Dict[str, Any] = {}
-    bias_recognized = False
     pre_condition_match: Dict[str, Any] = {}
     pre_condition_matched = False
     diagnostic_only = False
@@ -2839,8 +2714,6 @@ def _gate_group(
         hard_gate_reasons=hard_gate_reasons,
         deferred_instantiation_reasons=deferred_instantiation_reasons,
         compiler_candidate_reasons=compiler_candidate_reasons,
-        bias_recognition=bias_recognition,
-        bias_recognized=bias_recognized,
         pre_condition_match=pre_condition_match,
         pre_condition_matched=pre_condition_matched,
         diagnostic_only=diagnostic_only,
@@ -3940,10 +3813,8 @@ def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
         "selected_branch_id": str(payload.get("selected_branch_id") or ""),
         "branch_runtime_usable_count": int(payload.get("branch_runtime_usable_count") or 0),
         "branch_blockers": [str(item) for item in (payload.get("branch_blockers") or [])[:6]],
-        "bias_recognized": bool(payload.get("bias_recognized", False)),
         "pre_condition_matched": bool(payload.get("pre_condition_matched", False)),
         "diagnostic_only": bool(payload.get("diagnostic_only", False)),
-        "bias_recognition": payload.get("bias_recognition") or {},
         "pre_condition_match": payload.get("pre_condition_match") or {},
         "final_score": payload.get("final_score"),
     }

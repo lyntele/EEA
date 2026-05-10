@@ -206,29 +206,6 @@ class ActionPrimitive(str, Enum):
     MATERIALIZE_RANKING_OUTPUT = "MATERIALIZE_RANKING_OUTPUT"
 
 
-BIAS_RECOGNITION_SIGNAL_VOCABULARY = {
-    # Output-shape bias recognition. These are phenomenon-level signals, not
-    # table/column names.
-    "has_pair_role_side_output",
-    "same_relation_two_role_sides",
-    "select_arity_ge_2",
-    "no_distinct_on_pair_output",
-    "select_role_dtype_homogeneous",
-    # Aggregate answer-unit recognition.
-    "has_aggregate_in_select",
-    "answer_unit_count_distinct",
-    "answer_unit_count_plain",
-    "answer_unit_scalar_aggregate",
-    # Source-route/scope recognition.
-    "has_join_chain_via_bridge_table",
-    "has_direct_relation_join",
-    "has_predicate_outside_aggregate_scope",
-    # Generic SQL-shape cues.
-    "has_group_by",
-    "has_order_by_limit",
-}
-
-
 # =============================================================================
 # Edit scope（Memory Rewrite bounded autonomy 契约用）
 # rewrite 模型在 action 声明的 edit_scope 内可做 dependency repair，scope 外禁止

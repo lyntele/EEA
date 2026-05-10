@@ -18,7 +18,6 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import (
-    BiasRecognitionContract,
     CoreInterface,
     GroupFormationEvidence,
     GroupLifecycle,
@@ -49,7 +48,6 @@ from method.EEA.rulebook.common.runtime.trigger_contract import (
     materialize_library_runtime_contracts,
 )
 from method.EEA.rulebook.common.core.vocabulary import (
-    BIAS_RECOGNITION_SIGNAL_VOCABULARY,
     Confidence,
     GrainType,
     GroupStatus,
@@ -2427,33 +2425,6 @@ def _call_pattern_admission_judge(
     return response
 
 
-def _bias_signal_from_runtime_signal(signal: str) -> Optional[str]:
-    text = str(signal or "")
-    mapping = {
-        "pred.role_side_pair_output=True": "has_pair_role_side_output",
-        "pred.same_relation_two_role_sides=True": "same_relation_two_role_sides",
-        "pred.pair_output=True": "select_arity_ge_2",
-        "pred.output_arity=2": "select_arity_ge_2",
-        "pred.select_arity=2": "select_arity_ge_2",
-        "pred.has_aggregate=True": "has_aggregate_in_select",
-        "pred.has_distinct_aggregate=True": "answer_unit_count_distinct",
-        "pred.has_group_by=True": "has_group_by",
-    }
-    if text in mapping:
-        return mapping[text]
-    if text.startswith("pred.output_arity="):
-        try:
-            return "select_arity_ge_2" if int(text.rsplit("=", 1)[1]) >= 2 else None
-        except Exception:
-            return None
-    if text.startswith("pred.select_arity="):
-        try:
-            return "select_arity_ge_2" if int(text.rsplit("=", 1)[1]) >= 2 else None
-        except Exception:
-            return None
-    return None
-
-
 def _contract_text(value: Any, limit: int = 200) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
@@ -2474,119 +2445,82 @@ def _pattern_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def _bias_contract_payload(group: GroupSummary) -> Dict[str, Any]:
-    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
-    payload = _model_dump(brc)
+def _pattern_recognition_contract_for_group(group: GroupSummary) -> Dict[str, Any]:
+    program = getattr(group.instantiation_program, "pattern_recognition_contract", None)
+    payload = _model_dump(program)
     if payload:
         return payload
-    admission = dict((_signal_payload(group).get("pattern_admission") or {}) or {})
-    return _model_dump(
-        admission.get("bias_recognition_contract_validated")
-        or admission.get("bias_recognition_contract")
-        or {}
+    trigger_contract = _model_dump(getattr(group, "trigger_contract", None))
+    pre_condition = _model_dump(trigger_contract.get("pre_condition"))
+    if pre_condition:
+        return {
+            "schema_version": "pattern-recognition-v1",
+            "pre_question_signature": pre_condition.get("pre_question_signature")
+            or pre_condition.get("pre_question_signature_local")
+            or "",
+            "pre_sql_signature": pre_condition.get("pre_sql_signature")
+            or pre_condition.get("pre_sql_signature_local")
+            or "",
+            "observed_failure_summary": pre_condition.get("observed_failure_summary")
+            or pre_condition.get("observed_failure_local")
+            or "",
+            "repair_direction": pre_condition.get("repair_direction")
+            or pre_condition.get("repair_direction_local")
+            or "",
+        }
+    local = _model_dump((_signal_payload(group).get("pre_condition_local") or {}) or {})
+    if local:
+        return {
+            "schema_version": "pattern-recognition-v1",
+            "pre_question_signature": local.get("pre_question_signature")
+            or local.get("pre_question_signature_local")
+            or "",
+            "pre_sql_signature": local.get("pre_sql_signature")
+            or local.get("pre_sql_signature_local")
+            or "",
+            "observed_failure_summary": local.get("observed_failure_summary")
+            or local.get("observed_failure_local")
+            or "",
+            "repair_direction": local.get("repair_direction")
+            or local.get("repair_direction_local")
+            or "",
+        }
+    return {}
+
+
+def _contract_has_precondition(payload: Dict[str, Any]) -> bool:
+    return bool(
+        _contract_text(payload.get("pre_question_signature"))
+        and _contract_text(payload.get("pre_sql_signature"))
+        and _contract_text(payload.get("repair_direction"))
     )
 
 
-def _bias_signals_for_group(group: GroupSummary) -> Set[str]:
-    """Answer-blind bias recognition signals reproducible from a memory group."""
+def _contract_token_similarity(left: Dict[str, Any], right: Dict[str, Any]) -> float:
+    def tokens(payload: Dict[str, Any]) -> Set[str]:
+        text = " ".join(
+            str(payload.get(key) or "")
+            for key in (
+                "pre_question_signature",
+                "pre_sql_signature",
+                "observed_failure_summary",
+                "repair_direction",
+            )
+        ).lower()
+        return {token for token in re.findall(r"[a-z0-9_]+", text) if len(token) > 2}
 
-    signals: Set[str] = set()
-    brc_payload = _bias_contract_payload(group)
-    signals.update(str(item) for item in (brc_payload.get("recognition_signals") or []) if str(item))
-    contract = _model_dump(getattr(group, "trigger_contract", None))
-    signal_rows: List[str] = []
-    signal_rows.extend(str(item) for item in (contract.get("required_signals") or []) if str(item))
-    signal_rows.extend(str(item) for item in (contract.get("decisive_pred_signals") or []) if str(item))
-    signal_rows.extend(str(item) for item in (contract.get("optional_signals") or []) if str(item))
-    for variant in contract.get("variant_required_signal_sets") or []:
-        if isinstance(variant, (list, tuple, set)):
-            signal_rows.extend(str(item) for item in variant if str(item))
-    for signal in signal_rows:
-        mapped = _bias_signal_from_runtime_signal(signal)
-        if mapped:
-            signals.add(mapped)
-    if any("pred.decisive_tag=pair_output" in signal or "pred.pair_output=True" in signal for signal in signal_rows):
-        signals.add("select_arity_ge_2")
-        signals.add("has_pair_role_side_output")
-    if (
-        "pred.has_distinct_aggregate=False" in signal_rows
-        and any("pred.pair_output=True" in signal or "pred.decisive_tag=pair_output" in signal for signal in signal_rows)
-    ):
-        signals.add("no_distinct_on_pair_output")
-    canonical_discriminants = [
-        str(item)
-        for item in (contract.get("canonical_discriminants") or [])
-        if str(item)
-    ]
-    if any("direct:" in item or "contains_direct_role_path" in item for item in canonical_discriminants):
-        signals.add("has_direct_relation_join")
-    side_key_count = sum(1 for item in canonical_discriminants if "contains_side_key" in item)
-    if side_key_count >= 2 or any("contains_role_side_group" in item for item in canonical_discriminants):
-        signals.add("same_relation_two_role_sides")
-    payload = _signal_payload(group)
-    pred_current = dict((payload.get("pred_current") or {}) or {})
-    if pred_current.get("has_aggregate") or pred_current.get("has_aggregate_in_select"):
-        signals.add("has_aggregate_in_select")
-    if pred_current.get("has_group_by"):
-        signals.add("has_group_by")
-    if pred_current.get("pair_output") or pred_current.get("select_arity") == 2:
-        signals.add("select_arity_ge_2")
-    if pred_current.get("has_distinct_aggregate"):
-        signals.add("answer_unit_count_distinct")
-    action_payload = json.dumps(
-        {
-            "contract": contract.get("action_contract") or {},
-            "formation": {
-                "stable_bias_key": (_signal_payload(group).get("pattern_admission") or {}).get("stable_bias_key"),
-                "primary_repair_interface": (_signal_payload(group).get("pattern_admission") or {}).get("primary_repair_interface"),
-            },
-        },
-        ensure_ascii=False,
-        default=str,
-    ).lower()
-    if any(token in action_payload for token in ("reroute", "source_route", "join_route", "bridge")):
-        signals.add("has_join_chain_via_bridge_table")
-    return {signal for signal in signals if signal in BIAS_RECOGNITION_SIGNAL_VOCABULARY}
-
-
-def _signal_jaccard(left: Set[str], right: Set[str]) -> float:
-    if not left or not right:
+    left_tokens = tokens(left)
+    right_tokens = tokens(right)
+    if not left_tokens or not right_tokens:
         return 0.0
-    return len(left & right) / max(len(left | right), 1)
-
-
-def _branch_signal_set(branch: Dict[str, Any]) -> Set[str]:
-    signals: Set[str] = set()
-
-    def visit(value: Any, key_hint: str = "") -> None:
-        if isinstance(value, dict):
-            for key, item in value.items():
-                visit(item, str(key))
-            return
-        if isinstance(value, (list, tuple, set)):
-            for item in value:
-                visit(item, key_hint)
-            return
-        text = str(value or "").strip()
-        if not text:
-            return
-        if "signal" in key_hint.lower() or text in BIAS_RECOGNITION_SIGNAL_VOCABULARY:
-            if text in BIAS_RECOGNITION_SIGNAL_VOCABULARY:
-                signals.add(text)
-                return
-            mapped = _bias_signal_from_runtime_signal(text)
-            if mapped:
-                signals.add(mapped)
-
-    visit(branch)
-    return signals
+    return len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
 
 
 def _extend_pattern_runtime_branch_support(
     pattern: GroupSummary,
     *,
     new_case_id: str,
-    new_signals: Set[str],
+    anchor_case_id: str = "",
 ) -> Tuple[GroupSummary, Dict[str, Any]]:
     program = getattr(pattern.instantiation_program, "synthesized_program", None)
     envelope = getattr(program, "program_envelope", None) if program is not None else None
@@ -2599,20 +2533,23 @@ def _extend_pattern_runtime_branch_support(
     audit: Dict[str, Any] = {
         "branch_extension_status": "no_runtime_branches",
         "selected_branch_id": "",
-        "branch_signal_overlap": 0.0,
+        "anchor_case_id": anchor_case_id,
     }
     if not branches or program is None or envelope is None:
         return pattern, audit
-    ranked: List[Tuple[float, int, Dict[str, Any]]] = []
+    ranked: List[Tuple[int, int, int, Dict[str, Any]]] = []
     for index, branch in enumerate(branches):
-        branch_signals = _branch_signal_set(branch)
-        overlap = _signal_jaccard(new_signals, branch_signals)
-        support = len(branch.get("support_case_ids") or [])
-        ranked.append((overlap, support, {**branch, "_branch_index": index}))
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    best_overlap, _support, best = ranked[0]
-    if best_overlap <= 0.0:
-        audit["branch_extension_status"] = "branch_unassigned_no_signal_overlap"
+        support_case_ids = {str(case_id) for case_id in (branch.get("support_case_ids") or [])}
+        has_anchor = int(bool(anchor_case_id and anchor_case_id in support_case_ids))
+        has_executable_binding = int(
+            bool(branch.get("bundle_ids") or branch.get("bundled_op_ids") or branch.get("allowed_primitives"))
+        )
+        support = len(support_case_ids)
+        ranked.append((has_anchor, has_executable_binding, support, {**branch, "_branch_index": index}))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _has_anchor, has_executable_binding, _support, best = ranked[0]
+    if not has_executable_binding:
+        audit["branch_extension_status"] = "branch_unassigned_no_executable_binding"
         return pattern, audit
     best_index = int(best.get("_branch_index") or 0)
     updated_branches: List[Dict[str, Any]] = []
@@ -2628,7 +2565,7 @@ def _extend_pattern_runtime_branch_support(
                 support_case_ids.append(new_case_id)
             payload["support_case_ids"] = sorted(set(support_case_ids), key=_case_id_sort_key)
             payload["runtime_usable"] = True
-            payload["runtime_validation_policy"] = "extended_in_place_lightweight_signal_gated"
+            payload["runtime_validation_policy"] = "extended_in_place_pre_condition_pair_gated"
             payload["cross_case_replay_pending"] = True
             payload["runtime_blockers"] = []
         updated_branches.append(payload)
@@ -2636,7 +2573,7 @@ def _extend_pattern_runtime_branch_support(
     envelope_payload["branch_selection_contract"] = {
         **dict(envelope_payload.get("branch_selection_contract") or {}),
         "selection_unit": "runtime_branch",
-        "runtime_validation_policy": "extended_in_place_lightweight_signal_gated",
+        "runtime_validation_policy": "extended_in_place_pre_condition_pair_gated",
     }
     updated_envelope = envelope.model_copy(update=envelope_payload) if hasattr(envelope, "model_copy") else envelope_payload
     updated_program = program.model_copy(update={"program_envelope": updated_envelope})
@@ -2651,7 +2588,7 @@ def _extend_pattern_runtime_branch_support(
         {
             "branch_extension_status": "attached_to_runtime_branch",
             "selected_branch_id": str(best.get("branch_id") or ""),
-            "branch_signal_overlap": best_overlap,
+            "selected_by_anchor_case": bool(anchor_case_id),
         }
     )
     return updated_pattern, audit
@@ -2678,9 +2615,9 @@ def _try_extend_existing_pattern(
         audit["skip_reason"] = "new_singleton_case_id_not_unit"
         return None, audit
     new_case_id = new_case_ids[0]
-    new_signals = _bias_signals_for_group(new_singleton)
-    if not new_signals:
-        audit["skip_reason"] = "new_singleton_bias_signals_empty"
+    new_contract = _pattern_recognition_contract_for_group(new_singleton)
+    if not _contract_has_precondition(new_contract):
+        audit["skip_reason"] = "new_singleton_pre_condition_empty"
         return None, audit
     singleton_by_case = {
         str(case_id): group
@@ -2696,26 +2633,12 @@ def _try_extend_existing_pattern(
             continue
         if new_case_id in {str(case_id) for case_id in (pattern.case_ids or [])}:
             continue
-        brc = _bias_contract_payload(pattern)
-        recognition = {
-            str(signal)
-            for signal in (brc.get("recognition_signals") or [])
-            if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
-        }
-        if not recognition:
+        pattern_contract = _pattern_recognition_contract_for_group(pattern)
+        if not _contract_has_precondition(pattern_contract):
             continue
-        threshold = float(brc.get("min_signal_overlap", 0.6) or 0.6)
-        anti_hits = sorted(
-            {
-                str(signal)
-                for signal in (brc.get("anti_signals") or [])
-                if str(signal) in new_signals
-            }
-        )
-        hits = sorted(recognition & new_signals)
-        overlap = len(hits) / max(len(recognition), 1)
         member_pair_audits: List[Dict[str, Any]] = []
         best_pair_score = 0.0
+        best_anchor_case_id = ""
         root_supported = False
         for member_case_id in pattern.case_ids or []:
             member = singleton_by_case.get(str(member_case_id))
@@ -2727,7 +2650,9 @@ def _try_extend_existing_pattern(
                 continue
             pair_pass = _pair_supports_root_membership(pair, left=new_singleton, right=member)
             root_supported = root_supported or pair_pass
-            best_pair_score = max(best_pair_score, float(pair.score or 0.0))
+            if float(pair.score or 0.0) >= best_pair_score:
+                best_pair_score = float(pair.score or 0.0)
+                best_anchor_case_id = str(member_case_id)
             member_pair_audits.append(
                 {
                     "member_case_ids": list(member.case_ids or []),
@@ -2737,23 +2662,24 @@ def _try_extend_existing_pattern(
                     "root_membership_supported": pair_pass,
                 }
             )
-        passed = overlap >= threshold and not anti_hits and root_supported
+        contract_similarity = _contract_token_similarity(new_contract, pattern_contract)
+        passed = root_supported
         candidate_audit = {
             "pattern_id": pattern.group_id,
             "pattern_case_ids": list(pattern.case_ids or []),
-            "recognition_hits": hits,
-            "recognition_overlap": overlap,
-            "min_signal_overlap": threshold,
-            "anti_signal_hits": anti_hits,
+            "pattern_pre_condition_contract": pattern_contract,
+            "new_singleton_pre_condition": new_contract,
+            "pre_condition_token_similarity": round(contract_similarity, 6),
             "root_membership_supported": root_supported,
             "best_pair_score": best_pair_score,
+            "best_anchor_case_id": best_anchor_case_id,
             "passed": passed,
             "member_pair_audit": member_pair_audits[:6],
         }
         audit["candidates"].append(candidate_audit)
         audit["attempted_pattern_count"] += 1
         if passed:
-            ranked.append((overlap, best_pair_score, int(pattern.support or 0), pattern, candidate_audit))
+            ranked.append((contract_similarity, best_pair_score, int(pattern.support or 0), pattern, candidate_audit))
     if not ranked:
         audit["skip_reason"] = "no_existing_pattern_passed_extension_gate"
         return None, audit
@@ -2778,7 +2704,7 @@ def _try_extend_existing_pattern(
     extended, branch_audit = _extend_pattern_runtime_branch_support(
         extended,
         new_case_id=new_case_id,
-        new_signals=new_signals,
+        anchor_case_id=str(chosen_audit.get("best_anchor_case_id") or ""),
     )
     formation_signals = dict(extended.formation_signals or {})
     formation_signals.setdefault("extension_audit", [])
@@ -2789,9 +2715,9 @@ def _try_extend_existing_pattern(
             "new_case_id": new_case_id,
             "source_singleton_id": new_singleton.group_id,
             "chosen_pattern_id": chosen.group_id,
-            "recognition_overlap": chosen_audit.get("recognition_overlap"),
-            "recognition_hits": chosen_audit.get("recognition_hits") or [],
+            "pre_condition_token_similarity": chosen_audit.get("pre_condition_token_similarity"),
             "best_pair_score": chosen_audit.get("best_pair_score"),
+            "best_anchor_case_id": chosen_audit.get("best_anchor_case_id"),
             "branch_audit": branch_audit,
         },
     ]
@@ -2800,45 +2726,6 @@ def _try_extend_existing_pattern(
     audit["chosen_case_ids_after"] = case_ids
     audit["branch_audit"] = branch_audit
     return extended, audit
-
-
-def _fallback_bias_recognition_contract(groups: Sequence[GroupSummary]) -> Optional[BiasRecognitionContract]:
-    votes: Counter[str] = Counter()
-    route_votes = 0
-    for group in groups:
-        contract = _model_dump(getattr(group, "trigger_contract", None))
-        action_contract = _model_dump(contract.get("action_contract") or {})
-        action_text = json.dumps(action_contract, ensure_ascii=False, default=str).lower()
-        if any(token in action_text for token in ("reroute", "join_reroute", "source_route")):
-            route_votes += 1
-        signal_rows: List[str] = []
-        signal_rows.extend(str(item) for item in (contract.get("required_signals") or []) if str(item))
-        signal_rows.extend(str(item) for item in (contract.get("decisive_pred_signals") or []) if str(item))
-        for variant in contract.get("variant_required_signal_sets") or []:
-            if isinstance(variant, (list, tuple, set)):
-                signal_rows.extend(str(item) for item in variant if str(item))
-        for signal in signal_rows:
-            mapped = _bias_signal_from_runtime_signal(signal)
-            if mapped:
-                votes[mapped] += 1
-    selected = [signal for signal, _count in votes.most_common(6)]
-    if route_votes >= 2:
-        for signal in (
-            "has_join_chain_via_bridge_table",
-            "has_predicate_outside_aggregate_scope",
-            "has_aggregate_in_select",
-        ):
-            if signal not in selected:
-                selected.append(signal)
-    if len(selected) < 3:
-        return None
-    return BiasRecognitionContract(
-        bias_motif="wrong_join_route" if route_votes >= 2 else "fallback_from_runtime_signals",
-        answer_shape_hint="preserved_aggregate_unit" if route_votes >= 2 else "other",
-        recognition_signals=sorted(selected[:6]),
-        anti_signals=[],
-        min_signal_overlap=0.6,
-    )
 
 
 def _member_pair_scores(
@@ -3382,12 +3269,6 @@ def _sync_trigger_contract_from_envelope_and_admission(group: GroupSummary) -> G
     elif "REROUTE" in op_type:
         action_contract["op_family"] = "reroute"
     trigger_contract["action_contract"] = action_contract
-    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
-    if brc is not None:
-        brc_payload = brc.model_dump(mode="json") if hasattr(brc, "model_dump") else _model_dump(brc)
-        trigger_contract["canonical_discriminants"] = list(
-            brc_payload.get("recognition_signals") or []
-        )
     return group.model_copy(
         update={
             "trigger_contract": TriggerContract.model_validate(trigger_contract)

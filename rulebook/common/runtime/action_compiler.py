@@ -509,10 +509,15 @@ def _pair_output_distinct_dependency_args(
     case_view: RuntimeCaseView,
     args: Dict[str, Any],
 ) -> Dict[str, Any]:
-    signals = dict(getattr(case_view, "bias_recognition_signals", {}) or {})
-    if not (
-        signals.get("has_pair_role_side_output")
-        and signals.get("no_distinct_on_pair_output")
+    current_shape = _current_output_shape_for_compiler(case_view)
+    try:
+        current_arity = int(current_shape.get("arity") or 0)
+    except Exception:
+        current_arity = 0
+    if (
+        current_arity < 2
+        or bool(current_shape.get("has_distinct"))
+        or bool(current_shape.get("has_aggregate"))
     ):
         return args
     out = dict(args)

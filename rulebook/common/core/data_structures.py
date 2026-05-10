@@ -286,7 +286,7 @@ class RuntimeCaseView(BaseModel):
     case_signal_bundle: Optional[CaseSignalBundle] = None
     """Phase A provenance bundle. Runtime behavior ignores it unless explicitly audited."""
     bias_recognition_signals: Dict[str, bool] = Field(default_factory=dict)
-    """Pattern-level phenomenon signals used only for lightweight bias recognition."""
+    """Legacy compatibility field. New runtime paths must not populate or read it."""
 
 
 # =============================================================================
@@ -959,17 +959,13 @@ class InstantiationProgram(BaseModel):
     program_coverage: Optional[ProgramCoverage] = None
     """Deterministic compiler coverage for the synthesized program."""
     bias_recognition_contract: Optional["BiasRecognitionContract"] = None
-    """Lightweight pattern trigger: recognize whether current S0 shows the same bias."""
+    """Legacy compatibility field for old libraries; new patterns should not write it."""
     pattern_recognition_contract: Optional["PatternRecognitionContract"] = None
     """Emergent pre-condition contract used by the two-channel runtime trigger."""
 
 
 class BiasRecognitionContract(BaseModel):
-    """Pattern-level lightweight recognition contract.
-
-    This answers only "does the current case expose the same bias?". Concrete
-    repair remains branch/binder/compiler responsibility.
-    """
+    """Legacy closed-signal recognition contract kept only for loading old libraries."""
 
     schema_version: Literal["bias-recognition-v1"] = "bias-recognition-v1"
     bias_motif: str = ""

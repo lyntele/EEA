@@ -1949,3 +1949,25 @@ r19 后补丁：
 
 - `python -m py_compile common/runtime/runtime.py common/core/data_structures.py common/llm/prompts/pattern_pre_condition_match.py common/llm/prompts/__init__.py` 通过。
 - 静态 monkeypatch 探针验证 `_evaluate_pattern_pre_condition` 在 Q/S 均匹配时返回 `ok=True`，并产生 channel audit。
+
+### 2026-05-10 emergence_refactor WU5：撤除固定 bias 闭词与闭词扩充路径
+
+改动目标：
+
+- 删除 `has_pair_role_side_output` / `same_relation_two_role_sides` / `select_arity_ge_2` 等固定 LEVEL_2 现象词表，不再让 pattern trigger 或 pattern 扩充依赖人工预定义闭词。
+- 保留旧库反序列化兼容字段，但新库构建、runtime trigger、pattern extension、dedup 都不再写入或读取 `bias_recognition_contract`。
+
+实现：
+
+- `common/core/vocabulary.py` 删除 `BIAS_RECOGNITION_SIGNAL_VOCABULARY`。
+- `common/runtime/runtime.py` 删除 `compute_bias_recognition_signals`、`_bias_recognition_contract`、`_case_bias_recognition_signals`、`_evaluate_bias_recognition`，`build_runtime_case_view` 不再注入 `bias_recognition_signals`。
+- `common/learning/pattern_formation.py` 删除 `_bias_signal_from_runtime_signal`、`_bias_signals_for_group`、`_branch_signal_set`、`_fallback_bias_recognition_contract`；`_try_extend_existing_pattern` 改为使用每个案例自然抽取/抽象出的 `pattern_recognition_contract` 与 case-local pair root evidence。
+- `common/learning/evolution.py` 的同根去重不再看 `recognition_signals` jaccard，改为比较 pattern pre-condition key 与 action family。
+- `common/runtime/action_compiler.py` 的 DISTINCT 依赖不再读 closed bias signal，改为根据当前 SQL 输出形状判断：drop projection 类动作在当前非 distinct、非 aggregate、多列输出上可能需要 `SELECT_ENFORCE_DISTINCT`。
+- `common/core/data_structures.py` 将 `bias_recognition_signals` / `bias_recognition_contract` 明确标为 legacy compatibility；`cli/audit_pattern_signatures.py` 输出改名为 `legacy_bias_recognition_contract`。
+
+验证：
+
+- `python -m py_compile common/core/vocabulary.py common/core/data_structures.py common/runtime/runtime.py common/runtime/action_compiler.py common/learning/pattern_formation.py common/learning/evolution.py cli/audit_pattern_signatures.py` 通过。
+- `rg "BIAS_RECOGNITION_SIGNAL_VOCABULARY|compute_bias_recognition_signals|_bias_signal_from_runtime_signal|_bias_signals_for_group|_fallback_bias_recognition_contract|_validated_bias_recognition_contract_payload|_attach_validated_bias_recognition_contract" common cli` 0 命中。
+- `rg "bias_recognition_contract|recognition_signals|anti_signals|bias_recognition_signals" common/runtime common/learning common/runtime/action_compiler.py` 0 命中；仅数据结构 legacy 字段和 audit 输出兼容项保留。

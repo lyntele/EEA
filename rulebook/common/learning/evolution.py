@@ -127,15 +127,55 @@ def _mark_local_evolve_runtime_visible(group: GroupSummary) -> Tuple[GroupSummar
     return promoted, contract_audit
 
 
-def _pattern_root_key(group: GroupSummary) -> Tuple[str, str, str]:
+def _pattern_recognition_contract_payload(group: GroupSummary) -> Dict[str, Any]:
+    program = getattr(group, "instantiation_program", None)
+    contract = getattr(program, "pattern_recognition_contract", None)
+    payload = _payload(contract) or {}
+    if payload:
+        return payload
+    trigger_contract = _payload(getattr(group, "trigger_contract", None)) or {}
+    pre_condition = _payload(trigger_contract.get("pre_condition")) or {}
+    if not pre_condition:
+        return {}
+    return {
+        "pre_question_signature": pre_condition.get("pre_question_signature")
+        or pre_condition.get("pre_question_signature_local")
+        or "",
+        "pre_sql_signature": pre_condition.get("pre_sql_signature")
+        or pre_condition.get("pre_sql_signature_local")
+        or "",
+        "observed_failure_summary": pre_condition.get("observed_failure_summary")
+        or pre_condition.get("observed_failure_local")
+        or "",
+        "repair_direction": pre_condition.get("repair_direction")
+        or pre_condition.get("repair_direction_local")
+        or "",
+    }
+
+
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _pattern_precondition_key(group: GroupSummary) -> Tuple[str, str, str]:
+    payload = _pattern_recognition_contract_payload(group)
+    return (
+        _normalized_text(payload.get("pre_question_signature")),
+        _normalized_text(payload.get("pre_sql_signature")),
+        _normalized_text(payload.get("repair_direction")),
+    )
+
+
+def _pattern_root_key(group: GroupSummary) -> Tuple[str, str, str, str, str]:
     program = getattr(group.instantiation_program, "synthesized_program", None)
-    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
-    brc_payload = _payload(brc) or {}
     contract_payload = _payload(getattr(group, "trigger_contract", None)) or {}
     action_contract = _payload(contract_payload.get("action_contract")) or {}
     envelope = _payload(getattr(program, "program_envelope", None)) or {}
+    pre_q, pre_sql, repair_direction = _pattern_precondition_key(group)
     return (
-        str(brc_payload.get("stable_bias_key") or brc_payload.get("bias_motif") or ""),
+        pre_q,
+        pre_sql,
+        repair_direction,
         str(
             _payload(getattr(group, "formation_signals", None))
             .get("pattern_admission", {})
@@ -171,39 +211,20 @@ def _pattern_action_family_key(group: GroupSummary) -> Tuple[str, str]:
     return op_family, ""
 
 
-def _pattern_bias_shape(group: GroupSummary) -> str:
-    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
-    payload = _payload(brc)
-    return str(payload.get("answer_shape_hint") or "").strip().lower()
-
-
-def _pattern_recognition_signal_set(group: GroupSummary) -> Set[str]:
-    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
-    payload = _payload(brc)
-    return {
-        str(item).strip()
-        for item in (payload.get("recognition_signals") or [])
-        if str(item).strip()
-    }
-
-
-def _signal_jaccard(left: Set[str], right: Set[str]) -> float:
-    if not left or not right:
-        return 0.0
-    return len(left & right) / max(len(left | right), 1)
-
-
 def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) -> Tuple[bool, Dict[str, Any]]:
     left_cases = {str(case_id) for case_id in (left.case_ids or [])}
     right_cases = {str(case_id) for case_id in (right.case_ids or [])}
     shared_cases = left_cases & right_cases
     action_left = _pattern_action_family_key(left)
     action_right = _pattern_action_family_key(right)
-    bias_left = _pattern_bias_shape(left)
-    bias_right = _pattern_bias_shape(right)
-    signal_left = _pattern_recognition_signal_set(left)
-    signal_right = _pattern_recognition_signal_set(right)
-    signal_jaccard = _signal_jaccard(signal_left, signal_right)
+    precondition_left = _pattern_precondition_key(left)
+    precondition_right = _pattern_precondition_key(right)
+    has_left_precondition = any(precondition_left)
+    has_right_precondition = any(precondition_right)
+    precondition_match = (
+        not (has_left_precondition and has_right_precondition)
+        or precondition_left == precondition_right
+    )
     subset_match = bool(left_cases <= right_cases or right_cases <= left_cases)
     audit: Dict[str, Any] = {
         "left_group_id": left.group_id,
@@ -215,11 +236,9 @@ def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) ->
         "action_family_key_left": list(action_left),
         "action_family_key_right": list(action_right),
         "action_family_match": action_left == action_right,
-        "bias_shape_left": bias_left,
-        "bias_shape_right": bias_right,
-        "bias_shape_match": not (bias_left and bias_right and bias_left != bias_right),
-        "signal_jaccard": signal_jaccard,
-        "signal_jaccard_threshold": 0.6,
+        "pre_condition_key_left": list(precondition_left),
+        "pre_condition_key_right": list(precondition_right),
+        "pre_condition_match": precondition_match,
         "decision": False,
         "reject_reason": "",
     }
@@ -229,11 +248,8 @@ def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) ->
     if action_left != action_right:
         audit["reject_reason"] = "action_family_mismatch"
         return False, audit
-    if bias_left and bias_right and bias_left != bias_right:
-        audit["reject_reason"] = "bias_shape_mismatch"
-        return False, audit
-    if signal_jaccard < 0.6:
-        audit["reject_reason"] = "signal_jaccard_below_threshold"
+    if not precondition_match:
+        audit["reject_reason"] = "pre_condition_signature_mismatch"
         return False, audit
     audit["decision"] = True
     return True, audit
