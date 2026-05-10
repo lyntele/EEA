@@ -2070,3 +2070,62 @@ r19 后补丁：
 - `load_config().evolution.skip_final_freeze` 返回 `True`。
 - 直接调用 `final_evolve_and_freeze(library=empty)` 返回 `final_freeze_skipped=True`、`promotion_skipped_reason=skip_final_freeze`。
 - 通过 DeepEye `finalize_eea_library(...)` 空库 smoke，返回的 `audit.final_event.final_freeze_skipped=True`，`freeze_manifest.skipped=True`。
+
+### 2026-05-10 emergence_refactor WU11：admission / runtime pre-condition 闭环
+
+改动目标：
+
+- admission 生成的 `pre_question_signature` / `pre_sql_signature` 必须能被 runtime 直接使用，避免只在 audit 中写出“看起来合理但自召回失败”的签名。
+- runtime Q/S 判断不再把 branch 层面的答案单位差异当成 pattern 根偏差硬拒绝，而是先判断是否同一源误读与目标偏好。
+
+实现：
+
+- `PatternRecognitionContract` 增加 `pre_question_signature_self_check` 与 `pre_sql_signature_self_check`。
+- `pattern_admission_judge` prompt 增加 runtime-use 说明、GOOD/BAD 校准例、draft/self-check/final 字段。
+- `pattern_formation` admission 后处理读取 self-check；任一签名 `estimated_recall < 0.8` 时不形成 runtime pattern。
+- `pattern_pre_condition_match` prompt 增加 `repair_direction` 上下文，并明确“答案单位/依赖差异由 branch/编译处理，只有不同根偏差才拒绝”。
+- runtime pre-condition cache key 纳入 `repair_direction`，避免同签名不同修复方向复用缓存。
+
+验证：
+
+- `python -m py_compile common/core/data_structures.py common/llm/prompts/pattern_admission_judge.py common/llm/prompts/pattern_pre_condition_match.py common/learning/pattern_formation.py common/runtime/runtime.py` 通过。
+- commit: `95a276a WU11: close admission and runtime precondition loop`。
+
+### 2026-05-10 emergence_refactor WU12：online local_evolve 接入 self-recall
+
+改动目标：
+
+- 解决 “local evolve 推迟 replay + final freeze 默认跳过” 导致 pattern pre-condition self-recall 从未执行的问题。
+- 在 pattern 被 online 暂时暴露给 runtime 前，先用其 member case 做 answer-blind Q/S 自召回校验。
+
+实现：
+
+- `evolution._mark_local_evolve_runtime_visible` 增加 `member_case_views` 参数。
+- local evolve replay-deferred 分支中，用 promotion 侧已有 `_member_case_views_for_group` 构造 member runtime views，并调用 `_pattern_precondition_self_recall`。
+- self-recall 低于 `PATTERN_PRE_CONDITION_SELF_RECALL_MIN=0.8` 的 pattern 置为 `runtime_usable=False`，进入 `audit_only_precondition_self_recall_failed`。
+- compact report 增加 `online_self_recall_audit`，记录 checked/passed/blocked/not_run group ids 与 rate。
+
+验证：
+
+- `python -m py_compile common/learning/evolution.py` 通过。
+- commit: `4d10d38 WU12: run pattern self recall during local evolve`。
+
+### 2026-05-10 emergence_refactor WU13：runtime trigger 候选前置粗筛
+
+改动目标：
+
+- 避免每个新 case 对库内所有 pattern/singleton 都调用 Q/S LLM judge。
+- 粗筛只使用当前 SQL 与 memory 自身可抽取的答案盲事实，不引入预定义业务词表。
+
+实现：
+
+- `runtime.trigger_memory_objects` 默认调用 `_prefilter_runtime_candidates`。
+- 每类最多保留 `EEA_TRIGGER_PREFILTER_MAX_PER_KIND` 个候选，默认 pattern 3 个 + singleton 3 个。
+- 粗筛事实包括：同库、表交集、输出列数接近、是否 aggregate、是否 group by。
+- 若无 eligible 候选，则退回该类已有 scored 候选，避免空筛导致完全无召回。
+- `branch_selection_audit["_prefilter"]` 记录 selected ids、候选总数和每个候选的粗筛 audit。
+
+验证：
+
+- `python -m py_compile common/runtime/runtime.py` 通过。
+- commit: `4bf5195 WU13: prefilter runtime trigger candidates`。
