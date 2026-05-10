@@ -4020,6 +4020,131 @@ def _enforce_action_count_contract(
     return compiler_output.model_copy(update={"actions": kept, "schema_diagnostics": diag})
 
 
+def _case_runtime_tables(case_view: RuntimeCaseView) -> Set[str]:
+    pred_sql_view, _, _ = _case_signal_parts(case_view)
+    tables = {
+        str(table).lower()
+        for table in (pred_sql_view.get("tables_used") or [])
+        if str(table)
+    }
+    if tables:
+        return tables
+    return {
+        str(table).lower()
+        for table in (extract_tables_from_pred(case_view.pred_manifestation.top1_sql) or [])
+        if str(table)
+    }
+
+
+def _group_representative_pred_summary(group: GroupSummary) -> Dict[str, Any]:
+    signals = _payload(getattr(group, "formation_signals", None))
+    candidates = [
+        signals.get("pred_current"),
+        _payload(signals.get("representative_snapshot")).get("pred_current"),
+        _payload(signals.get("source_snapshot")).get("pred_current"),
+    ]
+    for candidate in candidates:
+        payload = _payload(candidate)
+        if payload:
+            return payload
+    return {}
+
+
+def _group_prefilter_score(
+    *,
+    group: GroupSummary,
+    case_summary: Mapping[str, Any],
+    case_tables: Set[str],
+) -> Dict[str, Any]:
+    group_summary = _group_representative_pred_summary(group)
+    group_tables = {
+        str(table).lower()
+        for table in _memory_schema_tables([group])
+        if str(table)
+    }
+    if not group_tables:
+        for table in group_summary.get("tables_used") or []:
+            if str(table):
+                group_tables.add(str(table).lower())
+    overlap = sorted(case_tables & group_tables)
+
+    def same_bool(key: str) -> bool:
+        if key not in group_summary:
+            return True
+        return bool(group_summary.get(key)) == bool(case_summary.get(key))
+
+    group_arity = _int_or_zero(group_summary.get("select_arity"))
+    case_arity = _int_or_zero(case_summary.get("select_arity"))
+    arity_close = bool(not group_arity or not case_arity or abs(group_arity - case_arity) <= 1)
+    aggregate_match = same_bool("has_aggregate")
+    group_by_match = same_bool("has_group_by")
+    table_match = bool(overlap) or not case_tables or not group_tables
+    eligible = bool(arity_close and aggregate_match and group_by_match and table_match)
+    score = (
+        (3.0 if overlap else 0.0)
+        + (1.0 if arity_close else 0.0)
+        + (1.0 if aggregate_match else 0.0)
+        + (1.0 if group_by_match else 0.0)
+    )
+    return {
+        "group_id": str(group.group_id),
+        "group_type": str(getattr(group.group_type, "value", group.group_type)),
+        "eligible": eligible,
+        "score": score,
+        "table_overlap": overlap[:8],
+        "arity_close": arity_close,
+        "aggregate_match": aggregate_match,
+        "group_by_match": group_by_match,
+        "case_select_arity": case_arity,
+        "group_select_arity": group_arity,
+    }
+
+
+def _prefilter_runtime_candidates(
+    *,
+    library: LibraryStateV2,
+    case_view: RuntimeCaseView,
+    max_per_kind: int = 3,
+) -> Tuple[List[GroupSummary], List[GroupSummary], Dict[str, Any]]:
+    case_summary = _case_pred_current_summary(case_view)
+    case_tables = _case_runtime_tables(case_view)
+
+    def select(source: Sequence[GroupSummary]) -> Tuple[List[GroupSummary], List[Dict[str, Any]]]:
+        scored: List[Tuple[GroupSummary, Dict[str, Any]]] = [
+            (group, _group_prefilter_score(group=group, case_summary=case_summary, case_tables=case_tables))
+            for group in source
+            if str(group.db_id or "") == str(library.db_id or "")
+        ]
+        eligible = [(group, audit) for group, audit in scored if audit.get("eligible")]
+        pool = eligible or scored
+        ranked = sorted(
+            pool,
+            key=lambda item: (-float(item[1].get("score") or 0.0), str(item[0].group_id)),
+        )
+        selected = ranked[: max(1, int(max_per_kind or 3))]
+        return [group for group, _audit in selected], [audit for _group, audit in scored]
+
+    patterns, pattern_audits = select(library.patterns or [])
+    singletons, singleton_audits = select(library.singletons or [])
+    audit = {
+        "schema_version": "runtime-prefilter-v1",
+        "max_per_kind": max_per_kind,
+        "case": {
+            "select_arity": _int_or_zero(case_summary.get("select_arity")),
+            "has_aggregate": bool(case_summary.get("has_aggregate")),
+            "has_group_by": bool(case_summary.get("has_group_by")),
+            "tables": sorted(case_tables)[:12],
+        },
+        "pattern_total": len(library.patterns or []),
+        "singleton_total": len(library.singletons or []),
+        "pattern_selected_ids": [str(group.group_id) for group in patterns],
+        "singleton_selected_ids": [str(group.group_id) for group in singletons],
+        "pattern_audits": pattern_audits[:50],
+        "singleton_audits": singleton_audits[:50],
+    }
+    return patterns, singletons, audit
+
+
 def trigger_memory_objects(
     *,
     library: LibraryStateV2,
@@ -4041,8 +4166,30 @@ def trigger_memory_objects(
     p_tags = _case_pred_tags(case_view)
     audits: List[TriggerCandidateAudit] = []
     passed: List[Tuple[GroupSummary, TriggerCandidateAudit]] = []
+    try:
+        prefilter_max_per_kind = int(os.getenv("EEA_TRIGGER_PREFILTER_MAX_PER_KIND", "3"))
+    except Exception:
+        prefilter_max_per_kind = 3
+    prefilter_enabled = str(
+        os.getenv("EEA_TRIGGER_PREFILTER_ENABLED", "1")
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    if prefilter_enabled:
+        pattern_candidates, singleton_candidates, prefilter_audit = _prefilter_runtime_candidates(
+            library=library,
+            case_view=case_view,
+            max_per_kind=max(1, prefilter_max_per_kind),
+        )
+    else:
+        pattern_candidates = list(library.patterns or [])
+        singleton_candidates = list(library.singletons or [])
+        prefilter_audit = {
+            "schema_version": "runtime-prefilter-v1",
+            "disabled": True,
+            "pattern_selected_ids": [str(group.group_id) for group in pattern_candidates],
+            "singleton_selected_ids": [str(group.group_id) for group in singleton_candidates],
+        }
 
-    for source in (library.patterns, library.singletons):
+    for source in (pattern_candidates, singleton_candidates):
         for g in source:
             audit = _gate_group(
                 group=g,
@@ -4134,7 +4281,10 @@ def trigger_memory_objects(
                 "diagnostic_only": bool(audit.diagnostic_only),
             }
         )
-    branch_selection_audit: Dict[str, Any] = {"_memory_selection": selection_audit}
+    branch_selection_audit: Dict[str, Any] = {
+        "_memory_selection": selection_audit,
+        "_prefilter": prefilter_audit,
+    }
     branch_selection_audit["path_choice"] = {
         "selected_kind": selected_kind,
         "selected_group_ids": [str(group.group_id) for group in selected],
