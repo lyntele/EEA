@@ -23,10 +23,14 @@ Evidence:
 Rules:
 - Answer-blind: do not infer or mention gold SQL, benchmark answers, or whether
   the current SQL is wrong.
-- Return matches=true only when the question type is covered by the signature.
+- Return matches=true only when the question-side target intent is covered by
+  the signature.
+- The question channel should not require the question to mention a SQL-side
+  failure mechanism. Wrong route, bridge misuse, duplicated joins, proxy source
+  choice, and other pred_sql misconceptions are checked by the SQL channel.
 - Do not reject solely because the question uses a different wording, singular
   vs plural phrasing, or branch-level answer unit, when it still expresses the
-  same source misconception and target preference described by the signature.
+  same question-side target preference described by the signature.
 - Return matches=false when the current question points to a different source
   misconception, target preference, metric/formula, or non-branchable scope.
 
@@ -34,6 +38,9 @@ Calibration examples:
 - GOOD match: the signature says "asks for one role of a relationship while the
   SQL exposes multiple relationship-side outputs"; the current question asks
   for either side, one side, or a plural set of that role.
+- GOOD match: the signature says "asks for entities satisfying a relation or
+  attribute constraint"; the current question asks for the same target entities
+  even if the wrong join route is only visible in pred_sql.
 - BAD reject: the signature says "drop an extra relationship-side output" but
   the current question asks for a different aggregate metric or ranking target.
 

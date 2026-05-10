@@ -4127,11 +4127,13 @@ def _prefilter_runtime_candidates(
             for group in source
             if str(group.db_id or "") == str(library.db_id or "")
         ]
-        eligible = [(group, audit) for group, audit in scored if audit.get("eligible")]
-        pool = eligible or scored
         ranked = sorted(
-            pool,
-            key=lambda item: (-float(item[1].get("score") or 0.0), str(item[0].group_id)),
+            scored,
+            key=lambda item: (
+                not bool(item[1].get("eligible")),
+                -float(item[1].get("score") or 0.0),
+                str(item[0].group_id),
+            ),
         )
         selected = ranked[: max(1, int(max_per_kind or 3))]
         return [group for group, _audit in selected], [audit for _group, audit in scored]

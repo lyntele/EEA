@@ -120,6 +120,14 @@ Runtime-use requirement:
 - The pre_question_signature and pre_sql_signature are later used by a runtime
   judge on a new answer-blind case. They must be neither narrower than the
   admitted members nor so broad that unrelated cases match.
+- pre_question_signature describes only the question-side target intent that is
+  observable from the natural-language question. Do not put SQL-side failure
+  mechanisms such as wrong route, bridge misuse, duplicated joins, or proxy
+  source choice into the question signature unless the question itself states
+  them.
+- pre_sql_signature describes the current pred_sql source-side shape or
+  antipattern. SQL-side misconception belongs here, not in the question
+  signature.
 - Calibrate each signature against the admitted members before returning it.
   First draft the signature, then list admitted members it would match or miss,
   then rewrite it if estimated_recall is below 0.8.

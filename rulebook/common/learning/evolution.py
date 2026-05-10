@@ -580,6 +580,17 @@ def _compact_promotion_result(row: Dict[str, Any]) -> Dict[str, Any]:
     formal_metrics = dict(row.get("formal_replay_metrics") or {})
     promoted = dict(row.get("promoted_group") or {})
     branch_runtime = dict(row.get("branch_runtime") or {})
+    contract_audit = dict(row.get("contract_audit") or {})
+    self_recall = dict(contract_audit.get("precondition_self_recall") or {})
+    self_recall_rows = [
+        {
+            "case_id": str(item.get("case_id") or ""),
+            "matched": bool(item.get("matched", False)),
+            "blockers": [str(reason)[:160] for reason in (item.get("blockers") or [])[:4]],
+        }
+        for item in (self_recall.get("rows") or [])[:12]
+        if isinstance(item, dict)
+    ]
     return {
         "group_id": str(row.get("group_id") or promoted.get("group_id") or ""),
         "eligible": bool(row.get("eligible", False)),
@@ -624,6 +635,14 @@ def _compact_promotion_result(row: Dict[str, Any]) -> Dict[str, Any]:
             "runtime_superseded_case_ids": list(
                 branch_runtime.get("runtime_superseded_case_ids") or []
             )[:24],
+        },
+        "precondition_self_recall": {
+            "rate": self_recall.get("rate"),
+            "threshold": self_recall.get("threshold"),
+            "reason": str(self_recall.get("reason") or "")[:240],
+            "matched_case_ids": [str(case_id) for case_id in (self_recall.get("matched_case_ids") or [])[:24]],
+            "missed_case_ids": [str(case_id) for case_id in (self_recall.get("missed_case_ids") or [])[:24]],
+            "rows": self_recall_rows,
         },
     }
 
