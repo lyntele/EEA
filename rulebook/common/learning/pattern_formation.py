@@ -3235,6 +3235,8 @@ def _sync_trigger_contract_from_envelope_and_admission(group: GroupSummary) -> G
         if _model_dump(branch)
     ]
     trigger_contract = _model_dump(getattr(group, "trigger_contract", None))
+    trigger_contract["audit_only"] = True
+    trigger_contract["required_signal_policy"] = "audit_only"
     if runtime_branches:
         trigger_contract["runtime_branches"] = runtime_branches
         trigger_contract["required_signals"] = sorted(

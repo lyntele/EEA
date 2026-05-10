@@ -2263,8 +2263,9 @@ def _gate_group(
     variant_required_match = bool(variant_required_signal_sets) and any(
         signal_set <= current_signals for signal_set in variant_required_signal_sets
     )
+    pattern_contract_audit_only = group.group_type == GroupType.PATTERN
     defer_pattern_contract_to_branch = bool(
-        group.group_type == GroupType.PATTERN and _runtime_branch_rows(group)
+        pattern_contract_audit_only and _runtime_branch_rows(group)
     )
     binder_dry_run_success = False
     generalized_canonical_gate_passed = False
@@ -2293,7 +2294,7 @@ def _gate_group(
     if not group.runtime_usable:
         passed = False
         reasons.append("runtime_usable_false")
-    elif not is_contract_runtime_executable(contract):
+    elif not is_contract_runtime_executable(contract, group_type=group.group_type):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_contract_deferred_to_branch")
         else:
@@ -2336,12 +2337,16 @@ def _gate_group(
     if raw_variant_required_signal_sets and not variant_required_signal_sets:
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_variant_contract_deferred_to_branch")
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_variant_contract_audit_only")
         else:
             passed = False
             reasons.append("variant_required_signals_non_substantive")
     if not required_signals and not variant_required_signal_sets and not pre_condition_matched:
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_required_signals_deferred_to_branch")
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_required_signals_audit_only")
         else:
             passed = False
             reasons.append("trigger_contract_missing_required_signals")
@@ -2349,6 +2354,9 @@ def _gate_group(
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_required_signals_deferred_to_branch")
             reasons.extend(f"top_required_miss:{item}" for item in required_misses[:6])
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_required_signals_audit_only")
+            reasons.extend(f"audit_required_miss:{item}" for item in required_misses[:6])
         elif group.group_type == GroupType.PATTERN and has_synthesized_program:
             pattern_soft_required_signal_deferred = True
             reasons.append("pattern_required_contract_signals_soft_missed")
@@ -2381,6 +2389,8 @@ def _gate_group(
         )
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_variant_signals_deferred_to_branch")
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_variant_signals_audit_only")
         elif not allow_generalized:
             passed = False
             reasons.append("variant_required_signals_missed")
@@ -2480,6 +2490,8 @@ def _gate_group(
     ):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_decisive_pred_signal_audit_only")
         else:
             passed = False
             reasons.append("decisive_pred_signal_missed")
@@ -2491,6 +2503,8 @@ def _gate_group(
     ):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
+        elif pattern_contract_audit_only:
+            reasons.append("pattern_decisive_pred_signal_audit_only")
         else:
             passed = False
             reasons.append("trigger_contract_missing_decisive_pred_signal")
@@ -2526,6 +2540,8 @@ def _gate_group(
         ):
             if defer_pattern_contract_to_branch:
                 reasons.append("pattern_decisive_optional_signal_deferred_to_branch")
+            elif pattern_contract_audit_only:
+                reasons.append("pattern_decisive_optional_signal_audit_only")
             else:
                 passed = False
                 reasons.append("runtime_group_missing_decisive_optional_signal_hit")

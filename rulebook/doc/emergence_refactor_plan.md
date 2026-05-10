@@ -547,6 +547,11 @@ required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-
 
 **回滚**：`git revert <WU7 commit>`。WU7 是 trigger_contract 模块改动，回滚后 pattern 重新走 required_signals 严格匹配（但因 WU4 已删 _gate_group 中的引用，需配合 WU4 一起 revert 才完整恢复）。
 
+**执行记录（2026-05-10）**：
+- `is_contract_runtime_executable(..., group_type=GroupType.PATTERN)` 对 pattern 只要求 action program 存在，不再要求 `required_signals` / `variant_required_signal_sets` / `decisive_pred_signals`。
+- `ensure_materialized_trigger_contract` 和 pattern admission sync 会给 pattern contract 写入 `audit_only=True` 与 `required_signal_policy=audit_only`。
+- `_gate_group` 中 pattern 的 required / variant / decisive miss 只写 `*_audit_only` reason，不再 hard fail；singleton 分支保持原 exact check。
+
 **工时**：0.5d
 
 **依赖**：WU4 完成

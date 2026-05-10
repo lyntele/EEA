@@ -120,10 +120,13 @@ def sanitize_trigger_contract(contract: Any) -> Dict[str, Any]:
     return payload
 
 
-def is_contract_runtime_executable(contract: Any) -> bool:
+def is_contract_runtime_executable(contract: Any, *, group_type: Any = None) -> bool:
     payload = sanitize_trigger_contract(contract)
     if not payload:
         return False
+    group_type_text = str(getattr(group_type, "value", group_type) or "")
+    if group_type_text == GroupType.PATTERN.value or bool(payload.get("audit_only")):
+        return _has_program(payload)
     required = [sig for sig in _as_list(payload.get("required_signals")) if _is_non_broad(sig)]
     variants = [
         [sig for sig in _as_list(variant) if _is_non_broad(sig)]
@@ -250,16 +253,22 @@ def ensure_materialized_trigger_contract(
 ) -> Tuple[GroupSummary, Dict[str, Any]]:
     """Ensure runtime-visible objects expose a non-empty executable contract."""
     contract = sanitize_trigger_contract(memory_object.trigger_contract)
+    if memory_object.group_type == GroupType.PATTERN:
+        contract["audit_only"] = True
+        contract["required_signal_policy"] = "audit_only"
     status = "ok"
-    if not is_contract_runtime_executable(contract):
+    if not is_contract_runtime_executable(contract, group_type=memory_object.group_type):
         contract = materialize_contract_from_legacy_signature(
             obj=memory_object,
             legacy_signature=memory_object.trigger_signature,
             schema_view=schema_view,
         )
+        if memory_object.group_type == GroupType.PATTERN:
+            contract["audit_only"] = True
+            contract["required_signal_policy"] = "audit_only"
         status = "materialized_from_legacy_signature"
 
-    if is_contract_runtime_executable(contract):
+    if is_contract_runtime_executable(contract, group_type=memory_object.group_type):
         memory_object.trigger_contract = TriggerContract.model_validate(contract)
         memory_object.runtime_contract_status = status
         return memory_object, {"status": status, "runtime_executable": True}

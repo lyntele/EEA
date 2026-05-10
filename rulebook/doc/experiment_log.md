@@ -1994,3 +1994,22 @@ r19 后补丁：
 - `rg "join_count_bucket|table_count_bucket|predicate_count_bucket|predicate_literal_count_bucket|3plus" common/analysis common/runtime common/learning` 0 命中。
 - `rg "def _column_role\\b|_column_role_from_name|_column_role\\(" common/analysis common/runtime common/io` 仅剩 `_schema_column_role` 与调用点。
 - 静态探针确认 `_bucket_count(5) == 5`，`_is_substantive_hard_signal("pred.has_aggregate=False") == True`，`program.*` 仍被过滤。
+
+### 2026-05-10 emergence_refactor WU7：pattern trigger_contract required signals 降级为 audit
+
+改动目标：
+
+- pattern 的“是否同类”由 WU4 的 pre-condition 两通道判断承担，`trigger_contract.required_signals` 不再作为 pattern 级硬门。
+- singleton 仍保留严格契约和 `_singleton_canonical_exact_check`，避免单例过度泛化。
+
+实现：
+
+- `common/runtime/trigger_contract.py::is_contract_runtime_executable` 增加 `group_type` 参数；当 `group_type=pattern` 或 contract 标记 `audit_only=True` 时，只要求存在可执行 action program。
+- `ensure_materialized_trigger_contract` 对 pattern 写入 `audit_only=True` 与 `required_signal_policy=audit_only`。
+- `common/learning/pattern_formation.py::_sync_trigger_contract_from_envelope_and_admission` 同步给新 pattern contract 标记 audit-only。
+- `common/runtime/runtime.py::_gate_group` 中，pattern 的 required / variant / decisive miss 只记录 `pattern_*_audit_only` reason，不再 hard fail；branch selection、binder dry-run、compiler dry-run 仍保留。
+
+验证：
+
+- `python -m py_compile common/runtime/trigger_contract.py common/runtime/runtime.py common/learning/pattern_formation.py common/analysis/signal_summary.py` 通过。
+- 静态探针确认空 required/decisive 但有 `repair_program` 的 contract：默认不是 executable，按 `GroupType.PATTERN` 判断为 executable。
