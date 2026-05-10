@@ -412,6 +412,14 @@ pre-condition 字段；`error_instance_extractor` prompt 和 parser 已接入；
 
 **依赖**：WU3 完成（runtime 读 pattern_recognition_contract）
 
+**完成状态**：已实现主路径。新增 `pattern_pre_condition_match`
+两通道 prompt 和 runtime `_evaluate_pattern_pre_condition`；runtime gate
+优先读取 `pattern_recognition_contract`/`trigger_contract.pre_condition`，
+通过后以 `pre_condition_matched` 作为 answer-blind source trigger，旧
+required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-run
+仍保留为实例化 gate。缓存落在 `workspace/pre_condition_cache.json`，可用
+`RULEBOOK_PRE_CONDITION_CACHE_PATH` 覆盖。
+
 ---
 
 ### 阶段 D：清理冗余机制（撤旧层）

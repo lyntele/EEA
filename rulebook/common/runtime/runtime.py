@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from method.EEA.rulebook.common.runtime.action_compiler import enumerate_candidates
@@ -70,6 +71,8 @@ _EDIT_SCOPE_ORDER = [
     "LIMIT",
     "SUBQUERY",
 ]
+
+_PRE_CONDITION_MATCH_CACHE: Dict[str, Dict[str, Any]] = {}
 _BINDER_DRY_RUN_CACHE: Dict[str, Tuple[List[Tuple[str, Any]], str]] = {}
 _TWO_STAGE_PATTERN_TRIGGER_ENABLED = (
     os.environ.get("EEA_PATTERN_TWO_STAGE_TRIGGER", "1").strip().lower()
@@ -1465,6 +1468,229 @@ def _evaluate_bias_recognition(
     return audit, bool(not blockers), blockers
 
 
+def _pattern_recognition_contract(group: GroupSummary) -> Dict[str, Any]:
+    program = getattr(group, "instantiation_program", None)
+    contract = getattr(program, "pattern_recognition_contract", None)
+    payload = _payload(contract)
+    if payload:
+        return payload
+    trigger_contract = _payload(getattr(group, "trigger_contract", None))
+    pre_condition = _payload(trigger_contract.get("pre_condition"))
+    if not pre_condition:
+        return {}
+    return {
+        "schema_version": "pattern-recognition-v1",
+        "pre_question_signature": pre_condition.get("pre_question_signature")
+        or pre_condition.get("pre_question_signature_local")
+        or "",
+        "pre_sql_signature": pre_condition.get("pre_sql_signature")
+        or pre_condition.get("pre_sql_signature_local")
+        or "",
+        "observed_failure_summary": pre_condition.get("observed_failure_summary")
+        or pre_condition.get("observed_failure_local")
+        or "",
+        "repair_direction": pre_condition.get("repair_direction")
+        or pre_condition.get("repair_direction_local")
+        or "",
+    }
+
+
+def _pre_condition_cache_path() -> Path:
+    raw = os.getenv("RULEBOOK_PRE_CONDITION_CACHE_PATH", "").strip()
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parents[2] / "workspace" / "pre_condition_cache.json"
+
+
+def _load_pre_condition_cache() -> None:
+    if _PRE_CONDITION_MATCH_CACHE:
+        return
+    path = _pre_condition_cache_path()
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                _PRE_CONDITION_MATCH_CACHE[str(key)] = dict(value)
+
+
+def _write_pre_condition_cache() -> None:
+    path = _pre_condition_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(_PRE_CONDITION_MATCH_CACHE, ensure_ascii=False, indent=2, default=str)
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        return
+
+
+def _schema_excerpt_for_pre_condition(view: LocalSchemaView) -> Dict[str, Any]:
+    hints = []
+    for hint in view.semantic_hints or []:
+        role = str(hint.role_family or "").strip()
+        if not role:
+            continue
+        hints.append(
+            {
+                "table": hint.table,
+                "column": hint.column,
+                "role_family": role,
+            }
+        )
+    return {
+        "db_id": view.db_id,
+        "tables": list(view.tables or []),
+        "columns_by_table": {
+            str(table): list(columns or [])
+            for table, columns in (view.columns_by_table or {}).items()
+            if table in set(view.tables or [])
+        },
+        "semantic_hints": hints[:120],
+        "pk_fk_edges": [_payload(edge) for edge in (view.pk_fk_edges or [])[:80]],
+    }
+
+
+def _pre_condition_channel_call(
+    *,
+    channel: str,
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+    signature: str,
+) -> Dict[str, Any]:
+    _load_pre_condition_cache()
+    if channel == "q":
+        content_hash = hashlib.sha1(
+            (str(case_view.question or "") + "\n" + str(case_view.evidence or "")).encode("utf-8")
+        ).hexdigest()[:16]
+    else:
+        schema_hash = hashlib.sha1(
+            json.dumps(
+                _schema_excerpt_for_pre_condition(case_view.local_schema_view),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        content_hash = hashlib.sha1(
+            (str(case_view.pred_manifestation.top1_sql or "") + "\n" + schema_hash).encode("utf-8")
+        ).hexdigest()[:16]
+    key = "|".join(
+        [
+            "pre-condition-v1",
+            channel,
+            str(group.group_id),
+            hashlib.sha1(str(signature or "").encode("utf-8")).hexdigest()[:16],
+            content_hash,
+        ]
+    )
+    cached = _PRE_CONDITION_MATCH_CACHE.get(key)
+    if cached:
+        return dict(cached)
+    try:
+        from method.EEA.rulebook.common.llm.prompts.pattern_pre_condition_match import (
+            build_pattern_pre_condition_q_prompt,
+            build_pattern_pre_condition_s_prompt,
+        )
+        from method.EEA.rulebook.common.llm.utils import call_llm
+
+        if channel == "q":
+            prompt = build_pattern_pre_condition_q_prompt(
+                signature=signature,
+                question=case_view.question,
+                evidence=case_view.evidence or "",
+            )
+        else:
+            prompt = build_pattern_pre_condition_s_prompt(
+                signature=signature,
+                pred_sql=case_view.pred_manifestation.top1_sql,
+                schema_excerpt_json=json.dumps(
+                    _schema_excerpt_for_pre_condition(case_view.local_schema_view),
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                ),
+            )
+        raw = call_llm(
+            prompt,
+            expect_json=True,
+            stage=f"pattern_pre_condition_{channel}",
+            trace_context={
+                "group_id": group.group_id,
+                "case_id": case_view.case_id,
+                "channel": channel,
+            },
+        )
+        payload = dict(raw) if isinstance(raw, dict) else {}
+    except Exception as exc:
+        payload = {
+            "matches": False,
+            "confidence": 0.0,
+            "reason": f"llm_error:{type(exc).__name__}",
+        }
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    out = {
+        "matches": bool(payload.get("matches")),
+        "confidence": confidence,
+        "reason": str(payload.get("reason") or "")[:240],
+        "cache_key": key,
+    }
+    _PRE_CONDITION_MATCH_CACHE[key] = out
+    if len(_PRE_CONDITION_MATCH_CACHE) <= 1000:
+        _write_pre_condition_cache()
+    return out
+
+
+def _evaluate_pattern_pre_condition(
+    *,
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    contract = _pattern_recognition_contract(group)
+    if not contract:
+        return {}, False, ["missing_pattern_recognition_contract"]
+    pre_question = str(contract.get("pre_question_signature") or "").strip()
+    pre_sql = str(contract.get("pre_sql_signature") or "").strip()
+    if not pre_question or not pre_sql:
+        return {
+            "schema_version": "pre-condition-audit-v1",
+            "contract": contract,
+        }, False, ["incomplete_pattern_recognition_contract"]
+    q_match = _pre_condition_channel_call(
+        channel="q",
+        group=group,
+        case_view=case_view,
+        signature=pre_question,
+    )
+    s_match = _pre_condition_channel_call(
+        channel="s",
+        group=group,
+        case_view=case_view,
+        signature=pre_sql,
+    )
+    blockers: List[str] = []
+    if not q_match.get("matches"):
+        blockers.append(f"channel_q_missed:{str(q_match.get('reason') or '')[:80]}")
+    if not s_match.get("matches"):
+        blockers.append(f"channel_s_missed:{str(s_match.get('reason') or '')[:80]}")
+    audit = {
+        "schema_version": "pre-condition-audit-v1",
+        "contract": contract,
+        "channel_q": q_match,
+        "channel_s": s_match,
+    }
+    return audit, bool(not blockers), blockers
+
+
 def _branch_candidate_matches(candidate: Any, branch: Mapping[str, Any]) -> bool:
     bundle_ids = _runtime_branch_bundle_ids(branch)
     args = _payload(getattr(candidate, "arguments", None))
@@ -2221,6 +2447,8 @@ def _gate_group(
     compiler_candidate_reasons: List[str] = []
     bias_recognition: Dict[str, Any] = {}
     bias_recognized = False
+    pre_condition_match: Dict[str, Any] = {}
+    pre_condition_matched = False
     diagnostic_only = False
 
     reasons: List[str] = []
@@ -2255,25 +2483,21 @@ def _gate_group(
         passed = False
         reasons.append("negative_contract_signal_hit")
 
-    if (
-        _TWO_STAGE_PATTERN_TRIGGER_ENABLED
-        and passed
-        and group.group_type == GroupType.PATTERN
-        and _bias_recognition_contract(group)
-    ):
-        bias_recognition, bias_recognized, bias_blockers = _evaluate_bias_recognition(
+    recognition_contract = _pattern_recognition_contract(group)
+    if passed and recognition_contract:
+        pre_condition_match, pre_condition_matched, pre_condition_blockers = _evaluate_pattern_pre_condition(
             group=group,
             case_view=case_view,
         )
-        if bias_blockers:
+        if pre_condition_blockers:
             passed = False
-            reasons.extend(bias_blockers)
+            reasons.extend(pre_condition_blockers)
         else:
-            reasons.append("bias_recognized")
-            # Bias recognition is the lightweight stage-1 trigger. Strict
-            # contract matching is intentionally deferred to runtime branch
-            # selection and binder dry-run.
+            reasons.append("pre_condition_matched")
+            # Pre-condition matching is the answer-blind stage-1 trigger.
+            # Strict instantiation remains branch matching and binder dry-run.
             variant_required_match = True
+            generalized_canonical_gate_passed = True
             required_misses = []
 
     if raw_variant_required_signal_sets and not variant_required_signal_sets:
@@ -2282,13 +2506,13 @@ def _gate_group(
         else:
             passed = False
             reasons.append("variant_required_signals_non_substantive")
-    if not required_signals and not variant_required_signal_sets:
+    if not required_signals and not variant_required_signal_sets and not pre_condition_matched:
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_required_signals_deferred_to_branch")
         else:
             passed = False
             reasons.append("trigger_contract_missing_required_signals")
-    elif required_misses:
+    elif required_misses and not pre_condition_matched:
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_required_signals_deferred_to_branch")
             reasons.extend(f"top_required_miss:{item}" for item in required_misses[:6])
@@ -2317,6 +2541,7 @@ def _gate_group(
         variant_required_signal_sets
         and not variant_required_match
         and not generalized_canonical_gate_passed
+        and not pre_condition_matched
     ):
         allow_generalized = bool(
             trigger_policy.get("allow_out_of_variant_generalization", False)
@@ -2383,6 +2608,8 @@ def _gate_group(
 
     defer_pattern_applicability_to_branch = defer_pattern_contract_to_branch
     source_trigger_passed = bool(
+        pre_condition_matched
+        or
         variant_required_match
         or generalized_canonical_gate_passed
         or binder_dry_run_success
@@ -2416,13 +2643,19 @@ def _gate_group(
         and not (decisive_pred_signals & current_signals)
         and not variant_required_match
         and not generalized_canonical_gate_passed
+        and not pre_condition_matched
     ):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
         else:
             passed = False
             reasons.append("decisive_pred_signal_missed")
-    elif not decisive_pred_signals and not variant_required_match and not generalized_canonical_gate_passed:
+    elif (
+        not decisive_pred_signals
+        and not variant_required_match
+        and not generalized_canonical_gate_passed
+        and not pre_condition_matched
+    ):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_decisive_pred_signal_deferred_to_branch")
         else:
@@ -2456,6 +2689,7 @@ def _gate_group(
             and not decisive_optional_hit
             and not variant_required_match
             and not generalized_canonical_gate_passed
+            and not pre_condition_matched
         ):
             if defer_pattern_contract_to_branch:
                 reasons.append("pattern_decisive_optional_signal_deferred_to_branch")
@@ -2476,9 +2710,9 @@ def _gate_group(
         )
         if selected_branch is None:
             passed = False
-            if bias_recognized:
+            if pre_condition_matched:
                 diagnostic_only = True
-                reasons.append("pattern_recognized_branch_unbindable")
+                reasons.append("pattern_pre_condition_matched_branch_unbindable")
             reasons.extend(branch_blockers[:8])
         else:
             selected_branch_id = _runtime_branch_id(selected_branch)
@@ -2607,6 +2841,8 @@ def _gate_group(
         compiler_candidate_reasons=compiler_candidate_reasons,
         bias_recognition=bias_recognition,
         bias_recognized=bias_recognized,
+        pre_condition_match=pre_condition_match,
+        pre_condition_matched=pre_condition_matched,
         diagnostic_only=diagnostic_only,
     )
 
@@ -3705,8 +3941,10 @@ def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
         "branch_runtime_usable_count": int(payload.get("branch_runtime_usable_count") or 0),
         "branch_blockers": [str(item) for item in (payload.get("branch_blockers") or [])[:6]],
         "bias_recognized": bool(payload.get("bias_recognized", False)),
+        "pre_condition_matched": bool(payload.get("pre_condition_matched", False)),
         "diagnostic_only": bool(payload.get("diagnostic_only", False)),
         "bias_recognition": payload.get("bias_recognition") or {},
+        "pre_condition_match": payload.get("pre_condition_match") or {},
         "final_score": payload.get("final_score"),
     }
 
@@ -3716,14 +3954,14 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
     candidates = list(payload.get("candidates") or [])
     passed = [row for row in candidates if bool(_payload(row).get("gate_passed", False))]
     blocker_counts: Dict[str, int] = {}
-    stage_1_bias_recognized_count = 0
-    stage_1_bias_signals_missed_count = 0
+    stage_1_pre_condition_matched_count = 0
+    stage_1_pre_condition_missed_count = 0
     stage_2_branch_ready_count = 0
     stage_2_branch_unbindable_count = 0
     for row in candidates:
         item = _payload(row)
-        if item.get("bias_recognized"):
-            stage_1_bias_recognized_count += 1
+        if item.get("pre_condition_matched"):
+            stage_1_pre_condition_matched_count += 1
         reasons_all = [
             str(reason)
             for reason in (
@@ -3733,11 +3971,11 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
             )
             if str(reason)
         ]
-        if any(reason.startswith("bias_recognition_signals_missed") for reason in reasons_all):
-            stage_1_bias_signals_missed_count += 1
-        if item.get("bias_recognized") and item.get("selected_branch_id"):
+        if any(reason.startswith("channel_q_missed") or reason.startswith("channel_s_missed") for reason in reasons_all):
+            stage_1_pre_condition_missed_count += 1
+        if item.get("pre_condition_matched") and item.get("selected_branch_id"):
             stage_2_branch_ready_count += 1
-        if any(reason == "pattern_recognized_branch_unbindable" for reason in reasons_all):
+        if any(reason == "pattern_pre_condition_matched_branch_unbindable" for reason in reasons_all):
             stage_2_branch_unbindable_count += 1
         if item.get("gate_passed"):
             continue
@@ -3759,8 +3997,8 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
         },
         "branch_selection_audit": payload.get("branch_selection_audit") or {},
         "path_choice": (payload.get("branch_selection_audit") or {}).get("path_choice") or {},
-        "stage_1_bias_recognized_count": stage_1_bias_recognized_count,
-        "stage_1_bias_signals_missed_count": stage_1_bias_signals_missed_count,
+        "stage_1_pre_condition_matched_count": stage_1_pre_condition_matched_count,
+        "stage_1_pre_condition_missed_count": stage_1_pre_condition_missed_count,
         "stage_2_branch_ready_count": stage_2_branch_ready_count,
         "stage_2_branch_unbindable_count": stage_2_branch_unbindable_count,
         "top_candidates": [_compact_trigger_candidate(row) for row in candidates[:12]],
@@ -4026,16 +4264,16 @@ def trigger_memory_objects(
         selected_kind = "mixed"
     else:
         selected_kind = "none"
-    pattern_rejected_with_bias = []
+    pattern_rejected_with_pre_condition = []
     for audit in audits:
-        if audit.group_type != GroupType.PATTERN or audit.gate_passed or not audit.bias_recognized:
+        if audit.group_type != GroupType.PATTERN or audit.gate_passed or not audit.pre_condition_matched:
             continue
         reasons = [
             str(reason)
             for reason in (audit.hard_gate_reasons or audit.gate_reasons or [])
             if str(reason)
         ]
-        pattern_rejected_with_bias.append(
+        pattern_rejected_with_pre_condition.append(
             {
                 "pattern_id": audit.group_id,
                 "blocker_reasons": reasons[:8],
@@ -4050,7 +4288,7 @@ def trigger_memory_objects(
         "selected_group_ids": [str(group.group_id) for group in selected],
         "pattern_candidates_passed": pattern_passed_ids,
         "singleton_candidates_passed": singleton_passed_ids,
-        "pattern_rejected_with_bias_recognized": pattern_rejected_with_bias,
+        "pattern_rejected_with_pre_condition_matched": pattern_rejected_with_pre_condition,
     }
     branch_selection_audit.update(
         {

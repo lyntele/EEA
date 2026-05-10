@@ -1928,3 +1928,24 @@ r19 后补丁：
 
 - `python -m py_compile common/learning/pattern_formation.py common/llm/prompts/pattern_admission_judge.py` 通过。
 - prompt 构造探针确认输出中已无 `bias_recognition_contract`，且包含 `pre_question_signature` / `pre_sql_signature` / `repair_direction`。
+
+### 2026-05-10 emergence_refactor WU4：runtime 两通道 pre-condition trigger
+
+改动目标：
+
+- runtime 不再依赖 14 闭词 jaccard 作为 pattern 轻识别主路径，改为判断当前 question/pred_sql 是否符合 memory 中的 pre-condition 描述。
+- 触发仍 answer-blind：只看 question、pred_sql、schema role hints，不看 gold/执行正确性。
+
+实现：
+
+- 新增 `common/llm/prompts/pattern_pre_condition_match.py`，包含 Q 通道和 S 通道两个小 prompt。
+- `TriggerCandidateAudit` 新增 `pre_condition_match` / `pre_condition_matched`。
+- `runtime.py` 新增 `_pattern_recognition_contract`、`_evaluate_pattern_pre_condition`、Q/S 通道 LLM 调用和磁盘 cache。
+- `_gate_group` 中，若 memory object 有 `pattern_recognition_contract` 或 `trigger_contract.pre_condition`，先做两通道匹配；匹配成功后设置 `pre_condition_matched`，旧 required/variant/decisive signal miss 不再阻塞该触发路径。
+- pattern 仍必须通过 branch selection / binder dry-run / compiler dry-run；pre-condition 只解决“是不是同类前置状态”，不直接放行 rewrite。
+- runtime audit summary 改为记录 `stage_1_pre_condition_matched_count`、`stage_1_pre_condition_missed_count` 和 `pattern_rejected_with_pre_condition_matched`。
+
+验证：
+
+- `python -m py_compile common/runtime/runtime.py common/core/data_structures.py common/llm/prompts/pattern_pre_condition_match.py common/llm/prompts/__init__.py` 通过。
+- 静态 monkeypatch 探针验证 `_evaluate_pattern_pre_condition` 在 Q/S 均匹配时返回 `ok=True`，并产生 channel audit。
