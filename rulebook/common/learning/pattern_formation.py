@@ -70,6 +70,15 @@ PATTERN_ADMISSION_PAIR_PER_RELATION_LIMIT = 2
 PATTERN_ADMISSION_COMPACT_PAIR_PER_RELATION_LIMIT = 1
 PATTERN_ADMISSION_MAX_REPRESENTATIVE_PAIRS = 40
 
+_BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS: Dict[str, Set[str]] = {
+    "wrong_join_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
+    "indirect_via_bridge_table": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
+    "bridge_table_misuse": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
+    "source_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
+    "join_route": {"has_aggregate_in_select", "answer_unit_scalar_aggregate"},
+    "misuses_aggregate_subject": {"has_aggregate_in_select"},
+}
+
 
 def _model_dump(obj: Any) -> Dict[str, Any]:
     if hasattr(obj, "model_dump"):
@@ -2450,6 +2459,7 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
     sigs = sorted(dict.fromkeys(sigs))
     anti = sorted(dict.fromkeys(anti))
     anti = [signal for signal in anti if signal not in set(sigs)]
+    dropped_by_motif_conflict: List[str] = []
     motif_text = " ".join(
         [
             str(brc.get("bias_motif") or ""),
@@ -2458,6 +2468,14 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
             " ".join(anti),
         ]
     ).lower()
+    incompatible: Set[str] = set()
+    for key, anti_set in _BIAS_MOTIF_INCOMPATIBLE_ANTI_SIGNALS.items():
+        if key in motif_text:
+            incompatible.update(anti_set)
+    if incompatible:
+        before = set(anti)
+        anti = [signal for signal in anti if signal not in incompatible]
+        dropped_by_motif_conflict = sorted(before - set(anti))
     source_route_bias = any(
         token in motif_text
         for token in (
@@ -2481,7 +2499,11 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
             "answer_unit_count_plain",
             "answer_unit_scalar_aggregate",
         }
+        before = set(anti)
         anti = [signal for signal in anti if signal not in aggregate_signals]
+        dropped_by_motif_conflict = sorted(
+            set(dropped_by_motif_conflict) | (before - set(anti))
+        )
         if "has_join_chain_via_bridge_table" not in sigs:
             sigs.append("has_join_chain_via_bridge_table")
         sigs = sorted(dict.fromkeys(sigs))[:6]
@@ -2493,7 +2515,7 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
     except Exception:
         threshold = 0.6
     threshold = min(1.0, max(0.0, threshold))
-    return {
+    payload = {
         "schema_version": "bias-recognition-v1",
         "bias_motif": _sanitize_bias_text(brc.get("bias_motif")),
         "answer_shape_hint": _sanitize_bias_text(brc.get("answer_shape_hint"), limit=40),
@@ -2501,6 +2523,9 @@ def _validated_bias_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[st
         "anti_signals": anti,
         "min_signal_overlap": threshold,
     }
+    if dropped_by_motif_conflict:
+        payload["anti_signals_dropped_by_motif_conflict"] = dropped_by_motif_conflict
+    return payload
 
 
 def _attach_validated_bias_recognition_contract(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -2508,6 +2533,317 @@ def _attach_validated_bias_recognition_contract(response: Dict[str, Any]) -> Dic
     if payload:
         response["bias_recognition_contract_validated"] = payload
     return response
+
+
+def _bias_contract_payload(group: GroupSummary) -> Dict[str, Any]:
+    brc = getattr(group.instantiation_program, "bias_recognition_contract", None)
+    payload = _model_dump(brc)
+    if payload:
+        return payload
+    admission = dict((_signal_payload(group).get("pattern_admission") or {}) or {})
+    return _model_dump(
+        admission.get("bias_recognition_contract_validated")
+        or admission.get("bias_recognition_contract")
+        or {}
+    )
+
+
+def _bias_signals_for_group(group: GroupSummary) -> Set[str]:
+    """Answer-blind bias recognition signals reproducible from a memory group."""
+
+    signals: Set[str] = set()
+    brc_payload = _bias_contract_payload(group)
+    signals.update(str(item) for item in (brc_payload.get("recognition_signals") or []) if str(item))
+    contract = _model_dump(getattr(group, "trigger_contract", None))
+    signal_rows: List[str] = []
+    signal_rows.extend(str(item) for item in (contract.get("required_signals") or []) if str(item))
+    signal_rows.extend(str(item) for item in (contract.get("decisive_pred_signals") or []) if str(item))
+    signal_rows.extend(str(item) for item in (contract.get("optional_signals") or []) if str(item))
+    for variant in contract.get("variant_required_signal_sets") or []:
+        if isinstance(variant, (list, tuple, set)):
+            signal_rows.extend(str(item) for item in variant if str(item))
+    for signal in signal_rows:
+        mapped = _bias_signal_from_runtime_signal(signal)
+        if mapped:
+            signals.add(mapped)
+    payload = _signal_payload(group)
+    pred_current = dict((payload.get("pred_current") or {}) or {})
+    if pred_current.get("has_aggregate") or pred_current.get("has_aggregate_in_select"):
+        signals.add("has_aggregate_in_select")
+    if pred_current.get("has_group_by"):
+        signals.add("has_group_by")
+    if pred_current.get("pair_output") or pred_current.get("select_arity") == 2:
+        signals.add("select_arity_ge_2")
+    if pred_current.get("has_distinct_aggregate"):
+        signals.add("answer_unit_count_distinct")
+    action_payload = json.dumps(
+        {
+            "contract": contract.get("action_contract") or {},
+            "formation": {
+                "stable_bias_key": (_signal_payload(group).get("pattern_admission") or {}).get("stable_bias_key"),
+                "primary_repair_interface": (_signal_payload(group).get("pattern_admission") or {}).get("primary_repair_interface"),
+            },
+        },
+        ensure_ascii=False,
+        default=str,
+    ).lower()
+    if any(token in action_payload for token in ("reroute", "source_route", "join_route", "bridge")):
+        signals.add("has_join_chain_via_bridge_table")
+    return {signal for signal in signals if signal in BIAS_RECOGNITION_SIGNAL_VOCABULARY}
+
+
+def _signal_jaccard(left: Set[str], right: Set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(len(left | right), 1)
+
+
+def _branch_signal_set(branch: Dict[str, Any]) -> Set[str]:
+    signals: Set[str] = set()
+
+    def visit(value: Any, key_hint: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, str(key))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item, key_hint)
+            return
+        text = str(value or "").strip()
+        if not text:
+            return
+        if "signal" in key_hint.lower() or text in BIAS_RECOGNITION_SIGNAL_VOCABULARY:
+            if text in BIAS_RECOGNITION_SIGNAL_VOCABULARY:
+                signals.add(text)
+                return
+            mapped = _bias_signal_from_runtime_signal(text)
+            if mapped:
+                signals.add(mapped)
+
+    visit(branch)
+    return signals
+
+
+def _extend_pattern_runtime_branch_support(
+    pattern: GroupSummary,
+    *,
+    new_case_id: str,
+    new_signals: Set[str],
+) -> Tuple[GroupSummary, Dict[str, Any]]:
+    program = getattr(pattern.instantiation_program, "synthesized_program", None)
+    envelope = getattr(program, "program_envelope", None) if program is not None else None
+    envelope_payload = _model_dump(envelope)
+    branches = [
+        dict(_model_dump(branch))
+        for branch in (envelope_payload.get("runtime_branches") or envelope_payload.get("lowering_branches") or [])
+        if _model_dump(branch)
+    ]
+    audit: Dict[str, Any] = {
+        "branch_extension_status": "no_runtime_branches",
+        "selected_branch_id": "",
+        "branch_signal_overlap": 0.0,
+    }
+    if not branches or program is None or envelope is None:
+        return pattern, audit
+    ranked: List[Tuple[float, int, Dict[str, Any]]] = []
+    for index, branch in enumerate(branches):
+        branch_signals = _branch_signal_set(branch)
+        overlap = _signal_jaccard(new_signals, branch_signals)
+        support = len(branch.get("support_case_ids") or [])
+        ranked.append((overlap, support, {**branch, "_branch_index": index}))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best_overlap, _support, best = ranked[0]
+    if best_overlap <= 0.0:
+        audit["branch_extension_status"] = "branch_unassigned_no_signal_overlap"
+        return pattern, audit
+    best_index = int(best.get("_branch_index") or 0)
+    updated_branches: List[Dict[str, Any]] = []
+    for index, branch in enumerate(branches):
+        payload = dict(branch)
+        if index == best_index:
+            support_case_ids = [
+                str(case_id)
+                for case_id in (payload.get("support_case_ids") or [])
+                if str(case_id)
+            ]
+            if new_case_id not in support_case_ids:
+                support_case_ids.append(new_case_id)
+            payload["support_case_ids"] = sorted(set(support_case_ids), key=_case_id_sort_key)
+            payload["runtime_usable"] = True
+            payload["runtime_validation_policy"] = "extended_in_place_lightweight_signal_gated"
+            payload["cross_case_replay_pending"] = True
+            payload["runtime_blockers"] = []
+        updated_branches.append(payload)
+    envelope_payload["runtime_branches"] = updated_branches
+    envelope_payload["branch_selection_contract"] = {
+        **dict(envelope_payload.get("branch_selection_contract") or {}),
+        "selection_unit": "runtime_branch",
+        "runtime_validation_policy": "extended_in_place_lightweight_signal_gated",
+    }
+    updated_envelope = envelope.model_copy(update=envelope_payload) if hasattr(envelope, "model_copy") else envelope_payload
+    updated_program = program.model_copy(update={"program_envelope": updated_envelope})
+    updated_pattern = pattern.model_copy(
+        update={
+            "instantiation_program": pattern.instantiation_program.model_copy(
+                update={"synthesized_program": updated_program}
+            )
+        }
+    )
+    audit.update(
+        {
+            "branch_extension_status": "attached_to_runtime_branch",
+            "selected_branch_id": str(best.get("branch_id") or ""),
+            "branch_signal_overlap": best_overlap,
+        }
+    )
+    return updated_pattern, audit
+
+
+def _try_extend_existing_pattern(
+    new_singleton: GroupSummary,
+    library: LibraryStateV2,
+    active_singletons: Sequence[GroupSummary],
+    pair_scores: Dict[Tuple[str, str], PairScore],
+    by_id: Dict[str, GroupSummary],
+) -> Tuple[Optional[GroupSummary], Dict[str, Any]]:
+    """Attach a new singleton to an existing pattern before running admission LLM."""
+
+    new_case_ids = sorted(_case_ids_for_group(new_singleton), key=_case_id_sort_key)
+    audit: Dict[str, Any] = {
+        "new_group_id": new_singleton.group_id,
+        "new_case_ids": new_case_ids,
+        "attempted_pattern_count": 0,
+        "chosen_pattern_id": "",
+        "candidates": [],
+    }
+    if len(new_case_ids) != 1:
+        audit["skip_reason"] = "new_singleton_case_id_not_unit"
+        return None, audit
+    new_case_id = new_case_ids[0]
+    new_signals = _bias_signals_for_group(new_singleton)
+    if not new_signals:
+        audit["skip_reason"] = "new_singleton_bias_signals_empty"
+        return None, audit
+    singleton_by_case = {
+        str(case_id): group
+        for group in active_singletons
+        for case_id in (group.case_ids or [])
+        if str(case_id)
+    }
+    ranked: List[Tuple[float, float, int, GroupSummary, Dict[str, Any]]] = []
+    for pattern in library.patterns or []:
+        if pattern.group_type != GroupType.PATTERN:
+            continue
+        if pattern.db_id != new_singleton.db_id or pattern.status != GroupStatus.ACTIVE:
+            continue
+        if new_case_id in {str(case_id) for case_id in (pattern.case_ids or [])}:
+            continue
+        brc = _bias_contract_payload(pattern)
+        recognition = {
+            str(signal)
+            for signal in (brc.get("recognition_signals") or [])
+            if str(signal) in BIAS_RECOGNITION_SIGNAL_VOCABULARY
+        }
+        if not recognition:
+            continue
+        threshold = float(brc.get("min_signal_overlap", 0.6) or 0.6)
+        anti_hits = sorted(
+            {
+                str(signal)
+                for signal in (brc.get("anti_signals") or [])
+                if str(signal) in new_signals
+            }
+        )
+        hits = sorted(recognition & new_signals)
+        overlap = len(hits) / max(len(recognition), 1)
+        member_pair_audits: List[Dict[str, Any]] = []
+        best_pair_score = 0.0
+        root_supported = False
+        for member_case_id in pattern.case_ids or []:
+            member = singleton_by_case.get(str(member_case_id))
+            if member is None:
+                continue
+            key = tuple(sorted((new_singleton.group_id, member.group_id)))
+            pair = pair_scores.get(key)
+            if pair is None:
+                pair = score_pair(new_singleton, member)
+                pair_scores[key] = pair
+            pair_pass = _pair_supports_root_membership(pair, left=new_singleton, right=member)
+            root_supported = root_supported or pair_pass
+            best_pair_score = max(best_pair_score, float(pair.score or 0.0))
+            member_pair_audits.append(
+                {
+                    "member_case_ids": list(member.case_ids or []),
+                    "pair_score": pair.score,
+                    "semantic_relation": pair.semantic_relation,
+                    "broad_retrieval_reasons": list(pair.broad_retrieval_reasons),
+                    "root_membership_supported": pair_pass,
+                }
+            )
+        passed = overlap >= threshold and not anti_hits and root_supported
+        candidate_audit = {
+            "pattern_id": pattern.group_id,
+            "pattern_case_ids": list(pattern.case_ids or []),
+            "recognition_hits": hits,
+            "recognition_overlap": overlap,
+            "min_signal_overlap": threshold,
+            "anti_signal_hits": anti_hits,
+            "root_membership_supported": root_supported,
+            "best_pair_score": best_pair_score,
+            "passed": passed,
+            "member_pair_audit": member_pair_audits[:6],
+        }
+        audit["candidates"].append(candidate_audit)
+        audit["attempted_pattern_count"] += 1
+        if passed:
+            ranked.append((overlap, best_pair_score, int(pattern.support or 0), pattern, candidate_audit))
+    if not ranked:
+        audit["skip_reason"] = "no_existing_pattern_passed_extension_gate"
+        return None, audit
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _overlap, _pair_score, _support, chosen, chosen_audit = ranked[0]
+    case_ids = sorted(
+        {str(case_id) for case_id in (chosen.case_ids or [])} | {new_case_id},
+        key=_case_id_sort_key,
+    )
+    extended = chosen.model_copy(
+        deep=True,
+        update={
+            "case_ids": case_ids,
+            "support": len(case_ids),
+            "version": int(chosen.version or 0) + 1,
+            "last_updated_at": datetime.utcnow().isoformat(),
+            "lifecycle": chosen.lifecycle.model_copy(
+                update={"promotion_state": "extended_in_place_v1"}
+            ),
+        },
+    )
+    extended, branch_audit = _extend_pattern_runtime_branch_support(
+        extended,
+        new_case_id=new_case_id,
+        new_signals=new_signals,
+    )
+    formation_signals = dict(extended.formation_signals or {})
+    formation_signals.setdefault("extension_audit", [])
+    formation_signals["extension_audit"] = [
+        *list(formation_signals.get("extension_audit") or [])[-10:],
+        {
+            "schema_version": "pattern-extension-v1",
+            "new_case_id": new_case_id,
+            "source_singleton_id": new_singleton.group_id,
+            "chosen_pattern_id": chosen.group_id,
+            "recognition_overlap": chosen_audit.get("recognition_overlap"),
+            "recognition_hits": chosen_audit.get("recognition_hits") or [],
+            "best_pair_score": chosen_audit.get("best_pair_score"),
+            "branch_audit": branch_audit,
+        },
+    ]
+    extended = extended.model_copy(update={"formation_signals": formation_signals})
+    audit["chosen_pattern_id"] = chosen.group_id
+    audit["chosen_case_ids_after"] = case_ids
+    audit["branch_audit"] = branch_audit
+    return extended, audit
 
 
 def _fallback_bias_recognition_contract(groups: Sequence[GroupSummary]) -> Optional[BiasRecognitionContract]:
@@ -3742,11 +4078,36 @@ def form_offline_families(
     )
     retrieval_scored_pair_count = len(pair_scores)
     accepted_edges = sorted(accepted_edges, key=lambda pair: pair.score, reverse=True)
+    extended_case_ids: Set[str] = set()
+    extension_reports: List[Dict[str, Any]] = []
+    extended_patterns: List[GroupSummary] = []
+    if focus_case_ids and library.patterns:
+        for singleton in active_singletons:
+            singleton_case_ids = _case_ids_for_group(singleton)
+            if not (singleton_case_ids & focus_case_ids):
+                continue
+            extended, extension_audit = _try_extend_existing_pattern(
+                new_singleton=singleton,
+                library=library,
+                active_singletons=active_singletons,
+                pair_scores=pair_scores,
+                by_id=by_id,
+            )
+            extension_reports.append(extension_audit)
+            if extended is not None:
+                extended_patterns.append(extended)
+                extended_case_ids.update(singleton_case_ids)
+    admission_active_singletons = [
+        group
+        for group in active_singletons
+        if not (_case_ids_for_group(group) & extended_case_ids)
+    ]
     pattern_candidates, pattern_admission_reports = _build_pattern_admission_candidates(
-        active_singletons,
+        admission_active_singletons,
         pair_scores,
-        by_id,
+        {group.group_id: group for group in admission_active_singletons},
     )
+    pattern_candidates = [*extended_patterns, *pattern_candidates]
     pattern_candidates = sorted(pattern_candidates, key=lambda group: int(group.case_ids[0]))
     # Strict patterns remain offline candidates until replay promotion.  Source
     # singletons stay active so online accumulation can still benefit from
@@ -3872,6 +4233,7 @@ def form_offline_families(
         "output_counts": {
             "patterns": len(output_library.patterns),
             "new_pattern_candidates": len(pattern_candidates),
+            "extended_pattern_candidates": len(extended_patterns),
             "experience_families": len(output_library.experience_families),
             "new_experience_families": 0,
             "absorbed_experience_families": 0,
@@ -3890,6 +4252,7 @@ def form_offline_families(
             ),
         },
         "patterns": pattern_reports,
+        "pattern_extension_candidates": extension_reports,
         "pattern_admission_candidates": pattern_admission_reports,
         "stable_bias_frames": [],
         "insight_slicer_candidates": [],
@@ -3908,6 +4271,8 @@ def form_offline_families(
             ),
             "accepted_pair_count": len(complete_accepted_edges),
             "rejected_pair_count": len(complete_rejected_edges),
+            "pattern_extension_count": len(extended_patterns),
+            "extended_case_ids": sorted(extended_case_ids, key=_case_id_sort_key),
             "failure_taxonomy_counts": _failure_taxonomy_counts(complete_rejected_edges),
         },
         "core_signature_branch_coverage": [

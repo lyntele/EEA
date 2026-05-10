@@ -1741,3 +1741,35 @@ r18 结果：
 
 - q335 的正确修复需要一个更准确的 source-route branch：当前系统能阻止 q269 误触发，但还不能从已有记忆中推出 gold 所需的 atom-bond direct route 且重绑定 `COUNT(DISTINCT molecule_id)` 到可保留完整答案域的表。
 - RoleGraph 主 pattern 仍缺 q285/307 的完整合并证据，虽然这两个 case 在线已能修对；这属于 pattern 支持集完整度问题，不影响当前 8/18 在线收益。
+
+### 2026-05-10 r19 前补丁：pattern 前置扩充、anti-signal 校验、路径诊断与 final freeze 减负
+
+本轮目标：
+
+- 对齐 `pattern_recongnize.md` 后续要求：新 case 进入时优先扩充已有 pattern，只有扩充失败才重跑完整 admission LLM。
+- 降低 toxicology focus18 中重复 admission / 重复 pattern candidate 导致的 LLM 调用和 final freeze 负载。
+- 让 q335 这类 source-route pattern 不再被自身 `anti_signals` 排斥。
+- 下次路径变化时能直接看到 pattern 为什么被挡、最终为什么走 singleton 或 pattern。
+
+实现改动：
+
+- `pattern_formation.py` 新增 `_try_extend_existing_pattern`：对 focus singleton，先用现有 pattern 的 `bias_recognition_contract` 做 recognition overlap 检查，再用 case-local `score_pair + _pair_supports_root_membership` 做 root membership 确认；通过后直接扩充 pattern 的 `case_ids`，标记 `extended_in_place_v1`，并按 runtime branch signals 轻量挂到最匹配 branch。
+- `form_offline_families` 在 `_build_pattern_admission_candidates` 前调用扩充 fast-path；成功扩充的 focus singleton 不再进入完整 admission judge。
+- `pattern_formation.py::_validated_bias_recognition_contract_payload` 增加 motif/anti-signal sanity check：source-route / bridge-table-misuse / wrong-join-route 类 motif 不允许把 aggregate answer-unit 信号作为 anti；被丢弃项写入 `anti_signals_dropped_by_motif_conflict`。
+- `pattern_admission_judge` prompt 增加 anti-signal 边界：anti 必须表示对立 bias，不得把同一 bias 内的 branch/accessory detail 当排斥条件。
+- `evolution.py` 的 same-root dedup 判据改为返回 `(decision, audit)`；失败原因会写入 `pattern_dedup_audit`，包括 case overlap、action family、bias shape、signal jaccard 等字段。
+- `runtime.py` trigger audit 增加 `path_choice`：记录 selected kind、通过的 pattern/singleton 候选，以及 `bias_recognized=True` 但被后续 gate 挡掉的 pattern blocker。
+- `promotion.py` 在 `branch_member_replay` 中识别 `local_evolve_lightweight_binder_gated` / `extended_in_place_lightweight_signal_gated` branch；final freeze 对这些 branch 跳过 rewrite SQL execution，只保留 binder/compile 路径诊断，避免重复外部 IO。
+
+静态验证：
+
+- `python -m py_compile common/learning/pattern_formation.py common/learning/evolution.py common/runtime/runtime.py common/learning/promotion.py common/llm/prompts/pattern_admission_judge.py` 通过。
+- anti-signal 校验探针通过：source-route motif 下 `has_aggregate_in_select` / `answer_unit_scalar_aggregate` 不再保留为 anti，且会记录 dropped audit。
+- trigger compact audit 探针通过：`path_choice` 可被落入 runtime audit summary。
+
+待真实 run 验收：
+
+- r19 focus18 期望：在线收益不低于 r18 的 8/18、无 regression。
+- `pattern_extension_count > 0`，且 shared_insight / pattern_admission LLM 调用明显少于 r18。
+- final library 中 RoleGraph 不再重复保存多个嵌套/重叠 pattern。
+- q335 至少能看到 source-route pattern 的 recognition 不再被 `anti_signal_hit:has_aggregate_in_select` 挡掉；是否最终修对取决于 branch route 实例化质量。

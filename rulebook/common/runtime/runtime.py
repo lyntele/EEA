@@ -3758,6 +3758,7 @@ def _compact_trigger_result(trigger_result: Any) -> Dict[str, Any]:
             if str(key) and str(value)
         },
         "branch_selection_audit": payload.get("branch_selection_audit") or {},
+        "path_choice": (payload.get("branch_selection_audit") or {}).get("path_choice") or {},
         "stage_1_bias_recognized_count": stage_1_bias_recognized_count,
         "stage_1_bias_signals_missed_count": stage_1_bias_signals_missed_count,
         "stage_2_branch_ready_count": stage_2_branch_ready_count,
@@ -4003,7 +4004,54 @@ def trigger_memory_objects(
             updated_audits.append(audit)
         audits = updated_audits
     final_selected_ids = {str(group.group_id) for group in selected}
+    pattern_passed_ids = [
+        audit.group_id
+        for audit in audits
+        if audit.group_type == GroupType.PATTERN and audit.gate_passed
+    ]
+    singleton_passed_ids = [
+        audit.group_id
+        for audit in audits
+        if audit.group_type == GroupType.SINGLETON and audit.gate_passed
+    ]
+    selected_types = {
+        str(getattr(group.group_type, "value", group.group_type))
+        for group in selected
+    }
+    if selected_types == {str(GroupType.PATTERN.value)}:
+        selected_kind = "pattern"
+    elif selected_types == {str(GroupType.SINGLETON.value)}:
+        selected_kind = "singleton"
+    elif selected_types:
+        selected_kind = "mixed"
+    else:
+        selected_kind = "none"
+    pattern_rejected_with_bias = []
+    for audit in audits:
+        if audit.group_type != GroupType.PATTERN or audit.gate_passed or not audit.bias_recognized:
+            continue
+        reasons = [
+            str(reason)
+            for reason in (audit.hard_gate_reasons or audit.gate_reasons or [])
+            if str(reason)
+        ]
+        pattern_rejected_with_bias.append(
+            {
+                "pattern_id": audit.group_id,
+                "blocker_reasons": reasons[:8],
+                "selected_branch_id": str(audit.selected_branch_id or ""),
+                "branch_runtime_usable_count": int(audit.branch_runtime_usable_count or 0),
+                "diagnostic_only": bool(audit.diagnostic_only),
+            }
+        )
     branch_selection_audit: Dict[str, Any] = {"_memory_selection": selection_audit}
+    branch_selection_audit["path_choice"] = {
+        "selected_kind": selected_kind,
+        "selected_group_ids": [str(group.group_id) for group in selected],
+        "pattern_candidates_passed": pattern_passed_ids,
+        "singleton_candidates_passed": singleton_passed_ids,
+        "pattern_rejected_with_bias_recognized": pattern_rejected_with_bias,
+    }
     branch_selection_audit.update(
         {
             audit.group_id: {

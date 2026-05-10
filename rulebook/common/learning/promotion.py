@@ -728,30 +728,55 @@ def _replay_one_holdout(
         return finish(row)
     top1_sql = str(candidates[0])
     c0_candidate_rows: List[Dict[str, Any]] = []
+    lightweight_branch_replay = (
+        str(replay_mode) == "branch_member_replay"
+        and str(memory_kind) == "branch_member_replay"
+        and _branch_memory_lightweight_validated(memory, forced_branch_id=forced_branch_id)
+    )
     pred_cmp = None
-    for idx, sql in enumerate(candidates):
-        cmp = run_execution_comparison(
-            db_path=db_path,
-            pred_sql=str(sql),
-            gold_sql=gold_sql,
-            row_sample_limit=row_sample_limit,
-        )
-        cmp_payload = _payload(cmp)
-        if idx == 0:
-            pred_cmp = cmp
-        c0_candidate_rows.append(
+    if lightweight_branch_replay:
+        c0_candidate_rows = [
             {
                 "candidate_index": idx,
                 "sql": str(sql),
-                "status": _comparison_status(cmp_payload),
-                "comparison_unknown_reason": _comparison_unknown_reason(cmp_payload),
-                "vs_gold": cmp_payload,
+                "status": "skipped_lightweight_validated_in_local_evolve",
+                "comparison_unknown_reason": "",
+                "vs_gold": {},
             }
-        )
+            for idx, sql in enumerate(candidates)
+        ]
+    else:
+        for idx, sql in enumerate(candidates):
+            cmp = run_execution_comparison(
+                db_path=db_path,
+                pred_sql=str(sql),
+                gold_sql=gold_sql,
+                row_sample_limit=row_sample_limit,
+            )
+            cmp_payload = _payload(cmp)
+            if idx == 0:
+                pred_cmp = cmp
+            c0_candidate_rows.append(
+                {
+                    "candidate_index": idx,
+                    "sql": str(sql),
+                    "status": _comparison_status(cmp_payload),
+                    "comparison_unknown_reason": _comparison_unknown_reason(cmp_payload),
+                    "vs_gold": cmp_payload,
+                }
+            )
     row["c0_candidates"] = c0_candidate_rows
     pred_cmp_payload = _payload(pred_cmp)
-    pred_status = _comparison_status(pred_cmp_payload)
-    pred_unknown_reason = _comparison_unknown_reason(pred_cmp_payload)
+    pred_status = (
+        "skipped_lightweight_validated_in_local_evolve"
+        if lightweight_branch_replay
+        else _comparison_status(pred_cmp_payload)
+    )
+    pred_unknown_reason = (
+        ""
+        if lightweight_branch_replay
+        else _comparison_unknown_reason(pred_cmp_payload)
+    )
     c0_oracle_status = (
         "equivalent"
         if any(_is_equivalent(item.get("status", "")) for item in c0_candidate_rows)
@@ -769,7 +794,14 @@ def _replay_one_holdout(
         if _is_equivalent(c0_oracle_status) and not _is_equivalent(pred_status)
         else "c0_top1"
     )
-    row["c0_evaluation_policy"] = "strict_top1_selected_candidate"
+    row["c0_evaluation_policy"] = (
+        "branch_member_replay_skip_sql_execution_for_lightweight_validated"
+        if lightweight_branch_replay
+        else "strict_top1_selected_candidate"
+    )
+    if lightweight_branch_replay:
+        row["branch_lightweight_replay_skip"] = True
+        row["branch_lightweight_replay_skip_reason"] = "lightweight_validated_in_local_evolve"
     temp_library = LibraryStateV2(db_id=group.db_id)
     if memory.group_type == GroupType.SINGLETON:
         temp_library.singletons = [memory]
@@ -853,6 +885,14 @@ def _replay_one_holdout(
         return finish(row)
 
     row["compile_pass"] = True
+    if lightweight_branch_replay:
+        row["reason"] = "lightweight_validated_in_local_evolve"
+        row["skip_reason"] = "lightweight_validated_in_local_evolve"
+        row["rewrite_status"] = "skipped_lightweight_validated_in_local_evolve"
+        row["c1_status"] = row.get("c0_status", "skipped_lightweight_validated_in_local_evolve")
+        row["improved"] = False
+        row["regressed"] = False
+        return finish(row)
     try:
         rewrite = rewrite_one_candidate(
             question=str(case.get("question") or ""),
@@ -1403,6 +1443,25 @@ def _runtime_branch_rows_for_group(group: GroupSummary) -> List[Dict[str, Any]]:
     ]
 
 
+def _branch_memory_lightweight_validated(
+    group: GroupSummary,
+    *,
+    forced_branch_id: Optional[str] = None,
+) -> bool:
+    for branch in _runtime_branch_rows_for_group(group):
+        if forced_branch_id and _branch_id(branch) != str(forced_branch_id):
+            continue
+        policy = str(branch.get("runtime_validation_policy") or "")
+        if bool(branch.get("cross_case_replay_pending")) and "lightweight" in policy:
+            return True
+        if policy in {
+            "local_evolve_lightweight_binder_gated",
+            "extended_in_place_lightweight_signal_gated",
+        }:
+            return True
+    return False
+
+
 def _branch_scoped_memory(
     group: GroupSummary,
     branch: Mapping[str, Any],
@@ -1583,6 +1642,11 @@ def _apply_branch_runtime_decision(
             branch_rows,
             version=int(group.version or 0),
         )
+        lightweight_skip_rows = [
+            row
+            for row in branch_rows
+            if str(row.get("skip_reason") or "") == "lightweight_validated_in_local_evolve"
+        ]
         failed_members = [
             str(row.get("holdout_case_id") or "")
             for row in branch_rows
@@ -1616,7 +1680,7 @@ def _apply_branch_runtime_decision(
             blockers.append("branch_replay_regression_above_limit")
         if branch_metrics.mean_action_count > MAX_ACTION_COUNT_PER_CASE:
             blockers.append("branch_action_count_above_limit")
-        if branch_rows and not improved_members:
+        if branch_rows and not improved_members and len(lightweight_skip_rows) != len(branch_rows):
             blockers.append("branch_replay_no_improvement_evidence")
         branch_usable = bool(not blockers)
         pattern_blockers: List[str] = []

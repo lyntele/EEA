@@ -27,6 +27,9 @@ from method.EEA.rulebook.common.runtime.trigger_contract import (
 from method.EEA.rulebook.common.core.vocabulary import Confidence, GroupStatus, GroupType
 
 
+_LAST_PATTERN_DEDUP_AUDIT: List[Dict[str, Any]] = []
+
+
 def _payload(value: Any) -> Any:
     if value is None:
         return None
@@ -190,22 +193,50 @@ def _signal_jaccard(left: Set[str], right: Set[str]) -> float:
     return len(left & right) / max(len(left | right), 1)
 
 
-def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) -> bool:
+def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) -> Tuple[bool, Dict[str, Any]]:
     left_cases = {str(case_id) for case_id in (left.case_ids or [])}
     right_cases = {str(case_id) for case_id in (right.case_ids or [])}
     shared_cases = left_cases & right_cases
+    action_left = _pattern_action_family_key(left)
+    action_right = _pattern_action_family_key(right)
+    bias_left = _pattern_bias_shape(left)
+    bias_right = _pattern_bias_shape(right)
+    signal_left = _pattern_recognition_signal_set(left)
+    signal_right = _pattern_recognition_signal_set(right)
+    signal_jaccard = _signal_jaccard(signal_left, signal_right)
+    subset_match = bool(left_cases <= right_cases or right_cases <= left_cases)
+    audit: Dict[str, Any] = {
+        "left_group_id": left.group_id,
+        "right_group_id": right.group_id,
+        "left_case_ids": sorted(left_cases),
+        "right_case_ids": sorted(right_cases),
+        "case_overlap_size": len(shared_cases),
+        "case_subset_match": subset_match,
+        "action_family_key_left": list(action_left),
+        "action_family_key_right": list(action_right),
+        "action_family_match": action_left == action_right,
+        "bias_shape_left": bias_left,
+        "bias_shape_right": bias_right,
+        "bias_shape_match": not (bias_left and bias_right and bias_left != bias_right),
+        "signal_jaccard": signal_jaccard,
+        "signal_jaccard_threshold": 0.6,
+        "decision": False,
+        "reject_reason": "",
+    }
     if len(shared_cases) < 2 and not (left_cases <= right_cases or right_cases <= left_cases):
-        return False
-    if _pattern_action_family_key(left) != _pattern_action_family_key(right):
-        return False
-    left_shape = _pattern_bias_shape(left)
-    right_shape = _pattern_bias_shape(right)
-    if left_shape and right_shape and left_shape != right_shape:
-        return False
-    return _signal_jaccard(
-        _pattern_recognition_signal_set(left),
-        _pattern_recognition_signal_set(right),
-    ) >= 0.6
+        audit["reject_reason"] = "case_overlap_or_subset_failed"
+        return False, audit
+    if action_left != action_right:
+        audit["reject_reason"] = "action_family_mismatch"
+        return False, audit
+    if bias_left and bias_right and bias_left != bias_right:
+        audit["reject_reason"] = "bias_shape_mismatch"
+        return False, audit
+    if signal_jaccard < 0.6:
+        audit["reject_reason"] = "signal_jaccard_below_threshold"
+        return False, audit
+    audit["decision"] = True
+    return True, audit
 
 
 def _merge_same_root_pattern_component(component: Sequence[GroupSummary]) -> GroupSummary:
@@ -235,6 +266,8 @@ def _merge_same_root_pattern_component(component: Sequence[GroupSummary]) -> Gro
 
 
 def _merge_overlapping_same_root_patterns(patterns: Sequence[GroupSummary]) -> List[GroupSummary]:
+    global _LAST_PATTERN_DEDUP_AUDIT
+    _LAST_PATTERN_DEDUP_AUDIT = []
     rows = list(patterns or [])
     if len(rows) <= 1:
         return rows
@@ -253,7 +286,10 @@ def _merge_overlapping_same_root_patterns(patterns: Sequence[GroupSummary]) -> L
             for other_idx, other in enumerate(rows):
                 if other_idx in component_indexes:
                     continue
-                if _patterns_are_same_abstract_root(rows[current], other):
+                same_root, audit = _patterns_are_same_abstract_root(rows[current], other)
+                if not same_root and len(_LAST_PATTERN_DEDUP_AUDIT) < 500:
+                    _LAST_PATTERN_DEDUP_AUDIT.append(audit)
+                if same_root:
                     stack.append(other_idx)
         visited.update(component_indexes)
         component = [rows[item] for item in sorted(component_indexes)]
@@ -262,6 +298,10 @@ def _merge_overlapping_same_root_patterns(patterns: Sequence[GroupSummary]) -> L
         else:
             merged.append(_merge_same_root_pattern_component(component))
     return merged
+
+
+def last_pattern_dedup_audit() -> List[Dict[str, Any]]:
+    return [dict(row) for row in _LAST_PATTERN_DEDUP_AUDIT]
 
 
 def _nested_pattern_supersedes(left: GroupSummary, right: GroupSummary) -> bool:
@@ -567,6 +607,7 @@ def evolve_library_with_replay(
         "promotion_results": [],
         "promoted_runtime_objects": [],
         "promotion_skipped_reason": None,
+        "pattern_dedup_audit": last_pattern_dedup_audit(),
     }
 
     can_run_replay = bool(case_loader is not None and db_path)
@@ -680,6 +721,7 @@ def evolve_library_with_replay(
         integrate_promoted_groups(working_library, family_candidates)
 
     report["library_counts_after"] = _library_counts(working_library)
+    report["pattern_dedup_audit"] = last_pattern_dedup_audit()
     _library, contract_report = materialize_library_runtime_contracts(working_library)
     report["runtime_contract_validation"] = contract_report
     if event_kind == "final_evolve_and_freeze" and report["promoted_runtime_objects"]:
