@@ -4021,6 +4021,12 @@ def run_error_instance_extractor(
         pred_sql_features=pred_sql_features,
         deep_bias=str(raw.get("deep_bias") or "").strip() or "(deep_bias missing)",
         repair_goal=str(raw.get("repair_goal") or "").strip() or "(repair_goal missing)",
+        pre_question_signature_local=_short_text(
+            raw.get("pre_question_signature_local"), 200
+        ),
+        pre_sql_signature_local=_short_text(raw.get("pre_sql_signature_local"), 200),
+        observed_failure_local=_short_text(raw.get("observed_failure_local"), 200),
+        repair_direction_local=_short_text(raw.get("repair_direction_local"), 200),
         repair_skeleton=repair_skeleton,
         instantiation_slots=instantiation_slots,
         branch_rules=branch_rules,

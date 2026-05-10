@@ -255,6 +255,12 @@ Commit 命名：`WU{N}: {short subject}`，body 包含：
 
 **依赖**：WU1 完成（pre_sql_signature 用 role_family，需 hint）
 
+**完成状态**：已实现。`ErrorInstanceV2` 新增 4 个 case-local
+pre-condition 字段；`error_instance_extractor` prompt 和 parser 已接入；
+`build_formation_signals` 写入 `pre_condition_local`，`build_trigger_contract`
+同步写入 `pre_condition`；singleton 的 `InstantiationProgram` 同步挂载
+`PatternRecognitionContract` 以供后续 runtime 共用。
+
 ---
 
 #### **WU3** — admission 阶段：pattern_admission_judge 涌现版

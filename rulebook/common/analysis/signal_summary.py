@@ -417,11 +417,24 @@ def build_formation_signals(
     """
     error_payload = _payload(error_instance)
     repair_skeleton = _payload(error_payload.get("repair_skeleton"))
+    pre_condition = {
+        "schema_version": "pre-condition-local-v1",
+        "pre_question_signature_local": error_payload.get("pre_question_signature_local"),
+        "pre_sql_signature_local": error_payload.get("pre_sql_signature_local"),
+        "observed_failure_local": error_payload.get("observed_failure_local"),
+        "repair_direction_local": error_payload.get("repair_direction_local"),
+    }
+    pre_condition = {
+        key: value
+        for key, value in pre_condition.items()
+        if key == "schema_version" or value not in (None, "", [], {})
+    }
     return {
         "schema_version": "formation-signal-v0",
         "case_id": str(error_payload.get("case_id") or ""),
         "pred_current": _pred_current_summary(case_signal_view),
         "delta": _delta_summary(delta_signature),
+        "pre_condition_local": pre_condition,
         "repair_skeleton": repair_skeleton,
         "repair_program": [
             _payload(step)
@@ -1145,6 +1158,7 @@ def build_trigger_contract(
         output_shape_delta=shape_delta,
         pred_current=pred_current,
     )
+    pre_condition = _payload(formation_signals.get("pre_condition_local"))
     contract_negative_signals = set(negative_signals or [])
     audit_signals = sorted(
         set(pred_signals)
@@ -1212,6 +1226,7 @@ def build_trigger_contract(
             ),
         },
         "source_case_contract": pred_current,
+        "pre_condition": pre_condition,
         "max_actions": derived_max_actions,
     }
 

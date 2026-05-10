@@ -1888,3 +1888,23 @@ r19 后补丁：
 - `python -m py_compile common/analysis/schema_role_annotator.py common/io/local_schema.py common/io/db_schema_access.py common/llm/prompts/schema_role_annotator.py common/llm/prompts/__init__.py` 通过。
 - 静态检查确认 `_guess_role_family` / naming-pattern role guess 在 `common/io`、`common/analysis` 中已无命中。
 - 用临时 cache 验证 `posts.LastEditorUserId` 可被映射为缓存中的 `"editor reference"`，且不会触发 LLM。
+
+### 2026-05-10 emergence_refactor WU2：accumulate 输出 pre-condition 字段
+
+改动目标：
+
+- 在唯一 gold-aware 的 accumulate 阶段，让 `error_instance_extractor` 记录当前案例的前置 question/sql 特征、审计到的失败现象和修复方向。
+- 这些字段后续由 admission 抽象成 pattern 级契约，runtime 只读 pre-condition，不读 observed_failure 作为对错判断。
+
+实现：
+
+- `ErrorInstanceV2` 新增 `pre_question_signature_local`、`pre_sql_signature_local`、`observed_failure_local`、`repair_direction_local`。
+- 新增 `PatternRecognitionContract`，并在 singleton 的 `InstantiationProgram.pattern_recognition_contract` 上挂载本 case 的局部契约。
+- `error_instance_extractor` prompt 新增 4 字段定义；R1/R6 从绝对强制语气软化为机制级强建议，避免 LLM 被旧硬规则绑死。
+- `run_error_instance_extractor` 解析并截断 4 字段到 200 字符。
+- `build_formation_signals` 写入 `formation_signals.pre_condition_local`；`build_trigger_contract` 同步写入 `trigger_contract.pre_condition`。
+
+验证：
+
+- `python -m py_compile common/core/data_structures.py common/llm/prompts/error_instance_extractor.py common/llm/nodes.py common/analysis/signal_summary.py common/learning/accumulate.py` 通过。
+- 构造最小 `ErrorInstanceV2` 静态探针，确认 `formation_signals.pre_condition_local.pre_question_signature_local` 和 `trigger_contract.pre_condition.repair_direction_local` 正常落盘。

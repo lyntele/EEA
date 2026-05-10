@@ -28,6 +28,7 @@ from method.EEA.rulebook.common.core.data_structures import (
     InstantiationProgram,
     LibraryStateV2,
     ModelProfile,
+    PatternRecognitionContract,
     RuntimeCaseView,
     TriggerPolicy,
     TriggerSignature,
@@ -355,6 +356,12 @@ def error_instance_to_singleton(
         repair_program=list(error_instance.repair_program),
         synthesized_program=singleton_program,
         program_coverage=singleton_coverage,
+        pattern_recognition_contract=PatternRecognitionContract(
+            pre_question_signature=error_instance.pre_question_signature_local or "",
+            pre_sql_signature=error_instance.pre_sql_signature_local or "",
+            observed_failure_summary=error_instance.observed_failure_local or "",
+            repair_direction=error_instance.repair_direction_local or "",
+        ),
     )
 
     # trigger_signature 必须只包含 runtime 可重现的 tag，否则 runtime 检索永远不命中。

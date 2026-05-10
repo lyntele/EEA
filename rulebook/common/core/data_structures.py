@@ -713,6 +713,14 @@ class ErrorInstanceV2(BaseModel):
     """为什么会错——深层偏差总结。"""
     repair_goal: str
     """修复后想回到的接口层面。"""
+    pre_question_signature_local: Optional[str] = None
+    """Gold-aware accumulate output: case-local question pre-condition."""
+    pre_sql_signature_local: Optional[str] = None
+    """Gold-aware accumulate output: case-local pred SQL pre-condition."""
+    observed_failure_local: Optional[str] = None
+    """Gold-aware audit summary. Runtime must not use this for triggering."""
+    repair_direction_local: Optional[str] = None
+    """Case-local repair direction used by later pattern admission/branching."""
 
     repair_skeleton: RepairSkeleton
 
@@ -952,6 +960,8 @@ class InstantiationProgram(BaseModel):
     """Deterministic compiler coverage for the synthesized program."""
     bias_recognition_contract: Optional["BiasRecognitionContract"] = None
     """Lightweight pattern trigger: recognize whether current S0 shows the same bias."""
+    pattern_recognition_contract: Optional["PatternRecognitionContract"] = None
+    """Emergent pre-condition contract used by the two-channel runtime trigger."""
 
 
 class BiasRecognitionContract(BaseModel):
@@ -967,6 +977,20 @@ class BiasRecognitionContract(BaseModel):
     recognition_signals: List[str] = Field(default_factory=list)
     anti_signals: List[str] = Field(default_factory=list)
     min_signal_overlap: float = 0.6
+
+
+class PatternRecognitionContract(BaseModel):
+    """Emergent pattern/singleton recognition contract.
+
+    The pre_* fields are answer-blind pre-conditions learned during accumulate
+    or multi-case admission. observed_failure_summary stays audit-only.
+    """
+
+    schema_version: Literal["pattern-recognition-v1"] = "pattern-recognition-v1"
+    pre_question_signature: str = ""
+    pre_sql_signature: str = ""
+    observed_failure_summary: str = ""
+    repair_direction: str = ""
 
 
 class TriggerSignature(BaseModel):
@@ -1003,6 +1027,7 @@ class TriggerContract(BaseModel):
     )
     action_contract: Dict[str, Any] = Field(default_factory=dict)
     source_case_contract: Dict[str, Any] = Field(default_factory=dict)
+    pre_condition: Dict[str, Any] = Field(default_factory=dict)
     runtime_branches: List[Dict[str, Any]] = Field(default_factory=list)
     max_actions: int = 1
 

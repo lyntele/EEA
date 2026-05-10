@@ -74,15 +74,32 @@ You must produce:
 
 3. deep_bias: one sentence explaining WHY the error happens.
 4. repair_goal: one sentence describing what interface layer the repair targets.
-5. source_antipattern_hypothesis:
+5. pre-condition and repair-direction fields:
+   These four fields are the new emergence-facing output. They are learned only
+   here because this is the gold-aware accumulate stage.
+   - pre_question_signature_local: what kind of question this case represents
+     (free natural language, <=200 chars). This is a pre-condition; do not say
+     the question is "wrong" or "misread".
+   - pre_sql_signature_local: what shape/form pred_sql currently exhibits
+     (free natural language, <=200 chars). Prefer schema role_family language
+     from runtime_case_view.local_schema_view.semantic_hints. Avoid concrete
+     case ids, aliases, table names, and column names when a role-family
+     description is available.
+   - observed_failure_local: what differs between pred and audited target under
+     the above pre-conditions (<=200 chars). This is audit-only; runtime must
+     not use it for triggering.
+   - repair_direction_local: the actionable direction of the repair (<=200
+     chars), expressed so a later branch/binder can instantiate it.
+
+6. source_antipattern_hypothesis:
    - description: one sentence about the source-side anti-pattern
    - visible_in_pred_sql: runtime-visible facts supporting it
-6. target_invariant_hypothesis:
+7. target_invariant_hypothesis:
    - description: one sentence about what the repaired SQL must satisfy
    - visible_in_candidate_fix_or_execution: compact evidence from case_audit or
      execution_comparison
 
-7. possible_effect_axes:
+8. possible_effect_axes:
    Advisory offline hypotheses for the contrastive repair effect. Code will
    build the final ContrastiveRepairEffect objects from SQL/role deltas, so do
    not use database labels, case ids, manual pattern names, or hard-coded column
@@ -97,7 +114,7 @@ You must produce:
    - primary_likelihood: low|medium|high
    - why: concise evidence from case_audit/execution_comparison
 
-8. repair_insight_signature:
+9. repair_insight_signature:
    A case-local insight card. This is the semantic layer above broad axes and
    below executable repair_program. It explains the reusable source->target
    contrast exposed by THIS audited case.
@@ -172,7 +189,7 @@ You must produce:
    - Do NOT describe a target-only relation as visible in pred_sql. Put it in
      target_preference or target binding evidence.
 
-9. repair_skeleton:
+10. repair_skeleton:
    - structural:
      - locus: one of {locus_enum}
      - op_family: one of {op_family_enum}
@@ -184,22 +201,22 @@ You must produce:
      - family_hint: optional — the interface family this belongs to
        (e.g. output_contract_bias / fact_route / grain_recovery)
 
-10. instantiation_slots: list of slots that must be filled at runtime. Each item:
+11. instantiation_slots: list of slots that must be filled at runtime. Each item:
    - name: slot name (e.g. "target_identifier_column")
    - kind: slot type (column / table / value / grain_key / edit_scope / ...)
    - required: true/false — the required-vs-optional distinction (Codex Patch 4)
    - allowed_role_families: role_family list allowed during candidate enumeration
    - description: one sentence
 
-11. branch_rules: if the repair interface has multiple branches (e.g. config vs
+12. branch_rules: if the repair interface has multiple branches (e.g. config vs
    executed), spell them out as condition programs:
    - if_condition, then_action, [else_action]
    Having more than 2 branches escalates risk_level to high.
 
-12. guardrails: negative constraints (when this must NOT trigger). Each item:
+13. guardrails: negative constraints (when this must NOT trigger). Each item:
    - description, kind (negative_evidence / anti_trigger / scope_limit / ...)
 
-13. repair_program: ordered executable repair-step hypotheses extracted from
+14. repair_program: ordered executable repair-step hypotheses extracted from
    this audited case. They are the source evidence for runtime actions, but
    code will still canonicalize op_type and dependency/accessory status from
    SQL delta and role-graph evidence.
@@ -231,15 +248,15 @@ You must produce:
    whether a step is core or accessory from audited SQL delta. Also do NOT
    create generic dependency rules just because they sound plausible.
 
-14. core_vs_accessory:
+15. core_vs_accessory:
    - core_steps: step_ids that are the direct repair
    - accessory_steps: step_ids that are conditional/dependency side-effects
-15. uncertain_axes: list of unresolved axes such as output shape, grain, or scope
-16. rewrite_hint_proto: prototype-level rewrite hint in natural language. It will be
+16. uncertain_axes: list of unresolved axes such as output shape, grain, or scope
+17. rewrite_hint_proto: prototype-level rewrite hint in natural language. It will be
    consumed later by Memory Rewrite and MUST be answer-blind — no references to
    gold, benchmark, or ground-truth outputs.
 
-17. risk_level: low / medium / high
+18. risk_level: low / medium / high
     - low: zero branches, <=1 free slot, audit confidence high
     - medium: <=2 branches, <=3 free slots
     - high: >2 branches, or >3 free slots, or audit confidence low
@@ -255,7 +272,7 @@ Constraints:
 Generic coherence rules (apply to every case; never relax them):
 
 R1 (locus × target_family coherence). The repair_skeleton.structural.locus and
-   target_family must agree at the SQL-surface level:
+   target_family tend to align at the SQL-surface level:
    - locus = SELECT, ORDER_BY, FORMAT → target_family ∈ {{slot, display_field,
      metric, shape}}
    - locus = JOIN, BRIDGE → target_family ∈ {{bridge_path, fact_table,
@@ -264,8 +281,9 @@ R1 (locus × target_family coherence). The repair_skeleton.structural.locus and
    - locus = GRAIN, GROUP_BY → target_family = grain_key
    - locus = SCOPE, WHERE, PREDICATE → target_family = condition
    - locus = AGGREGATION → target_family ∈ {{metric, shape}}
-   If these disagree, pick the locus that matches the actual SQL region being
-   edited and re-derive target_family from the table above.
+   If these disagree, prefer the locus that matches the actual SQL region being
+   edited and re-derive target_family from the table above unless the audited
+   repair evidence clearly requires another abstraction.
 
 R2 (decisive-tag counterfactual test). A tag belongs to decisive_tags only if
    removing it would cause this case to no longer belong to the described bias.
@@ -301,17 +319,16 @@ R6 (independent execution-evidence reading). Do not blindly follow
      - `select_role_dtype_mismatch` : same column count but projected
        dtype changed (typical of name ↔ identifier substitution).
    If either of these tags is present in the candidate list, the primary
-   repair skeleton MUST be:
+   primary repair skeleton should usually be:
      - locus = SELECT
      - op_family ∈ {{add, drop, replace}}
      - target_family = slot
      - output_contract is legacy-only and should stay UNCHANGED. The code side
        records current_arity, target_arity, delta, and direction separately.
-   These tags override any conflicting signal from case_audit.error_locus_hint,
-   from aggregation or predicate structural differences, and from more
-   visually prominent SQL changes (e.g. WHERE ↔ HAVING rewrites). Place
-   non-SELECT structural differences in descriptive_tags or in guardrails,
-   not in the primary repair skeleton.
+   These tags are strong evidence and should usually dominate conflicting
+   signals from case_audit.error_locus_hint, aggregation/predicate structural
+   differences, or visually prominent SQL changes. If you depart from this,
+   explain the uncertainty in uncertain_axes.
 
    When neither deterministic tag is present:
    - If execution_comparison.row_sets_equivalent = true and the SELECT
