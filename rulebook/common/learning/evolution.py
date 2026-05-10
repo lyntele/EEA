@@ -478,6 +478,7 @@ def compact_evolution_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_pattern_count": int(report.get("candidate_pattern_count") or 0),
         "candidate_evolved_object_count": int(report.get("candidate_evolved_object_count") or 0),
         "promotion_skipped_reason": report.get("promotion_skipped_reason"),
+        "final_freeze_skipped": bool(report.get("final_freeze_skipped", False)),
         "promoted_runtime_objects": list(report.get("promoted_runtime_objects") or []),
         "promotion_results": promotion_results,
         "patterns": patterns,
@@ -577,12 +578,46 @@ def evolve_library_with_replay(
     promotion_min_support: int = 2,
     row_sample_limit: int = 5000,
     freeze_output_path: Optional[Path] = None,
+    skip_replay_freeze: bool = False,
 ) -> Tuple[LibraryStateV2, Dict[str, Any]]:
     """Run one serial singleton->pattern evolution cycle."""
     focus_set = {str(case_id) for case_id in (focus_case_ids or set())}
     working_library = library.model_copy(deep=True)
     working_library.experience_families = []
     before_counts = _library_counts(working_library)
+    if event_kind == "final_evolve_and_freeze" and skip_replay_freeze:
+        manifest = freeze_library_manifest(
+            library=working_library,
+            reason="final_evolve_and_freeze_skipped",
+            output_path=freeze_output_path,
+        )
+        report = {
+            "event_kind": event_kind,
+            "focus_case_ids": sorted(focus_set),
+            "library_counts_before": before_counts,
+            "library_counts_after": _library_counts(working_library),
+            "formation": {
+                "input_counts": before_counts,
+                "output_counts": _library_counts(working_library),
+                "patterns": [],
+                "families": [],
+            },
+            "candidate_family_count": 0,
+            "candidate_evolved_object_count": 0,
+            "candidate_pattern_count": 0,
+            "promotion_results": [],
+            "promoted_runtime_objects": [],
+            "promotion_skipped_reason": "skip_final_freeze",
+            "pattern_dedup_audit": [],
+            "runtime_contract_validation": {},
+            "freeze_manifest": {
+                **manifest,
+                "skipped": True,
+                "skip_reason": "skip_final_freeze",
+            },
+            "final_freeze_skipped": True,
+        }
+        return working_library, report
     formed_library, formation_report = form_offline_families(
         working_library,
         manual_groups=manual_groups,
@@ -755,6 +790,7 @@ def final_evolve_and_freeze(
     promotion_min_support: int = 2,
     row_sample_limit: int = 5000,
     freeze_output_path: Optional[Path] = None,
+    skip_replay_freeze: bool = False,
 ) -> Tuple[LibraryStateV2, Dict[str, Any]]:
     """Run the plan.md final evolution boundary and freeze manifest."""
     return evolve_library_with_replay(
@@ -770,6 +806,7 @@ def final_evolve_and_freeze(
         promotion_min_support=promotion_min_support,
         row_sample_limit=row_sample_limit,
         freeze_output_path=freeze_output_path,
+        skip_replay_freeze=skip_replay_freeze,
     )
 
 

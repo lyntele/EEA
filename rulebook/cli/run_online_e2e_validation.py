@@ -428,6 +428,7 @@ def _summary_payload(
             "family_runtime_policy": args.family_runtime_policy,
             "manual_groups_json": args.manual_groups_json,
             "strict_contract_policy": args.strict_contract_policy,
+            "skip_final_freeze": bool(getattr(args, "skip_final_freeze", False)),
             "max_cases": args.max_cases,
             "case_ids": args.case_ids,
             "case_id_order_effective": list(
@@ -524,6 +525,10 @@ def _maybe_form_families(
             if event_kind == "final_evolve_and_freeze"
             else None
         ),
+        skip_replay_freeze=bool(
+            event_kind == "final_evolve_and_freeze"
+            and getattr(args, "skip_final_freeze", False)
+        ),
     )
     library.patterns = list(evolved_library.patterns)
     library.experience_families = list(evolved_library.experience_families)
@@ -546,6 +551,7 @@ def _maybe_form_families(
         "promotion_results": promotion_results,
         "promoted_runtime_objects": promoted_runtime_objects,
         "promotion_skipped_reason": report.get("promotion_skipped_reason"),
+        "final_freeze_skipped": bool(report.get("final_freeze_skipped", False)),
         "freeze_manifest": report.get("freeze_manifest"),
         "new_experience_families": [
             {
@@ -629,12 +635,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
     )
     parser.add_argument("--save_library_snapshots", action="store_true")
+    parser.add_argument(
+        "--skip-final-freeze",
+        action="store_true",
+        help="Skip final replay/freeze promotion and write the current incremental library.",
+    )
     args = parser.parse_args(argv)
 
     started_at = time.time()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     _add_paths(Path(args.deepeye_root), Path(args.ace_root))
+
+    from method.EEA.rulebook.common.core.config import load_config  # noqa: WPS433
+
+    if not bool(args.skip_final_freeze):
+        try:
+            args.skip_final_freeze = bool(load_config().evolution.skip_final_freeze)
+        except Exception:
+            args.skip_final_freeze = True
 
     from app.dataset import load_dataset  # noqa: WPS433
     from method.EEA.rulebook.common.learning.accumulate import accumulate_wrong_case  # noqa: WPS433

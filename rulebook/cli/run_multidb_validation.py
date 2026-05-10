@@ -517,6 +517,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Validation-only: pass through to replay CLIs so singleton source cases can self-replay.",
     )
+    parser.add_argument(
+        "--skip-final-freeze",
+        action="store_true",
+        help=(
+            "Accepted for parity with online validation. This trigger/rewrite "
+            "runner does not execute final freeze."
+        ),
+    )
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument(
         "--strict_rewrite_gates",
@@ -609,8 +617,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "rewrite_scope": args.rewrite_scope,
                     "jobs": jobs,
                     "augment_memory_contracts": bool(args.augment_memory_contracts),
-                    "allow_self_singleton_replay": bool(args.allow_self_singleton_replay),
-                    "dry_run": bool(args.dry_run),
+                "allow_self_singleton_replay": bool(args.allow_self_singleton_replay),
+                "skip_final_freeze": bool(args.skip_final_freeze),
+                "dry_run": bool(args.dry_run),
                 },
                 "databases": rows,
                 "totals": _totals(rows),
@@ -663,6 +672,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "jobs": jobs,
             "augment_memory_contracts": bool(args.augment_memory_contracts),
             "allow_self_singleton_replay": bool(args.allow_self_singleton_replay),
+            "skip_final_freeze": bool(args.skip_final_freeze),
             "dry_run": bool(args.dry_run),
             "strict_rewrite_gates": bool(args.strict_rewrite_gates),
             "require_contract_repair_program": bool(args.require_contract_repair_program),

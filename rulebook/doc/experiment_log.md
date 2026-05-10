@@ -1846,3 +1846,25 @@ r19 后补丁：
 
 - 在 r19 已有库基础上，dump 所有 pattern 的 `bias_recognition_contract` 看 motif/anti_signals 文本分布，作为修改 2（词表开放化）的输入证据。
 - 若 r20 在线 trigger 因移除补丁而退化（某些 source-route pattern 因 anti_signals 含 aggregate 信号被自身排除），那就是涌现机制确实欠缺信号——届时再考虑修改 4（信号生成路径重写），而不是把硬规则加回来。
+
+### 2026-05-10 emergence_refactor WU0：默认跳过 final freeze 与 pattern 签名 dump
+
+改动目标：
+
+- 按 `doc/emergence_refactor_plan.md` 启动 WU0，但结合当前执行要求，把 final freeze 默认设为跳过，避免每轮在线验证被末尾 replay/freeze 拖慢。
+- 增加独立签名 dump 工具，用于在不重跑实验的情况下审查当前 pattern 的 case_ids、trigger contract、repair insight 和 admission 产物。
+
+实现：
+
+- `common/learning/evolution.py::final_evolve_and_freeze` 新增 `skip_replay_freeze`，跳过时直接保留当前 incremental library，写 `final_freeze_skipped=true` 和 `promotion_skipped_reason=skip_final_freeze`。
+- `common/config.toml` 新增 `[evolution] skip_final_freeze = true`；`common/core/config.py` 增加 `EvolutionSettings`，默认跳过。
+- `cli/run_online_e2e_validation.py` 增加 `--skip-final-freeze`，默认读取 config；summary/family event 记录 `skip_final_freeze` 和 `final_freeze_skipped`。
+- `cli/run_multidb_validation.py` 接受 `--skip-final-freeze` 作为兼容参数，但该 trigger/rewrite runner 本身不执行 final freeze。
+- 新增 `cli/audit_pattern_signatures.py`，支持 `--library_json` 或 `--work_root`，输出 compact pattern signature，避免把完整 canonical refs/action payload 打进审计文件。
+
+验证：
+
+- `python -m py_compile common/core/config.py common/learning/evolution.py cli/run_online_e2e_validation.py cli/run_multidb_validation.py cli/audit_pattern_signatures.py` 通过。
+- `PYTHONPATH=/data/liuyining/ace4sql python - <<... load_config ...>>` 返回 `True`，确认默认跳过生效。
+- `final_evolve_and_freeze(library=empty, skip_replay_freeze=True)` 返回 `final_freeze_skipped=True`，compact report 同步记录。
+- `audit_pattern_signatures.py` 在 `toxicology_focus18_postsel_v1_qwen3coderflash_20260508_r5/final_library.json` 上成功导出 9 个 pattern 的摘要。

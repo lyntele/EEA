@@ -46,9 +46,15 @@ class RulebookSettings:
 
 
 @dataclass
+class EvolutionSettings:
+    skip_final_freeze: bool = True
+
+
+@dataclass
 class RulebookConfig:
     llm: LLMSettings
     rulebook: RulebookSettings
+    evolution: EvolutionSettings
 
 
 def _load_config_dict(config_path: Path) -> Dict:
@@ -121,9 +127,21 @@ def _profile_llm_block(conf: Dict[str, Any]) -> Dict[str, Any]:
 def load_config(config_path: Optional[str] = None) -> RulebookConfig:
     config_path = _resolve_config_path(config_path)
     conf = _load_config_dict(config_path)
+    fallback_profile_conf: Dict[str, Any] = {}
+    if config_path != DEEPEYE_API_PROFILE_PATH and DEEPEYE_API_PROFILE_PATH.exists():
+        fallback_profile_conf = _load_config_dict(DEEPEYE_API_PROFILE_PATH)
 
-    llm_block = conf.get("llm", {}) or _profile_llm_block(conf)
-    rulebook_block = conf.get("rulebook", {})
+    llm_block = (
+        conf.get("llm", {})
+        or _profile_llm_block(conf)
+        or _profile_llm_block(fallback_profile_conf)
+        or fallback_profile_conf.get("llm", {})
+    )
+    rulebook_block = {
+        **dict(fallback_profile_conf.get("rulebook", {}) or {}),
+        **dict(conf.get("rulebook", {}) or {}),
+    }
+    evolution_block = conf.get("evolution", {})
 
     llm = LLMSettings(
         model=llm_block.get("model") or os.getenv("RULEBOOK_LLM_MODEL", ""),
@@ -154,4 +172,8 @@ def load_config(config_path: Optional[str] = None) -> RulebookConfig:
         llm_timeout=int(rulebook_block.get("llm_timeout", 30)),
     )
 
-    return RulebookConfig(llm=llm, rulebook=rulebook)
+    evolution = EvolutionSettings(
+        skip_final_freeze=bool(evolution_block.get("skip_final_freeze", True)),
+    )
+
+    return RulebookConfig(llm=llm, rulebook=rulebook, evolution=evolution)
