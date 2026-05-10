@@ -1455,7 +1455,7 @@ def _pre_condition_channel_call(
         ).hexdigest()[:16]
     key = "|".join(
         [
-            "pre-condition-v2",
+            "pre-condition-v3",
             channel,
             str(group.group_id),
             hashlib.sha1(str(signature or "").encode("utf-8")).hexdigest()[:16],
@@ -4116,7 +4116,7 @@ def _prefilter_runtime_candidates(
     *,
     library: LibraryStateV2,
     case_view: RuntimeCaseView,
-    max_per_kind: int = 3,
+    max_per_kind: int = 5,
 ) -> Tuple[List[GroupSummary], List[GroupSummary], Dict[str, Any]]:
     case_summary = _case_pred_current_summary(case_view)
     case_tables = _case_runtime_tables(case_view)
@@ -4135,7 +4135,7 @@ def _prefilter_runtime_candidates(
                 str(item[0].group_id),
             ),
         )
-        selected = ranked[: max(1, int(max_per_kind or 3))]
+        selected = ranked[: max(1, int(max_per_kind or 5))]
         return [group for group, _audit in selected], [audit for _group, audit in scored]
 
     patterns, pattern_audits = select(library.patterns or [])
@@ -4181,9 +4181,9 @@ def trigger_memory_objects(
     audits: List[TriggerCandidateAudit] = []
     passed: List[Tuple[GroupSummary, TriggerCandidateAudit]] = []
     try:
-        prefilter_max_per_kind = int(os.getenv("EEA_TRIGGER_PREFILTER_MAX_PER_KIND", "3"))
+        prefilter_max_per_kind = int(os.getenv("EEA_TRIGGER_PREFILTER_MAX_PER_KIND", "5"))
     except Exception:
-        prefilter_max_per_kind = 3
+        prefilter_max_per_kind = 5
     prefilter_enabled = str(
         os.getenv("EEA_TRIGGER_PREFILTER_ENABLED", "1")
     ).strip().lower() not in {"0", "false", "no", "off"}

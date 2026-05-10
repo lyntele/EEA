@@ -2129,3 +2129,26 @@ r19 后补丁：
 
 - `python -m py_compile common/runtime/runtime.py` 通过。
 - commit: `4bf5195 WU13: prefilter runtime trigger candidates`。
+
+### 2026-05-10 emergence_refactor r25 后修复：Q/S 隔离、真实 recall 与召回宽度
+
+问题：
+
+- r25 focus18 仍为 `enhanced_correct=7/18`，没有超过 r24。
+- RoleGraph pattern 已经真实参与触发并修复 `253/268/277/285/302/307`，但 source-route / bridge-route 相关 `326/328/335/338` 仍 no_match。
+- `pre_question_signature` 仍有 SQL-side 机制污染：source-route 错误主要在 `pred_sql`，但 Q 通道要求 question 体现 wrong route / bridge misuse，导致 pattern self-recall 和 runtime trigger 被卡。
+- LLM 自评 `estimated_recall` 不可信。用 r25 final_library 做零成本探针，RoleGraph pattern 的 LLM 自评为 `1.0`，但按 `matched_member_case_ids / admitted case_ids` 重算只有 `0.29`，未列出的扩展成员不能被视作 implicit match。
+
+实现：
+
+- `pattern_formation._signature_self_check_rate` 改为代码端真实计算 recall，忽略 LLM 自报 `estimated_recall`，并记录 `unaccounted_admitted`。
+- `pattern_admission_judge` 输入拆成三栏：`case_cards_question_view` 只供 `pre_question_signature` 使用；`case_cards_sql_view` 只供 `pre_sql_signature` 使用；`case_cards_shared_view` 供 failure summary / repair direction 使用。
+- `error_instance_extractor` 增加同样的 Q/S 边界约束，避免 singleton accumulate 阶段把 SQL 机制写进 `pre_question_signature_local`。
+- runtime prefilter 默认 `max_per_kind` 从 3 放宽到 5，aggregate / group_by mismatch 不再作为硬排除，只作为排序信号。
+- pre-condition cache key 从 `v2` 升为 `v3`，避免复用旧 prompt 的 Q/S 判断。
+
+验证：
+
+- `python -m py_compile common/learning/pattern_formation.py common/llm/prompts/pattern_admission_judge.py common/llm/prompts/error_instance_extractor.py common/runtime/runtime.py common/llm/prompts/pattern_pre_condition_match.py` 通过。
+- `PYTHONPATH=/data/liuyining/ace4sql pytest -q` 仍为既有基线 `24 failed, 86 passed, 15 skipped`，没有新增失败。
+- 零成本探针确认 r25 final RoleGraph pattern 的 `llm_estimated_recall=1.0` 但 `code_real=0.29`，证明需要代码端 recall 和 WU12 真实 self-recall 双重约束。

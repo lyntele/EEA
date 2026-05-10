@@ -220,8 +220,14 @@ If not admitting, return the same object shape with:
 
 Data:
 
-case_cards:
-{case_cards_json}
+case_cards_question_view (USE ONLY THIS WHEN WRITING pre_question_signature):
+{case_cards_question_view_json}
+
+case_cards_sql_view (USE ONLY THIS WHEN WRITING pre_sql_signature):
+{case_cards_sql_view_json}
+
+case_cards_shared_view (USE FOR observed_failure_summary AND repair_direction):
+{case_cards_shared_view_json}
 
 pair_semantic_decisions (relation counts plus representative pairs only):
 {pair_semantic_decisions_json}
@@ -249,12 +255,16 @@ Pattern recognition contract:
 
 def build_pattern_admission_judge_prompt(
     *,
-    case_cards_json: str,
+    case_cards_question_view_json: str,
+    case_cards_sql_view_json: str,
+    case_cards_shared_view_json: str,
     pair_semantic_decisions_json: str,
     component_summary_json: str,
 ) -> str:
     return PATTERN_ADMISSION_JUDGE_PROMPT.format(
-        case_cards_json=case_cards_json,
+        case_cards_question_view_json=case_cards_question_view_json,
+        case_cards_sql_view_json=case_cards_sql_view_json,
+        case_cards_shared_view_json=case_cards_shared_view_json,
         pair_semantic_decisions_json=pair_semantic_decisions_json,
         component_summary_json=component_summary_json,
     )

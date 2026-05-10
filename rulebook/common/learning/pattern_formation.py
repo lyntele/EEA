@@ -1889,6 +1889,68 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
     }
 
 
+def _extract_question_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
+    """Evidence slice for question-side pre-condition writing only."""
+    insight = _model_dump(card.get("repair_insight") or {})
+    pre_condition = _model_dump(card.get("pre_condition_local") or {})
+    return {
+        "case_ids": list(card.get("case_ids") or []),
+        "group_id": card.get("group_id"),
+        "stable_bias_frame": _short_text(card.get("stable_bias_frame"), limit=180),
+        "interface_key": _short_text(insight.get("interface_key"), limit=160),
+        "source_misread": _short_text(insight.get("source_misread"), limit=180),
+        "target_preference": _short_text(insight.get("target_preference"), limit=180),
+        "pre_question_signature_local": _short_text(
+            pre_condition.get("pre_question_signature_local"),
+            limit=180,
+        ),
+    }
+
+
+def _extract_sql_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
+    """Evidence slice for SQL-side pre-condition writing only."""
+    pre_condition = _model_dump(card.get("pre_condition_local") or {})
+    return {
+        "case_ids": list(card.get("case_ids") or []),
+        "group_id": card.get("group_id"),
+        "delta_axes": list(card.get("delta_axes") or [])[:8],
+        "shape_delta": _model_dump(card.get("shape_delta")),
+        "canonical_lowering_families": list(card.get("canonical_lowering_families") or [])[:8],
+        "core_program_signature": list(card.get("core_program_signature") or [])[:8],
+        "required_dependency_signature": list(card.get("required_dependency_signature") or [])[:8],
+        "effects": list(card.get("effects") or [])[:8],
+        "program_core": list(card.get("program_core") or [])[:6],
+        "pre_sql_signature_local": _short_text(
+            pre_condition.get("pre_sql_signature_local"),
+            limit=180,
+        ),
+    }
+
+
+def _extract_shared_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
+    """Evidence slice for failure summary and repair direction writing."""
+    insight = _model_dump(card.get("repair_insight") or {})
+    pre_condition = _model_dump(card.get("pre_condition_local") or {})
+    return {
+        "case_ids": list(card.get("case_ids") or []),
+        "group_id": card.get("group_id"),
+        "stable_bias_frame": _short_text(card.get("stable_bias_frame"), limit=180),
+        "target_preference": _short_text(insight.get("target_preference"), limit=180),
+        "repair_interface": _short_text(insight.get("repair_interface"), limit=180),
+        "binding_slots": list(insight.get("binding_slots") or [])[:8],
+        "preserve_invariants": list(insight.get("preserve_invariants") or [])[:8],
+        "negative_guards": list(insight.get("negative_guards") or [])[:8],
+        "observed_failure_local": _short_text(
+            pre_condition.get("observed_failure_local"),
+            limit=180,
+        ),
+        "repair_direction_local": _short_text(
+            pre_condition.get("repair_direction_local"),
+            limit=180,
+        ),
+    }
+
+
 def _pattern_pair_decision(
     pair: PairScore,
     *,
@@ -2369,13 +2431,41 @@ def _call_pattern_admission_judge(
             else {"ensure_ascii": False, "indent": 2, "default": str}
         )
         return build_pattern_admission_judge_prompt(
-            case_cards_json=json.dumps(list(cards), **dumps_kwargs),
+            case_cards_question_view_json=json.dumps(
+                [_extract_question_evidence(card) for card in cards],
+                **dumps_kwargs,
+            ),
+            case_cards_sql_view_json=json.dumps(
+                [_extract_sql_evidence(card) for card in cards],
+                **dumps_kwargs,
+            ),
+            case_cards_shared_view_json=json.dumps(
+                [_extract_shared_evidence(card) for card in cards],
+                **dumps_kwargs,
+            ),
             pair_semantic_decisions_json=json.dumps(pair_context, **dumps_kwargs),
             component_summary_json=json.dumps(summary, **dumps_kwargs),
         )
 
     prompt = build_pattern_admission_judge_prompt(
-        case_cards_json=json.dumps(case_cards, ensure_ascii=False, indent=2, default=str),
+        case_cards_question_view_json=json.dumps(
+            [_extract_question_evidence(card) for card in case_cards],
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        case_cards_sql_view_json=json.dumps(
+            [_extract_sql_evidence(card) for card in case_cards],
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        case_cards_shared_view_json=json.dumps(
+            [_extract_shared_evidence(card) for card in case_cards],
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
         pair_semantic_decisions_json=json.dumps(pair_decision_context, ensure_ascii=False, indent=2, default=str),
         component_summary_json=json.dumps(component_summary, ensure_ascii=False, indent=2, default=str),
     )
@@ -2470,22 +2560,29 @@ def _signature_self_check_rate(
         for case_id in (payload.get("missed_member_case_ids") or [])
         if str(case_id)
     }
-    try:
-        estimated = float(payload.get("estimated_recall"))
-    except Exception:
-        estimated = -1.0
-    if estimated < 0.0:
-        if accepted:
-            estimated = len(accepted & matched) / max(len(accepted), 1)
-        elif matched or missed:
-            estimated = len(matched) / max(len(matched | missed), 1)
-        else:
-            estimated = 0.0
+    # Do not trust LLM self-reported estimated_recall. Treat omitted admitted
+    # members as missed so the gate reflects code-side coverage.
+    if accepted:
+        estimated = len(accepted & matched) / max(len(accepted), 1)
+    elif matched or missed:
+        estimated = len(matched) / max(len(matched | missed), 1)
+    else:
+        estimated = 0.0
+    unaccounted_admitted = accepted - matched - missed
     audit = {
         "key": key,
         "matched_member_case_ids": sorted(matched, key=_case_id_sort_key),
         "missed_member_case_ids": sorted(missed, key=_case_id_sort_key),
+        "unaccounted_admitted_case_ids": sorted(
+            unaccounted_admitted,
+            key=_case_id_sort_key,
+        ),
+        "unaccounted_admitted": sorted(
+            unaccounted_admitted,
+            key=_case_id_sort_key,
+        ),
         "estimated_recall": max(0.0, min(1.0, estimated)),
+        "llm_estimated_recall": payload.get("estimated_recall"),
         "rewrite_needed": bool(payload.get("rewrite_needed")),
         "raw": payload,
     }
@@ -3716,6 +3813,10 @@ def _build_pattern_admission_candidates(
             )
             if signature_self_check_audit:
                 response["signature_self_check_audit"] = signature_self_check_audit
+                response["admission_audit"] = {
+                    **dict(_model_dump(response.get("admission_audit") or {})),
+                    "signature_self_check_audit": signature_self_check_audit,
+                }
             if signature_self_check_blocker:
                 admitted = False
                 admission_blocker = signature_self_check_blocker

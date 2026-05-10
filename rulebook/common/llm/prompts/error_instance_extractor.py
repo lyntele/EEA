@@ -91,6 +91,24 @@ You must produce:
    - repair_direction_local: the actionable direction of the repair (<=200
      chars), expressed so a later branch/binder can instantiate it.
 
+   Q/S boundary discipline:
+   - pre_question_signature_local describes ONLY the question-side target intent
+     observable from the natural-language question. Do NOT include SQL failure
+     mechanisms such as missing DISTINCT, wrong join route, bridge misuse,
+     duplicated joins, proxy column choice, or source table choice. Those belong
+     in pre_sql_signature_local.
+   - pre_sql_signature_local describes ONLY the current pred_sql shape and
+     source-side antipattern, expressed via SQL structure or column role_family.
+     Do NOT include question wording, the asked target, or what the user wants.
+   - observed_failure_local describes the pred-vs-audited-target difference.
+     It is audit-only and must not be used as runtime trigger text.
+   - repair_direction_local describes the actionable repair direction for
+     branch + binder instantiation. It must be specific enough to distinguish
+     this repair from neighboring singleton repair directions.
+   - Runtime will compare pre_question_signature_local only with a future
+     question. If SQL details leak into that field, equivalent future questions
+     will miss because users do not describe the model's SQL mechanism.
+
 6. source_antipattern_hypothesis:
    - description: one sentence about the source-side anti-pattern
    - visible_in_pred_sql: runtime-visible facts supporting it
