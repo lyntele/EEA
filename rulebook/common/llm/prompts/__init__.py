@@ -22,6 +22,7 @@ Node map
                                 before formal pattern admission
 - ``pattern_admission_judge`` : offline-only admission of stable pattern
                                 candidates with finite branches
+- ``schema_role_annotator``   : schema-level free-form role hints
 """
 
 from .action_compiler import ACTION_COMPILER_PROMPT, build_action_compiler_prompt
@@ -39,6 +40,10 @@ from .memory_rewrite import MEMORY_REWRITE_PROMPT, build_memory_rewrite_prompt
 from .pattern_admission_judge import (
     PATTERN_ADMISSION_JUDGE_PROMPT,
     build_pattern_admission_judge_prompt,
+)
+from .schema_role_annotator import (
+    SCHEMA_ROLE_ANNOTATOR_PROMPT,
+    build_schema_role_annotator_prompt,
 )
 from .shared_insight_judge import (
     SHARED_INSIGHT_JUDGE_PROMPT,
@@ -61,6 +66,8 @@ __all__ = [
     "build_memory_rewrite_prompt",
     "PATTERN_ADMISSION_JUDGE_PROMPT",
     "build_pattern_admission_judge_prompt",
+    "SCHEMA_ROLE_ANNOTATOR_PROMPT",
+    "build_schema_role_annotator_prompt",
     "SHARED_INSIGHT_JUDGE_PROMPT",
     "build_shared_insight_judge_prompt",
     "WRONG_CASE_AUDITOR_PROMPT",

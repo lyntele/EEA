@@ -204,6 +204,12 @@ Commit 命名：`WU{N}: {short subject}`，body 包含：
 
 **依赖**：无
 
+**完成状态**：已实现。新增 `common/analysis/schema_role_annotator.py`
+与 `common/llm/prompts/schema_role_annotator.py`；`build_local_schema_view`
+构造后会用缓存/LLM 给 `LocalSchemaView.semantic_hints` 补充自由命名的
+`role_family`。同时撤掉 `db_schema_access.py` 中原有英文列名 `_guess_role_family`
+启发式，LLM/缓存不可用时仅保留列说明，`role_family=None`。
+
 ---
 
 ### 阶段 B：抽取与演化的涌现化改造

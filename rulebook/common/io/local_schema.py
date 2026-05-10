@@ -194,6 +194,16 @@ def build_local_schema_view(
             two_hop_extension=two_hop_added,
         ),
     )
+    try:
+        from method.EEA.rulebook.common.analysis.schema_role_annotator import (
+            annotate_schema_roles,
+        )
+
+        view = annotate_schema_roles(view, db_id=db_id)
+    except Exception:
+        # Schema role annotation is an enrichment path. LocalSchemaView
+        # construction must stay available even when the LLM/cache path fails.
+        pass
 
     diagnostics = LocalSchemaViewDiagnostics(
         missing_bridge_paths=sorted(set(denied)),

@@ -174,7 +174,7 @@ class SqliteDBSchemaAccess:
         return ColumnHint(
             table=table,
             column=column,
-            role_family=_guess_role_family(column, data_format, col_description),
+            role_family=None,
             note=" | ".join(note_pieces) or None,
         )
 
@@ -232,37 +232,6 @@ class SqliteDBSchemaAccess:
         except Exception:
             self._description_cache = {}
         return self._description_cache
-
-
-# =============================================================================
-# 辅助：从列名/描述粗猜 role_family
-# Phase 1 不追求完美，仅作 LocalSchemaView.semantic_hints 的初始 tag
-# =============================================================================
-
-
-def _guess_role_family(
-    column: str, data_format: str, description: str
-) -> Optional[str]:
-    """按 naming pattern 粗猜列语义 role。与 ontology 无关，仅用于 candidate 枚举。"""
-    col_lower = column.lower()
-    desc_lower = (description or "").lower()
-    fmt_lower = (data_format or "").lower()
-
-    if col_lower.endswith("_id") or col_lower == "id" or col_lower.startswith("link_to_"):
-        return "identifier"
-    if "_name" in col_lower or col_lower.endswith("name") or col_lower == "name":
-        return "name"
-    if col_lower.endswith("_code") or col_lower == "code" or col_lower == "zip":
-        return "code"
-    if col_lower.endswith("_date") or col_lower.endswith("_time") or "date" in fmt_lower:
-        return "temporal"
-    if "text" in fmt_lower and ("label" in col_lower or "description" in col_lower):
-        return "label"
-    if fmt_lower in ("integer", "real", "float", "numeric", "number"):
-        return "measure"
-    if "count" in desc_lower or "amount" in desc_lower or "price" in desc_lower:
-        return "measure"
-    return None
 
 
 __all__ = ["SqliteDBSchemaAccess"]

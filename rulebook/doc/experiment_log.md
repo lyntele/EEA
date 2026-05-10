@@ -1868,3 +1868,23 @@ r19 后补丁：
 - `PYTHONPATH=/data/liuyining/ace4sql python - <<... load_config ...>>` 返回 `True`，确认默认跳过生效。
 - `final_evolve_and_freeze(library=empty, skip_replay_freeze=True)` 返回 `final_freeze_skipped=True`，compact report 同步记录。
 - `audit_pattern_signatures.py` 在 `toxicology_focus18_postsel_v1_qwen3coderflash_20260508_r5/final_library.json` 上成功导出 9 个 pattern 的摘要。
+
+### 2026-05-10 emergence_refactor WU1：Schema role annotator
+
+改动目标：
+
+- 为后续撤除 `_column_role` 英文启发式建立替代来源：每个 `LocalSchemaView` 的列角色由 schema-level 缓存/LLM 标注得到，`role_family` 是自由短语，不是闭集词表。
+- 避免继续从列名硬猜 `identifier/name/measure` 这类预定义角色。
+
+实现：
+
+- 新增 `common/analysis/schema_role_annotator.py`：入口 `annotate_schema_roles(local_schema_view, db_id)`，优先读 `{cache_root}/schema_roles/{db_id}.json`，缺失时调用 `schema_role_annotator` prompt，写回缓存；LLM/cache 失败时不抛错。
+- 新增 `common/llm/prompts/schema_role_annotator.py`：要求输出自由命名 `role_family`，不限制词表；强调不能把表名、库名、case id、SQL alias 写进角色名。
+- `common/io/local_schema.py::build_local_schema_view` 在构造 `LocalSchemaView` 后调用 annotator。
+- `common/io/db_schema_access.py` 不再用 `_guess_role_family`，只保留 database description note；`role_family` 由 annotator 负责。
+
+验证：
+
+- `python -m py_compile common/analysis/schema_role_annotator.py common/io/local_schema.py common/io/db_schema_access.py common/llm/prompts/schema_role_annotator.py common/llm/prompts/__init__.py` 通过。
+- 静态检查确认 `_guess_role_family` / naming-pattern role guess 在 `common/io`、`common/analysis` 中已无命中。
+- 用临时 cache 验证 `posts.LastEditorUserId` 可被映射为缓存中的 `"editor reference"`，且不会触发 LLM。
