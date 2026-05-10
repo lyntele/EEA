@@ -2050,3 +2050,23 @@ r19 后补丁：
 - `python -m py_compile common/core/data_structures.py common/llm/prompts/pattern_equivalence_judge.py common/llm/prompts/__init__.py common/learning/evolution.py common/learning/promotion.py common/runtime/runtime.py common/learning/pattern_formation.py` 通过。
 - 静态探针确认 `LibraryStateV2.signature_phrase_catalog` 可序列化/加载。
 - monkeypatch 探针确认 `_pattern_precondition_self_recall` 在两个 support case 均匹配时返回 `rate=1.0`。
+
+### 2026-05-10 emergence_refactor WU10：final freeze 默认跳过接口对齐
+
+问题：
+
+- `common/config.toml` 与 CLI 已经默认 `skip_final_freeze=true`，但 `final_evolve_and_freeze()` API 参数仍默认 `skip_replay_freeze=False`。
+- DeepEye `eea_contract_adapter.finalize_eea_library()` 调用 EEA API 时没有显式传 `skip_replay_freeze`，因此接入端 finalize 会落回旧默认，表现为结果里没有跳过 freeze。
+
+实现：
+
+- `common/learning/evolution.py::final_evolve_and_freeze` 将 `skip_replay_freeze` 默认值改为 `None`。
+- 当调用方未显式指定时，函数读取 `load_config().evolution.skip_final_freeze`；读取失败时默认跳过，避免接入端漏传导致重新执行 final replay。
+- 显式传入 `skip_replay_freeze=False` 时仍保留强制不跳过能力。
+
+验证：
+
+- `python -m py_compile common/learning/evolution.py common/core/config.py` 通过。
+- `load_config().evolution.skip_final_freeze` 返回 `True`。
+- 直接调用 `final_evolve_and_freeze(library=empty)` 返回 `final_freeze_skipped=True`、`promotion_skipped_reason=skip_final_freeze`。
+- 通过 DeepEye `finalize_eea_library(...)` 空库 smoke，返回的 `audit.final_event.final_freeze_skipped=True`，`freeze_manifest.skipped=True`。

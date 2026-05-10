@@ -929,9 +929,16 @@ def final_evolve_and_freeze(
     promotion_min_support: int = 2,
     row_sample_limit: int = 5000,
     freeze_output_path: Optional[Path] = None,
-    skip_replay_freeze: bool = False,
+    skip_replay_freeze: Optional[bool] = None,
 ) -> Tuple[LibraryStateV2, Dict[str, Any]]:
     """Run the plan.md final evolution boundary and freeze manifest."""
+    if skip_replay_freeze is None:
+        try:
+            from method.EEA.rulebook.common.core.config import load_config  # noqa: WPS433
+
+            skip_replay_freeze = bool(load_config().evolution.skip_final_freeze)
+        except Exception:
+            skip_replay_freeze = True
     return evolve_library_with_replay(
         library=library,
         event_kind="final_evolve_and_freeze",
@@ -945,7 +952,7 @@ def final_evolve_and_freeze(
         promotion_min_support=promotion_min_support,
         row_sample_limit=row_sample_limit,
         freeze_output_path=freeze_output_path,
-        skip_replay_freeze=skip_replay_freeze,
+        skip_replay_freeze=bool(skip_replay_freeze),
     )
 
 
