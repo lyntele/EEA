@@ -330,15 +330,9 @@ def _bool(value: Any) -> bool:
     return bool(value)
 
 
-def _bucket_count(value: Any) -> str:
-    count = _int_or_none(value) or 0
-    if count <= 0:
-        return "0"
-    if count == 1:
-        return "1"
-    if count == 2:
-        return "2"
-    return "3plus"
+def _bucket_count(value: Any) -> int:
+    """Compatibility wrapper that now preserves the raw count."""
+    return _int_or_none(value) or 0
 
 
 def _role_counts(roles: Iterable[Any]) -> Dict[str, int]:
@@ -363,10 +357,10 @@ def _pred_current_summary(case_signal_view: Optional[CaseSignalView]) -> Dict[st
             "role_counts": _role_counts(roles),
             "grain": output_shape.get("grain"),
         },
-        "join_count_bucket": _bucket_count(join_count),
-        "table_count_bucket": _bucket_count(len(tables_used)),
-        "predicate_count_bucket": _bucket_count(predicate_profile.get("predicate_count")),
-        "predicate_literal_count_bucket": _bucket_count(predicate_profile.get("literal_count")),
+        "join_count": _bucket_count(join_count),
+        "table_count": _bucket_count(len(tables_used)),
+        "predicate_count": _bucket_count(predicate_profile.get("predicate_count")),
+        "predicate_literal_count": _bucket_count(predicate_profile.get("literal_count")),
         "has_or_predicate": _bool(predicate_profile.get("has_or")),
         "has_negation_predicate": _bool(predicate_profile.get("has_negation")),
         "has_aggregate": _bool(aggregate_profile.get("has_aggregate")),
@@ -589,13 +583,13 @@ def _pred_contract_signals(pred_current: Dict[str, Any]) -> List[str]:
         signals.append(f"pred.output_grain={grain}")
     if str(arity) == "2" or grain == "pair_rows":
         signals.append("pred.pair_output=True")
-    for key in ("join_count_bucket", "table_count_bucket", "predicate_count_bucket"):
+    for key in ("join_count", "table_count", "predicate_count"):
         value = pred_current.get(key)
         if value is not None:
             signals.append(f"pred.{key}={value}")
-    if pred_current.get("predicate_literal_count_bucket") is not None:
+    if pred_current.get("predicate_literal_count") is not None:
         signals.append(
-            f"pred.predicate_literal_count_bucket={pred_current.get('predicate_literal_count_bucket')}"
+            f"pred.predicate_literal_count={pred_current.get('predicate_literal_count')}"
         )
     for key in (
         "has_or_predicate",
@@ -683,11 +677,11 @@ def _core_pred_contract_signals(
     if locus in {"WHERE", "SCOPE", "PREDICATE"} and pred_current.get("has_negation_predicate"):
         signals.append("pred.has_negation_predicate=True")
     if locus in {"WHERE", "SCOPE", "PREDICATE"} or target_family == "condition":
-        if pred_current.get("predicate_count_bucket") is not None:
-            signals.append(f"pred.predicate_count_bucket={pred_current.get('predicate_count_bucket')}")
-        if pred_current.get("predicate_literal_count_bucket") is not None:
+        if pred_current.get("predicate_count") is not None:
+            signals.append(f"pred.predicate_count={pred_current.get('predicate_count')}")
+        if pred_current.get("predicate_literal_count") is not None:
             signals.append(
-                f"pred.predicate_literal_count_bucket={pred_current.get('predicate_literal_count_bucket')}"
+                f"pred.predicate_literal_count={pred_current.get('predicate_literal_count')}"
             )
 
     return sorted(set(signals))
@@ -724,29 +718,10 @@ def _shape_variant_signals(
 
 
 def _non_broad_trigger_signals(signals: Iterable[Any]) -> List[str]:
-    broad = {
-        "pred.select_arity_present=True",
-        "pred.has_select=True",
-        "pred.has_join=True",
-        "pred.has_where=True",
-        "pred.contains_sql_role=output_slot",
-        "pred.contains_sql_role=predicate_ref",
-        "pred.contains_sql_role=join_endpoint",
-        "pred.contains_column_role=other",
-        "pred.contains_relation_role=unknown_table",
-        "pred.contains_relation_role=table_node",
-        "pred.contains_relation_role=root_table",
-        "pred.contains_relation_role=connector_by_query_degree",
-        "pred.contains_relation_role=connector_by_schema_degree",
-    }
     out: set[str] = set()
     for signal in signals:
         text = str(signal)
-        if not text or text in broad:
-            continue
-        if re.match(r"^pred\.contains_path_role=output_slot_\d+$", text):
-            continue
-        if re.match(r"^pred\.contains_path_role=predicate_\d+_ref_\d+$", text):
+        if not text or text.startswith("program."):
             continue
         out.add(text)
     return sorted(out)
@@ -888,8 +863,8 @@ def _program_required_pred_signals(
             common &= set(variant)
         signals.update(_non_broad_trigger_signals(common))
     if families & {"where_side_edit"}:
-        if pred_current.get("predicate_count_bucket") is not None:
-            signals.add(f"pred.predicate_count_bucket={pred_current.get('predicate_count_bucket')}")
+        if pred_current.get("predicate_count") is not None:
+            signals.add(f"pred.predicate_count={pred_current.get('predicate_count')}")
     aggregate_values = set()
     for op in ops:
         args = _payload(op.get("arguments"))

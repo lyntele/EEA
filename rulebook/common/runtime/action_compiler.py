@@ -67,32 +67,13 @@ def _hash_cand(payload: str) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
 
 
-def _column_role_from_name(column: str) -> str:
-    token = str(column or "").strip().strip('"`[]').lower()
-    if not token:
-        return "other"
-    if token == "id" or token.endswith("_id") or "uuid" in token or token.endswith("_key"):
-        return "identifier"
-    if "code" in token:
-        return "code"
-    if "name" in token or "title" in token:
-        return "name"
-    if "label" in token or "flag" in token or "status" in token:
-        return "label"
-    if "date" in token or "time" in token or token.endswith("_at"):
-        return "temporal"
-    if any(part in token for part in ("count", "num", "amount", "ratio", "pct", "score")):
-        return "measure"
-    return "other"
-
-
 def _get_column_role(
     table: str, column: str, schema_view: LocalSchemaView
 ) -> Optional[str]:
     for hint in schema_view.semantic_hints:
         if hint.table.lower() == table.lower() and hint.column.lower() == column.lower():
             return hint.role_family
-    return _column_role_from_name(column)
+    return None
 
 
 def _is_role_allowed(role: Optional[str], allowed: Sequence[str]) -> bool:

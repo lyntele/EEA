@@ -508,6 +508,12 @@ required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-
 
 **回滚**：`git revert <WU6 commit>` 恢复 `_column_role` 启发式 + 桶化 + 黑名单 + 强制规则。WU6 改动跨越多个文件，commit 应明确包含全部改动以保证 revert 原子性。
 
+**执行记录（2026-05-10）**：
+- 已删除 `role_graph_normalizer._column_role` 和 `action_compiler._column_role_from_name`，列角色只来自 WU1 schema role annotator 的 `semantic_hints`；缺失时返回 `unknown` / `None`。
+- `_bucket_count` 保留函数名但返回原始整数；`join_count_bucket` / `table_count_bucket` / `predicate_count_bucket` / `predicate_literal_count_bucket` 已改为 `join_count` / `table_count` / `predicate_count` / `predicate_literal_count`。
+- `runtime._is_substantive_hard_signal` 和 `signal_summary._non_broad_trigger_signals` 只过滤空信号与 `program.*`，不再维护固定黑名单。
+- R1/R6 prompt 软化已在 WU2 完成，本 WU 复核后无需再次修改。
+
 **工时**：1d
 
 **依赖**：WU1（schema 标注必须就绪，否则 column_role 全部为 `unknown`）；WU5 完成（避免清理冲突）

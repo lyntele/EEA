@@ -469,15 +469,9 @@ def _case_output_shape(case_view: RuntimeCaseView) -> Dict[str, Any]:
     return out
 
 
-def _bucket_count(value: Any) -> str:
-    count = _int_or_zero(value)
-    if count <= 0:
-        return "0"
-    if count == 1:
-        return "1"
-    if count == 2:
-        return "2"
-    return "3plus"
+def _bucket_count(value: Any) -> int:
+    """Compatibility wrapper that now preserves the raw count."""
+    return _int_or_zero(value)
 
 
 def _case_pred_current_summary(case_view: RuntimeCaseView) -> Dict[str, Any]:
@@ -494,10 +488,10 @@ def _case_pred_current_summary(case_view: RuntimeCaseView) -> Dict[str, Any]:
             "roles": roles,
             "grain": output_shape.get("grain"),
         },
-        "join_count_bucket": _bucket_count(len(pred_sql_view.get("join_graph") or [])),
-        "table_count_bucket": _bucket_count(len(pred_sql_view.get("tables_used") or [])),
-        "predicate_count_bucket": _bucket_count(predicate_profile.get("predicate_count")),
-        "predicate_literal_count_bucket": _bucket_count(predicate_profile.get("literal_count")),
+        "join_count": _bucket_count(len(pred_sql_view.get("join_graph") or [])),
+        "table_count": _bucket_count(len(pred_sql_view.get("tables_used") or [])),
+        "predicate_count": _bucket_count(predicate_profile.get("predicate_count")),
+        "predicate_literal_count": _bucket_count(predicate_profile.get("literal_count")),
         "has_or_predicate": bool(predicate_profile.get("has_or")),
         "has_negation_predicate": bool(predicate_profile.get("has_negation")),
         "has_aggregate": bool(aggregate_profile.get("has_aggregate")),
@@ -539,13 +533,13 @@ def _pred_contract_signals_from_summary(pred_current: Dict[str, Any]) -> Set[str
         signals.add(f"pred.output_grain={grain}")
     if str(arity) == "2" or grain == "pair_rows":
         signals.add("pred.pair_output=True")
-    for key in ("join_count_bucket", "table_count_bucket", "predicate_count_bucket"):
+    for key in ("join_count", "table_count", "predicate_count"):
         value = pred_current.get(key)
         if value is not None:
             signals.add(f"pred.{key}={value}")
-    if pred_current.get("predicate_literal_count_bucket") is not None:
+    if pred_current.get("predicate_literal_count") is not None:
         signals.add(
-            f"pred.predicate_literal_count_bucket={pred_current.get('predicate_literal_count_bucket')}"
+            f"pred.predicate_literal_count={pred_current.get('predicate_literal_count')}"
         )
     for key in (
         "has_or_predicate",
@@ -904,7 +898,7 @@ def _source_antipattern_failures(
     current_grain = str(current_shape.get("grain") or "")
     current_path_roles = _current_path_roles(current_signals)
     current_role_side_groups = _current_role_side_groups(current_signals)
-    predicate_count_bucket = str(current_summary.get("predicate_count_bucket") or "")
+    predicate_count = _int_or_zero(current_summary.get("predicate_count"))
     for row in envelope.get("source_antipatterns") or []:
         payload = _payload(row)
         kind = str(payload.get("kind") or "")
@@ -956,7 +950,7 @@ def _source_antipattern_failures(
                 payload.get("removed_source_predicates")
                 or payload.get("added_target_predicates")
                 or payload.get("possible_scope_move")
-            ) and predicate_count_bucket == "0":
+            ) and predicate_count <= 0:
                 failures.append("source_antipattern_missing_predicate_scope")
         elif kind == "grain_delta":
             source_grain = str(payload.get("source_grain") or "")
@@ -1980,10 +1974,10 @@ def _singleton_exact_source_mismatches(
     mismatches: List[str] = []
     exact_keys = (
         "select_arity",
-        "join_count_bucket",
-        "table_count_bucket",
-        "predicate_count_bucket",
-        "predicate_literal_count_bucket",
+        "join_count",
+        "table_count",
+        "predicate_count",
+        "predicate_literal_count",
         "has_or_predicate",
         "has_negation_predicate",
         "has_aggregate",
@@ -2211,43 +2205,7 @@ def _is_substantive_hard_signal(signal: str) -> bool:
     signal = str(signal or "")
     if not signal:
         return False
-    if signal in {
-        "pred.select_arity_present=True",
-        "pred.has_select=True",
-        "pred.has_join=True",
-        "pred.has_where=True",
-    }:
-        return False
     if signal.startswith("program."):
-        return False
-    if signal in {
-        "pred.has_aggregate=False",
-        "pred.has_group_by=False",
-        "pred.has_order_by=False",
-        "pred.has_limit=False",
-        "pred.has_case_when=False",
-        "pred.has_or_predicate=False",
-        "pred.has_negation_predicate=False",
-        "pred.has_distinct_aggregate=False",
-    }:
-        return False
-    if signal in {
-        "pred.output_role=other",
-        "pred.output_roles=other",
-        "pred.contains_column_role=other",
-        "pred.contains_sql_role=output_slot",
-        "pred.contains_sql_role=predicate_ref",
-        "pred.contains_sql_role=join_endpoint",
-        "pred.contains_relation_role=unknown_table",
-        "pred.contains_relation_role=table_node",
-        "pred.contains_relation_role=root_table",
-        "pred.contains_relation_role=connector_by_query_degree",
-        "pred.contains_relation_role=connector_by_schema_degree",
-    }:
-        return False
-    if re.match(r"^pred\.contains_path_role=output_slot_\d+$", signal):
-        return False
-    if re.match(r"^pred\.contains_path_role=predicate_\d+_ref_\d+$", signal):
         return False
     return True
 

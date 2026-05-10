@@ -29,25 +29,6 @@ def _clean_identifier(value: str) -> str:
     return str(value or "").strip().strip('"`[]')
 
 
-def _column_role(column: Optional[str]) -> str:
-    token = _clean_identifier(column or "").lower()
-    if not token:
-        return "other"
-    if token == "id" or token.endswith("_id") or "uuid" in token or token.endswith("_key"):
-        return "identifier"
-    if "code" in token:
-        return "code"
-    if "name" in token or "title" in token:
-        return "name"
-    if "label" in token or "flag" in token or "status" in token:
-        return "label"
-    if "date" in token or "time" in token or token.endswith("_at"):
-        return "temporal"
-    if any(part in token for part in ("count", "num", "amount", "ratio", "pct", "score")):
-        return "measure"
-    return "other"
-
-
 def _schema_column_role(
     *,
     table: Optional[str],
@@ -55,11 +36,11 @@ def _schema_column_role(
     schema_view: Optional[LocalSchemaView],
 ) -> str:
     if not table or not column or schema_view is None:
-        return _column_role(column)
+        return "unknown"
     for hint in schema_view.semantic_hints:
         if hint.table.lower() == table.lower() and hint.column.lower() == column.lower():
-            return hint.role_family or _column_role(column)
-    return _column_role(column)
+            return hint.role_family or "unknown"
+    return "unknown"
 
 
 def _sql_alias_map(sql: str) -> Dict[str, str]:

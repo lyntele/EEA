@@ -1971,3 +1971,26 @@ r19 后补丁：
 - `python -m py_compile common/core/vocabulary.py common/core/data_structures.py common/runtime/runtime.py common/runtime/action_compiler.py common/learning/pattern_formation.py common/learning/evolution.py cli/audit_pattern_signatures.py` 通过。
 - `rg "BIAS_RECOGNITION_SIGNAL_VOCABULARY|compute_bias_recognition_signals|_bias_signal_from_runtime_signal|_bias_signals_for_group|_fallback_bias_recognition_contract|_validated_bias_recognition_contract_payload|_attach_validated_bias_recognition_contract" common cli` 0 命中。
 - `rg "bias_recognition_contract|recognition_signals|anti_signals|bias_recognition_signals" common/runtime common/learning common/runtime/action_compiler.py` 0 命中；仅数据结构 legacy 字段和 audit 输出兼容项保留。
+
+### 2026-05-10 emergence_refactor WU6：撤除列名角色启发、桶化和 hard-signal 黑名单
+
+改动目标：
+
+- 不再从列名字符串硬猜 `identifier/name/code/measure` 等角色，避免英文 schema 规则污染跨库泛化。
+- 不再把计数压成 `0/1/2/3plus` 桶；触发信号保留原始整数。
+- 不再维护“这些信号太 broad 所以过滤”的固定黑名单；除 `program.*` 运行期不可复现信号外，其余 answer-blind 信号允许进入 audit/trigger 比对。
+
+实现：
+
+- `common/analysis/role_graph_normalizer.py` 删除 `_column_role`，`_schema_column_role` 只读 `LocalSchemaView.semantic_hints`，缺失返回 `unknown`。
+- `common/runtime/action_compiler.py` 删除 `_column_role_from_name`，`_get_column_role` 只查 schema semantic hints，缺失返回 `None`。
+- `common/analysis/signal_summary.py` 和 `common/runtime/runtime.py` 的 `_bucket_count` 保留函数名但返回原始 int；相关字段从 `*_bucket` 改为 `join_count` / `table_count` / `predicate_count` / `predicate_literal_count`。
+- `signal_summary._non_broad_trigger_signals` 与 `runtime._is_substantive_hard_signal` 只过滤空信号和 `program.*`。
+- `error_instance_extractor` 的 R1/R6 强制语气已在 WU2 中软化，本 WU 复核未再改。
+
+验证：
+
+- `python -m py_compile common/analysis/role_graph_normalizer.py common/runtime/action_compiler.py common/analysis/signal_summary.py common/runtime/runtime.py` 通过。
+- `rg "join_count_bucket|table_count_bucket|predicate_count_bucket|predicate_literal_count_bucket|3plus" common/analysis common/runtime common/learning` 0 命中。
+- `rg "def _column_role\\b|_column_role_from_name|_column_role\\(" common/analysis common/runtime common/io` 仅剩 `_schema_column_role` 与调用点。
+- 静态探针确认 `_bucket_count(5) == 5`，`_is_substantive_hard_signal("pred.has_aggregate=False") == True`，`program.*` 仍被过滤。
