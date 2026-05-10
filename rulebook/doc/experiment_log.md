@@ -2152,3 +2152,25 @@ r19 后补丁：
 - `python -m py_compile common/learning/pattern_formation.py common/llm/prompts/pattern_admission_judge.py common/llm/prompts/error_instance_extractor.py common/runtime/runtime.py common/llm/prompts/pattern_pre_condition_match.py` 通过。
 - `PYTHONPATH=/data/liuyining/ace4sql pytest -q` 仍为既有基线 `24 failed, 86 passed, 15 skipped`，没有新增失败。
 - 零成本探针确认 r25 final RoleGraph pattern 的 `llm_estimated_recall=1.0` 但 `code_real=0.29`，证明需要代码端 recall 和 WU12 真实 self-recall 双重约束。
+
+### 2026-05-10 emergence_refactor r26 后修复：物理净化 admission question view
+
+问题：
+
+- r26 focus18 仍为 `enhanced_correct=7/18`，未超过 r25。
+- RoleGraph pattern 路径已经稳定工作，`253/268/277/285/302/307` 均由 `grp-pat-toxicology-206-249-b5991530` 触发并修对。
+- source-route / bridge-route 相关 `326/328/335/338` 仍为 `no_match`。
+- 直接查看 r26 `final_library.json` 发现 source-route patterns 的 `pre_question_signature` 仍含 `bridge table`、`shared foreign key`、`direct linkage` 等 SQL-side 机制词。原因不是 prompt 没分栏，而是 `_extract_question_evidence()` 仍把 `stable_bias_frame / interface_key / source_misread / target_preference` 放进 question view，导致 admission LLM 在写 question signature 时仍能看到 SQL 侧机制。
+
+实现：
+
+- `pattern_formation._extract_question_evidence` 改为严格 question-only，只保留 `case_ids / group_id / pre_question_signature_local`。
+- `source_misread` 转移到 `_extract_sql_evidence`，因为它描述的是当前 SQL 的 source-side 误读。
+- `interface_key` 转移到 `_extract_shared_evidence`，作为 failure summary / repair direction 的抽象修复接口参考。
+- 本次不修改 prompt 模板、runtime trigger、extension gate、branch materialization 或 action compiler，保证后续 11 库探底只评估“物理 Q/S 分栏净化”的影响。
+
+验证计划：
+
+- 静态验证 `python -m py_compile common/learning/pattern_formation.py`。
+- 函数级探针确认 question view 不再包含 SQL-side 字段，`source_misread` 进入 sql view，`interface_key` 进入 shared view。
+- 先用 r26 final library 记录修改前 pre-question SQL keyword 污染作为基线；后续 11 库全量 post-selection 实验结束后，对新 final libraries 复查 pre-question SQL keyword 命中情况和 source-route 类 pattern 的触发表现。

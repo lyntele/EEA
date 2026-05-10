@@ -1890,16 +1890,15 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
 
 
 def _extract_question_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
-    """Evidence slice for question-side pre-condition writing only."""
-    insight = _model_dump(card.get("repair_insight") or {})
+    """Evidence slice for question-side pre-condition writing only.
+
+    Keep this physically question-only. SQL-side mechanism fields are routed to
+    the SQL/shared views so admission cannot leak them into pre_question_signature.
+    """
     pre_condition = _model_dump(card.get("pre_condition_local") or {})
     return {
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
-        "stable_bias_frame": _short_text(card.get("stable_bias_frame"), limit=180),
-        "interface_key": _short_text(insight.get("interface_key"), limit=160),
-        "source_misread": _short_text(insight.get("source_misread"), limit=180),
-        "target_preference": _short_text(insight.get("target_preference"), limit=180),
         "pre_question_signature_local": _short_text(
             pre_condition.get("pre_question_signature_local"),
             limit=180,
@@ -1909,10 +1908,12 @@ def _extract_question_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
 
 def _extract_sql_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
     """Evidence slice for SQL-side pre-condition writing only."""
+    insight = _model_dump(card.get("repair_insight") or {})
     pre_condition = _model_dump(card.get("pre_condition_local") or {})
     return {
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
+        "source_misread": _short_text(insight.get("source_misread"), limit=180),
         "delta_axes": list(card.get("delta_axes") or [])[:8],
         "shape_delta": _model_dump(card.get("shape_delta")),
         "canonical_lowering_families": list(card.get("canonical_lowering_families") or [])[:8],
@@ -1935,6 +1936,7 @@ def _extract_shared_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
         "stable_bias_frame": _short_text(card.get("stable_bias_frame"), limit=180),
+        "interface_key": _short_text(insight.get("interface_key"), limit=160),
         "target_preference": _short_text(insight.get("target_preference"), limit=180),
         "repair_interface": _short_text(insight.get("repair_interface"), limit=180),
         "binding_slots": list(insight.get("binding_slots") or [])[:8],
