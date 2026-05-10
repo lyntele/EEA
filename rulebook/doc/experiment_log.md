@@ -1773,3 +1773,26 @@ r18 结果：
 - `pattern_extension_count > 0`，且 shared_insight / pattern_admission LLM 调用明显少于 r18。
 - final library 中 RoleGraph 不再重复保存多个嵌套/重叠 pattern。
 - q335 至少能看到 source-route pattern 的 recognition 不再被 `anti_signal_hit:has_aggregate_in_select` 挡掉；是否最终修对取决于 branch route 实例化质量。
+
+r19 实测：
+
+- 运行：`toxicology_focus18_postsel_v1_qwen3coderflash_20260510_054923`
+- `final_correct = 8/18`，`runtime ready = 8/18`，`regression = 0`，与 r18 持平。
+- 修对：`249,253,268,277,285,302,307,338`。
+- 路径质量改善：q253/q268/q277/q285/q302/q307 均已通过 pattern 触发；q249 仍走 singleton，原因是它到达时只有 q206 一个先例，尚未形成 pattern。
+- final library：`patterns=5`，`singletons=18`。RoleGraph 主 pattern 已包含 `[206,249,253,268,277,285,302,307]`，完整覆盖本轮强 RoleGraph 组。
+- q335 仍 `no_match`。本轮 anti-signal 不再保留 `has_aggregate_in_select` / `answer_unit_scalar_aggregate`，但 q335 在线时 source-route pattern 仍未进入 top candidate 的 bias-recognized 路径；后续需要检查 source-route pattern 的 recognition signals 是否能从 q335 当前 SQL 抽出，而不只是去掉错误 anti。
+- final freeze 完成但耗时约 1 小时。trace：`shared_insight_judge=124`、`action_compiler=43`、`hint_instantiation=43`、`memory_rewrite=25`。说明本轮 E 只减少 branch_member SQL execution，未解决 final freeze 中 full/LOO replay 的 LLM 复算负载。
+- A 的第一版实现没有真正生效：`extended_pattern_candidates=0`。原因是扩充阶段从 singleton memory 抽取的 bias signals 少于 runtime case view，RoleGraph singleton 只能得到粗粒度 pair/output 信号，达不到 pattern recognition overlap。
+
+r19 后补丁：
+
+- `_bias_signals_for_group` 增加从 singleton `trigger_contract` / `canonical_discriminants` 反推出 recognition signals 的逻辑：`has_direct_relation_join`、`same_relation_two_role_sides`、`no_distinct_on_pair_output` 等现在可从已沉淀 singleton 中得到。
+- 静态探针确认：q302 singleton 对 RoleGraph pattern 的 recognition overlap 从不足阈值补齐为 `6/6`。
+- `_try_extend_existing_pattern` 不再在 fast-path 内补跑缺失 pair 的 `score_pair`，避免“快速扩充”反而触发新的 shared-insight LLM 调用；它只使用本轮 retrieval 已经算好的 pair_scores。
+- `compact_evolution_report` 现在透传 `pattern_extension_candidates` 和 `pattern_dedup_audit`，下轮可以直接看到扩充失败原因。
+
+当前判断：
+
+- 在线收益和 pattern 路径已经稳定达到 r18 水平；RoleGraph 的 pattern 化目标基本达成。
+- 还未完成的是 A 的真实在线减负验收与 q335 source-route 召回。下一轮必须先看 `pattern_extension_count` 是否大于 0，以及 final freeze LLM trace 是否下降；如果仍慢，问题不在 admission 扩充，而在 final freeze formal/LOO replay 仍重跑完整 compiler/rewrite。

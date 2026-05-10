@@ -2566,6 +2566,24 @@ def _bias_signals_for_group(group: GroupSummary) -> Set[str]:
         mapped = _bias_signal_from_runtime_signal(signal)
         if mapped:
             signals.add(mapped)
+    if any("pred.decisive_tag=pair_output" in signal or "pred.pair_output=True" in signal for signal in signal_rows):
+        signals.add("select_arity_ge_2")
+        signals.add("has_pair_role_side_output")
+    if (
+        "pred.has_distinct_aggregate=False" in signal_rows
+        and any("pred.pair_output=True" in signal or "pred.decisive_tag=pair_output" in signal for signal in signal_rows)
+    ):
+        signals.add("no_distinct_on_pair_output")
+    canonical_discriminants = [
+        str(item)
+        for item in (contract.get("canonical_discriminants") or [])
+        if str(item)
+    ]
+    if any("direct:" in item or "contains_direct_role_path" in item for item in canonical_discriminants):
+        signals.add("has_direct_relation_join")
+    side_key_count = sum(1 for item in canonical_discriminants if "contains_side_key" in item)
+    if side_key_count >= 2 or any("contains_role_side_group" in item for item in canonical_discriminants):
+        signals.add("same_relation_two_role_sides")
     payload = _signal_payload(group)
     pred_current = dict((payload.get("pred_current") or {}) or {})
     if pred_current.get("has_aggregate") or pred_current.get("has_aggregate_in_select"):
@@ -2767,8 +2785,7 @@ def _try_extend_existing_pattern(
             key = tuple(sorted((new_singleton.group_id, member.group_id)))
             pair = pair_scores.get(key)
             if pair is None:
-                pair = score_pair(new_singleton, member)
-                pair_scores[key] = pair
+                continue
             pair_pass = _pair_supports_root_membership(pair, left=new_singleton, right=member)
             root_supported = root_supported or pair_pass
             best_pair_score = max(best_pair_score, float(pair.score or 0.0))

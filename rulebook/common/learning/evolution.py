@@ -471,6 +471,10 @@ def compact_evolution_report(report: Dict[str, Any]) -> Dict[str, Any]:
             "input": dict(formation.get("input_counts") or {}),
             "output": dict(formation.get("output_counts") or {}),
         },
+        "pattern_extension_candidates": list(
+            formation.get("pattern_extension_candidates") or []
+        )[:20],
+        "pattern_dedup_audit": list(report.get("pattern_dedup_audit") or [])[:50],
         "candidate_pattern_count": int(report.get("candidate_pattern_count") or 0),
         "candidate_evolved_object_count": int(report.get("candidate_evolved_object_count") or 0),
         "promotion_skipped_reason": report.get("promotion_skipped_reason"),
