@@ -4029,9 +4029,21 @@ def _case_runtime_tables(case_view: RuntimeCaseView) -> Set[str]:
     }
     if tables:
         return tables
+    sql_text = str(case_view.pred_manifestation.top1_sql or "")
+    tables = {
+        match.group(1).strip().strip('"`[]').split(".", 1)[0].lower()
+        for match in re.finditer(
+            r"\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_.$\"`\[\]]*)",
+            sql_text,
+            flags=re.IGNORECASE,
+        )
+        if match.group(1).strip()
+    }
+    if tables:
+        return tables
     return {
         str(table).lower()
-        for table in (extract_tables_from_pred(case_view.pred_manifestation.top1_sql) or [])
+        for table in (case_view.local_schema_view.tables or [])
         if str(table)
     }
 
