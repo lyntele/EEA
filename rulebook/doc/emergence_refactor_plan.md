@@ -576,6 +576,11 @@ required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-
 
 **回滚**：`git revert <WU8 commit>` 恢复 mapping dict + token 命中段。
 
+**执行记录（2026-05-10）**：
+- WU8 的物理删除项已在 WU5 提前完成：`_bias_signal_from_runtime_signal`、`_bias_signals_for_group`、`_branch_signal_set` 和 action_payload token 命中段均已删除。
+- `_try_extend_existing_pattern` 当前使用每个 case 的 `pattern_recognition_contract` / `trigger_contract.pre_condition` 与 case-local pair root evidence；不再使用 jaccard 或手写 token mapping。
+- `rg "_bias_signal_from_runtime_signal|_bias_signals_for_group|action_payload.*reroute" common` 0 命中。
+
 **工时**：0.5d
 
 **依赖**：WU4 完成

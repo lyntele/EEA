@@ -2013,3 +2013,19 @@ r19 后补丁：
 
 - `python -m py_compile common/runtime/trigger_contract.py common/runtime/runtime.py common/learning/pattern_formation.py common/analysis/signal_summary.py` 通过。
 - 静态探针确认空 required/decisive 但有 `repair_program` 的 contract：默认不是 executable，按 `GroupType.PATTERN` 判断为 executable。
+
+### 2026-05-10 emergence_refactor WU8：case-specific token 命中段验收
+
+改动目标：
+
+- 确认 `pattern_formation` 中不再存在手写 runtime-signal → bias-signal mapping，也不再通过 action payload 中的 `reroute/source_route/join_route/bridge` 字符串命中来生成 pattern 识别信号。
+
+实现：
+
+- WU8 的物理删除已随 WU5 一起完成：`_bias_signal_from_runtime_signal`、`_bias_signals_for_group`、`_branch_signal_set`、`_fallback_bias_recognition_contract` 均已删除。
+- `_try_extend_existing_pattern` 当前只使用自然语言 pre-condition contract 与 pair root evidence 做扩入判断。
+
+验证：
+
+- `rg "_bias_signal_from_runtime_signal|_bias_signals_for_group|reroute.*source_route|source_route.*join_route|join_route.*bridge|action_payload.*reroute" common` 0 命中。
+- `python -m py_compile common/learning/pattern_formation.py` 通过。
