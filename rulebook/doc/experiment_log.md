@@ -2029,3 +2029,24 @@ r19 后补丁：
 
 - `rg "_bias_signal_from_runtime_signal|_bias_signals_for_group|reroute.*source_route|source_route.*join_route|join_route.*bridge|action_payload.*reroute" common` 0 命中。
 - `python -m py_compile common/learning/pattern_formation.py` 通过。
+
+### 2026-05-10 emergence_refactor WU9：pre-condition 对齐 extension / dedup / promotion
+
+改动目标：
+
+- pattern extension、pattern dedup 和 promotion runtime usable 决策统一对齐到自然语言 pre-condition contract。
+- 记录 pre-condition 中涌现出的短语，作为后续诊断“模型到底学到了什么偏差描述”的 audit 入口。
+
+实现：
+
+- 新增 `common/llm/prompts/pattern_equivalence_judge.py`，比较两个 pattern recognition contract 的 `equivalent / left_subsumes_right / right_subsumes_left / disjoint`。
+- `pattern_formation._try_extend_existing_pattern` 加入 pre-condition equivalence judge；扩入条件变为“pre-condition 等价/包含 + pair root evidence”，不再只靠本地 token similarity。
+- `evolution._patterns_are_same_abstract_root` 在 pre-condition key 不完全一致时调用 equivalence judge，判断是否可合并/去重。
+- `promotion.run_promotion_test` 增加 pattern pre-condition self-recall，阈值常量为 `PATTERN_PRE_CONDITION_SELF_RECALL_MIN=0.8`；低于阈值会进入 formal blocker，并在 `_apply_branch_runtime_decision` 中阻止 branch runtime usable。
+- `LibraryStateV2` 新增 `signature_phrase_catalog`，`evolve_library_with_replay` 在每轮演化后从 pattern pre-condition contract 中抽取自然短语并累计支持 pattern ids；compact report 增加 `signature_phrase_catalog_size`。
+
+验证：
+
+- `python -m py_compile common/core/data_structures.py common/llm/prompts/pattern_equivalence_judge.py common/llm/prompts/__init__.py common/learning/evolution.py common/learning/promotion.py common/runtime/runtime.py common/learning/pattern_formation.py` 通过。
+- 静态探针确认 `LibraryStateV2.signature_phrase_catalog` 可序列化/加载。
+- monkeypatch 探针确认 `_pattern_precondition_self_recall` 在两个 support case 均匹配时返回 `rate=1.0`。

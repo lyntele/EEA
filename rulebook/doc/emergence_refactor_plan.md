@@ -616,6 +616,13 @@ required/variant/decisive signal miss 不再阻塞该路径；branch/binder dry-
 
 **回滚**：`git revert <WU9 commit>`。self-recall 阈值（0.8）作为常量定义在代码中，调整需要新 commit；不在线上做参数化（避免阈值漂移导致行为不稳定）。
 
+**执行记录（2026-05-10）**：
+- 新增 `pattern_equivalence_judge` prompt，用于 pattern extension / dedup 比较两个 pre-condition contract 的 equivalent / subsumed / disjoint 关系。
+- `_try_extend_existing_pattern` 现在需要：新 singleton 与 pattern 均有 pre-condition contract、LLM 等价/包含判断通过、且 case-local pair root evidence 通过，才扩入已有 pattern。
+- `_merge_overlapping_same_root_patterns` 遇到 pre-condition 文本不完全一致时调用同一 equivalence judge，不再靠 jaccard。
+- promotion 增加 `PATTERN_PRE_CONDITION_SELF_RECALL_MIN=0.8`；对 support cases 运行 pre-condition self-recall，低于阈值时写 `pre_condition_self_recall_below_threshold` 并阻止 branch runtime usable。
+- `LibraryStateV2.signature_phrase_catalog` 记录 pattern pre-condition 中自然出现的短语，仅用于 audit/诊断，不参与 trigger。
+
 **工时**：1.5d
 
 **依赖**：WU3 + WU4 + WU8 完成

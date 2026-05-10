@@ -24,6 +24,7 @@ from method.EEA.rulebook.common.io.execution_compare import run_execution_compar
 from method.EEA.rulebook.common.learning.pattern_formation import build_family_from_groups
 from method.EEA.rulebook.common.learning.program_coverage import validate_group_program_coverage
 from method.EEA.rulebook.common.runtime.runtime import (
+    _evaluate_pattern_pre_condition,
     _filter_group_to_runtime_branch,
     prepare_rewrite_plan,
     rewrite_one_candidate,
@@ -47,6 +48,7 @@ from method.EEA.rulebook.common.core.vocabulary import (
 
 CaseLoader = Callable[[str], Optional[Dict[str, Any]]]
 _PROMOTION_REPLAY_CACHE: Dict[str, Dict[str, Any]] = {}
+PATTERN_PRE_CONDITION_SELF_RECALL_MIN = 0.8
 
 
 def _payload(value: Any) -> Dict[str, Any]:
@@ -331,6 +333,64 @@ def _member_case_views_for_group(
         except Exception:
             continue
     return out
+
+
+def _pattern_precondition_self_recall(
+    group: GroupSummary,
+    member_case_views: Mapping[str, Any],
+) -> Dict[str, Any]:
+    contract = _payload(getattr(group.instantiation_program, "pattern_recognition_contract", None))
+    if not contract:
+        return {
+            "schema_version": "pattern-precondition-self-recall-v1",
+            "rate": 0.0,
+            "matched_case_ids": [],
+            "missed_case_ids": [str(case_id) for case_id in (group.case_ids or [])],
+            "reason": "missing_pattern_recognition_contract",
+        }
+    rows: List[Dict[str, Any]] = []
+    matched: List[str] = []
+    missed: List[str] = []
+    for case_id in group.case_ids or []:
+        case_key = str(case_id)
+        case_view = member_case_views.get(case_key)
+        if case_view is None:
+            missed.append(case_key)
+            rows.append(
+                {
+                    "case_id": case_key,
+                    "matched": False,
+                    "reason": "missing_member_case_view",
+                }
+            )
+            continue
+        audit, ok, blockers = _evaluate_pattern_pre_condition(
+            group=group,
+            case_view=case_view,
+        )
+        if ok:
+            matched.append(case_key)
+        else:
+            missed.append(case_key)
+        rows.append(
+            {
+                "case_id": case_key,
+                "matched": bool(ok),
+                "blockers": [str(item) for item in blockers],
+                "audit": audit,
+            }
+        )
+    total = len(rows)
+    rate = len(matched) / max(total, 1)
+    return {
+        "schema_version": "pattern-precondition-self-recall-v1",
+        "rate": rate,
+        "threshold": PATTERN_PRE_CONDITION_SELF_RECALL_MIN,
+        "matched_case_ids": matched,
+        "missed_case_ids": missed,
+        "rows": rows,
+        "reason": "ok" if rate >= PATTERN_PRE_CONDITION_SELF_RECALL_MIN else "pre_condition_self_recall_below_threshold",
+    }
 
 
 def _slot_signature_key(group: GroupSummary) -> str:
@@ -1002,6 +1062,10 @@ def run_promotion_test(
         db_path=db_path,
         database_dir=database_dir,
     )
+    precondition_self_recall = _pattern_precondition_self_recall(
+        group,
+        member_case_views,
+    )
     group_issues = _contract_program_issues(
         group,
         member_case_views=member_case_views,
@@ -1281,6 +1345,15 @@ def run_promotion_test(
             ):
             reasons.append("version_replay_metrics_declined")
     formal_blockers: List[str] = []
+    if (
+        float(precondition_self_recall.get("rate") or 0.0)
+        < PATTERN_PRE_CONDITION_SELF_RECALL_MIN
+    ):
+        formal_blockers.append(
+            "pre_condition_self_recall_below_threshold:"
+            f"{float(precondition_self_recall.get('rate') or 0.0):.3f}<"
+            f"{PATTERN_PRE_CONDITION_SELF_RECALL_MIN:.3f}"
+        )
     compiler_deterministic = _group_compiler_deterministic(group)
     formal_action_counts = [
         int(row.get("action_count") or 0)
@@ -1375,6 +1448,14 @@ def run_promotion_test(
                 "diagnostic": "slot_signature_divergence",
                 "present": slot_signature_diverged,
                 "blocking": False,
+            },
+            {
+                "diagnostic": "pattern_pre_condition_self_recall",
+                "blocking": (
+                    float(precondition_self_recall.get("rate") or 0.0)
+                    < PATTERN_PRE_CONDITION_SELF_RECALL_MIN
+                ),
+                **precondition_self_recall,
             }
         ],
     )
@@ -1666,6 +1747,8 @@ def _apply_branch_runtime_decision(
             and not _branch_replay_row_runtime_safe(row, branch)
         }
         blockers: List[str] = []
+        if formal_blocker and "pre_condition_self_recall_below_threshold" in str(formal_blocker):
+            blockers.append("pattern_pre_condition_self_recall_below_threshold")
         if not support_case_ids:
             blockers.append("branch_support_missing")
         if observed_support_ids != support_case_id_set:

@@ -1177,6 +1177,8 @@ class LibraryStateV2(BaseModel):
     patterns: List[GroupSummary] = Field(default_factory=list)
     experience_families: List[GroupSummary] = Field(default_factory=list)
     singletons: List[GroupSummary] = Field(default_factory=list)
+    signature_phrase_catalog: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    """Emergent phrases observed in pattern pre-condition contracts; audit only."""
     # case 出入 library 的次数——global conflict scan 的触发依据
     cases_processed: int = 0
 

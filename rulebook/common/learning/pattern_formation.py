@@ -62,6 +62,7 @@ from method.EEA.rulebook.common.core.vocabulary import (
 
 
 _PAIR_SCORE_CACHE: Dict[str, "PairScore"] = {}
+_PRE_CONDITION_CONTRACT_EQUIVALENCE_CACHE: Dict[str, Dict[str, Any]] = {}
 ONLINE_EVOLUTION_MAX_CANDIDATES_PER_FOCUS = 48
 PATTERN_ADMISSION_PROMPT_BUDGET_CHARS = 24000
 PATTERN_ADMISSION_MAX_GROUP_CARDS = 4
@@ -2516,6 +2517,61 @@ def _contract_token_similarity(left: Dict[str, Any], right: Dict[str, Any]) -> f
     return len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
 
 
+def _pre_condition_contract_equivalence(
+    *,
+    new_contract: Dict[str, Any],
+    pattern_contract: Dict[str, Any],
+) -> Dict[str, Any]:
+    key = hashlib.sha1(
+        json.dumps(
+            {"new": new_contract, "pattern": pattern_contract},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = _PRE_CONDITION_CONTRACT_EQUIVALENCE_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+    try:
+        from method.EEA.rulebook.common.llm.prompts.pattern_equivalence_judge import (
+            build_pattern_equivalence_judge_prompt,
+        )
+        from method.EEA.rulebook.common.llm.utils import call_llm
+
+        prompt = build_pattern_equivalence_judge_prompt(
+            left_json=json.dumps(pattern_contract, ensure_ascii=False, indent=2, default=str),
+            right_json=json.dumps(new_contract, ensure_ascii=False, indent=2, default=str),
+        )
+        raw = call_llm(
+            prompt,
+            expect_json=True,
+            stage="pattern_extension_pre_condition_equivalence",
+            trace_context={},
+        )
+        payload = dict(raw) if isinstance(raw, dict) else {}
+    except Exception as exc:  # pragma: no cover - defensive LLM path.
+        payload = {
+            "relation": "disjoint",
+            "confidence": 0.0,
+            "reason": f"judge_error:{type(exc).__name__}",
+        }
+    relation = str(payload.get("relation") or "disjoint")
+    if relation not in {"equivalent", "left_subsumes_right", "right_subsumes_left", "disjoint"}:
+        relation = "disjoint"
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    out = {
+        "relation": relation,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": str(payload.get("reason") or "")[:240],
+    }
+    _PRE_CONDITION_CONTRACT_EQUIVALENCE_CACHE[key] = out
+    return dict(out)
+
+
 def _extend_pattern_runtime_branch_support(
     pattern: GroupSummary,
     *,
@@ -2636,6 +2692,15 @@ def _try_extend_existing_pattern(
         pattern_contract = _pattern_recognition_contract_for_group(pattern)
         if not _contract_has_precondition(pattern_contract):
             continue
+        equivalence = _pre_condition_contract_equivalence(
+            new_contract=new_contract,
+            pattern_contract=pattern_contract,
+        )
+        contract_match = (
+            equivalence.get("relation")
+            in {"equivalent", "left_subsumes_right", "right_subsumes_left"}
+            and float(equivalence.get("confidence") or 0.0) >= 0.6
+        )
         member_pair_audits: List[Dict[str, Any]] = []
         best_pair_score = 0.0
         best_anchor_case_id = ""
@@ -2663,13 +2728,14 @@ def _try_extend_existing_pattern(
                 }
             )
         contract_similarity = _contract_token_similarity(new_contract, pattern_contract)
-        passed = root_supported
+        passed = root_supported and contract_match
         candidate_audit = {
             "pattern_id": pattern.group_id,
             "pattern_case_ids": list(pattern.case_ids or []),
             "pattern_pre_condition_contract": pattern_contract,
             "new_singleton_pre_condition": new_contract,
             "pre_condition_token_similarity": round(contract_similarity, 6),
+            "pre_condition_equivalence": equivalence,
             "root_membership_supported": root_supported,
             "best_pair_score": best_pair_score,
             "best_anchor_case_id": best_anchor_case_id,

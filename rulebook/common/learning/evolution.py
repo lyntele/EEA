@@ -6,8 +6,10 @@ Experience-family formation is disabled as a runtime/promotion source.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -28,6 +30,7 @@ from method.EEA.rulebook.common.core.vocabulary import Confidence, GroupStatus, 
 
 
 _LAST_PATTERN_DEDUP_AUDIT: List[Dict[str, Any]] = []
+_PATTERN_EQUIVALENCE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _payload(value: Any) -> Any:
@@ -166,6 +169,67 @@ def _pattern_precondition_key(group: GroupSummary) -> Tuple[str, str, str]:
     )
 
 
+def _pattern_equivalence_judge(
+    left: GroupSummary,
+    right: GroupSummary,
+) -> Dict[str, Any]:
+    left_payload = _pattern_recognition_contract_payload(left)
+    right_payload = _pattern_recognition_contract_payload(right)
+    key = json.dumps(
+        {
+            "left": left_payload,
+            "right": right_payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    cached = _PATTERN_EQUIVALENCE_CACHE.get(digest)
+    if cached is not None:
+        return dict(cached)
+    try:
+        from method.EEA.rulebook.common.llm.prompts.pattern_equivalence_judge import (
+            build_pattern_equivalence_judge_prompt,
+        )
+        from method.EEA.rulebook.common.llm.utils import call_llm
+
+        prompt = build_pattern_equivalence_judge_prompt(
+            left_json=json.dumps(left_payload, ensure_ascii=False, indent=2, default=str),
+            right_json=json.dumps(right_payload, ensure_ascii=False, indent=2, default=str),
+        )
+        raw = call_llm(
+            prompt,
+            expect_json=True,
+            stage="pattern_equivalence_judge",
+            trace_context={
+                "left_group_id": left.group_id,
+                "right_group_id": right.group_id,
+            },
+        )
+        payload = dict(raw) if isinstance(raw, dict) else {}
+    except Exception as exc:  # pragma: no cover - defensive LLM path.
+        payload = {
+            "relation": "disjoint",
+            "confidence": 0.0,
+            "reason": f"judge_error:{type(exc).__name__}",
+        }
+    relation = str(payload.get("relation") or "disjoint")
+    if relation not in {"equivalent", "left_subsumes_right", "right_subsumes_left", "disjoint"}:
+        relation = "disjoint"
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    out = {
+        "relation": relation,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": str(payload.get("reason") or "")[:240],
+    }
+    _PATTERN_EQUIVALENCE_CACHE[digest] = out
+    return dict(out)
+
+
 def _pattern_root_key(group: GroupSummary) -> Tuple[str, str, str, str, str]:
     program = getattr(group.instantiation_program, "synthesized_program", None)
     contract_payload = _payload(getattr(group, "trigger_contract", None)) or {}
@@ -221,10 +285,15 @@ def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) ->
     precondition_right = _pattern_precondition_key(right)
     has_left_precondition = any(precondition_left)
     has_right_precondition = any(precondition_right)
-    precondition_match = (
-        not (has_left_precondition and has_right_precondition)
-        or precondition_left == precondition_right
-    )
+    precondition_match = not (has_left_precondition and has_right_precondition) or precondition_left == precondition_right
+    equivalence_audit: Dict[str, Any] = {}
+    if not precondition_match and has_left_precondition and has_right_precondition:
+        equivalence_audit = _pattern_equivalence_judge(left, right)
+        precondition_match = (
+            equivalence_audit.get("relation")
+            in {"equivalent", "left_subsumes_right", "right_subsumes_left"}
+            and float(equivalence_audit.get("confidence") or 0.0) >= 0.6
+        )
     subset_match = bool(left_cases <= right_cases or right_cases <= left_cases)
     audit: Dict[str, Any] = {
         "left_group_id": left.group_id,
@@ -239,6 +308,7 @@ def _patterns_are_same_abstract_root(left: GroupSummary, right: GroupSummary) ->
         "pre_condition_key_left": list(precondition_left),
         "pre_condition_key_right": list(precondition_right),
         "pre_condition_match": precondition_match,
+        "pre_condition_equivalence_judge": equivalence_audit,
         "decision": False,
         "reject_reason": "",
     }
@@ -391,6 +461,50 @@ def _merge_patterns_without_absorbing_singletons(
     )
 
 
+def _signature_phrases_for_pattern(pattern: GroupSummary) -> Set[str]:
+    payload = _pattern_recognition_contract_payload(pattern)
+    phrases: Set[str] = set()
+    for field in (
+        "pre_question_signature",
+        "pre_sql_signature",
+        "observed_failure_summary",
+        "repair_direction",
+    ):
+        text = _normalized_text(payload.get(field))
+        if not text:
+            continue
+        for chunk in re.split(r"[.;,\n]+", text):
+            phrase = " ".join(chunk.split())
+            if 3 <= len(phrase) <= 120:
+                phrases.add(phrase)
+        tokens = re.findall(r"[a-z0-9_]+", text)
+        for size in (2, 3):
+            for index in range(0, max(0, len(tokens) - size + 1)):
+                phrase = " ".join(tokens[index : index + size])
+                if 5 <= len(phrase) <= 80:
+                    phrases.add(phrase)
+    return phrases
+
+
+def _update_signature_phrase_catalog(library: LibraryStateV2) -> None:
+    catalog = dict(getattr(library, "signature_phrase_catalog", {}) or {})
+    for pattern in library.patterns or []:
+        for phrase in _signature_phrases_for_pattern(pattern):
+            row = dict(catalog.get(phrase) or {})
+            row.setdefault("first_seen_pattern_id", pattern.group_id)
+            support_ids = {
+                str(item)
+                for item in (row.get("support_pattern_ids") or [])
+                if str(item)
+            }
+            support_ids.add(str(pattern.group_id))
+            row["support_pattern_ids"] = sorted(support_ids)
+            row["support_pattern_count"] = len(support_ids)
+            row["last_seen_pattern_id"] = pattern.group_id
+            catalog[phrase] = row
+    library.signature_phrase_catalog = catalog
+
+
 def _compact_pattern_report(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "group_id": str(row.get("group_id") or ""),
@@ -499,6 +613,7 @@ def compact_evolution_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "promotion_results": promotion_results,
         "patterns": patterns,
         "runtime_contract_validation": dict(report.get("runtime_contract_validation") or {}),
+        "signature_phrase_catalog_size": int(report.get("signature_phrase_catalog_size") or 0),
         "freeze_manifest": dict(report.get("freeze_manifest") or {}),
         "learned_but_no_future_opportunity": list(
             report.get("learned_but_no_future_opportunity") or []
@@ -602,6 +717,7 @@ def evolve_library_with_replay(
     working_library.experience_families = []
     before_counts = _library_counts(working_library)
     if event_kind == "final_evolve_and_freeze" and skip_replay_freeze:
+        _update_signature_phrase_catalog(working_library)
         manifest = freeze_library_manifest(
             library=working_library,
             reason="final_evolve_and_freeze_skipped",
@@ -626,6 +742,9 @@ def evolve_library_with_replay(
             "promotion_skipped_reason": "skip_final_freeze",
             "pattern_dedup_audit": [],
             "runtime_contract_validation": {},
+            "signature_phrase_catalog_size": len(
+                getattr(working_library, "signature_phrase_catalog", {}) or {}
+            ),
             "freeze_manifest": {
                 **manifest,
                 "skipped": True,
@@ -780,7 +899,11 @@ def evolve_library_with_replay(
     report["library_counts_after"] = _library_counts(working_library)
     report["pattern_dedup_audit"] = last_pattern_dedup_audit()
     _library, contract_report = materialize_library_runtime_contracts(working_library)
+    _update_signature_phrase_catalog(working_library)
     report["runtime_contract_validation"] = contract_report
+    report["signature_phrase_catalog_size"] = len(
+        getattr(working_library, "signature_phrase_catalog", {}) or {}
+    )
     if event_kind == "final_evolve_and_freeze" and report["promoted_runtime_objects"]:
         report["learned_but_no_future_opportunity"] = [
             dict(item) for item in report["promoted_runtime_objects"]

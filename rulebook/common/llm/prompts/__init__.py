@@ -24,6 +24,8 @@ Node map
                                 candidates with finite branches
 - ``schema_role_annotator``   : schema-level free-form role hints
 - ``pattern_pre_condition_match``: runtime two-channel pre-condition matching
+- ``pattern_equivalence_judge``: offline comparison of two pre-condition
+                                contracts during pattern dedup
 """
 
 from .action_compiler import ACTION_COMPILER_PROMPT, build_action_compiler_prompt
@@ -47,6 +49,10 @@ from .pattern_pre_condition_match import (
     PATTERN_PRE_CONDITION_S_PROMPT,
     build_pattern_pre_condition_q_prompt,
     build_pattern_pre_condition_s_prompt,
+)
+from .pattern_equivalence_judge import (
+    PATTERN_EQUIVALENCE_JUDGE_PROMPT,
+    build_pattern_equivalence_judge_prompt,
 )
 from .schema_role_annotator import (
     SCHEMA_ROLE_ANNOTATOR_PROMPT,
@@ -77,6 +83,8 @@ __all__ = [
     "PATTERN_PRE_CONDITION_S_PROMPT",
     "build_pattern_pre_condition_q_prompt",
     "build_pattern_pre_condition_s_prompt",
+    "PATTERN_EQUIVALENCE_JUDGE_PROMPT",
+    "build_pattern_equivalence_judge_prompt",
     "SCHEMA_ROLE_ANNOTATOR_PROMPT",
     "build_schema_role_annotator_prompt",
     "SHARED_INSIGHT_JUDGE_PROMPT",
