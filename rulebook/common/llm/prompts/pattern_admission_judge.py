@@ -116,6 +116,24 @@ Negative examples:
 - Do not admit because of case ids, manual labels, exact table names, exact
   column names, or database-specific vocabulary.
 
+Runtime-use requirement:
+- The pre_question_signature and pre_sql_signature are later used by a runtime
+  judge on a new answer-blind case. They must be neither narrower than the
+  admitted members nor so broad that unrelated cases match.
+- Calibrate each signature against the admitted members before returning it.
+  First draft the signature, then list admitted members it would match or miss,
+  then rewrite it if estimated_recall is below 0.8.
+- Phrase signatures around abstract roles and failure context. Avoid exact
+  entity names, aliases, case ids, and database-specific labels.
+
+Signature calibration examples:
+- GOOD: "question asks for one side or one role of an entity relationship while
+  the current SQL still exposes multiple relationship-side outputs".
+- BAD too narrow: "question asks for a single named endpoint in one specific
+  relationship table". This misses valid plural or differently worded members.
+- BAD too vague: "question asks about related entities". This can trigger
+  unrelated relationship questions with a different target preference.
+
 Return strict JSON only:
 {{
   "admit_pattern": true,
@@ -123,7 +141,21 @@ Return strict JSON only:
   "excluded_case_ids": ["..."],
   "stable_bias_key": "short normalized phrase",
   "primary_repair_interface": "answer-blind repair interface compiler must instantiate later",
+  "pre_question_signature_draft": "initial abstract question pre-condition",
+  "pre_question_signature_self_check": {{
+    "matched_member_case_ids": ["..."],
+    "missed_member_case_ids": ["..."],
+    "estimated_recall": 0.0,
+    "rewrite_needed": true
+  }},
   "pre_question_signature": "abstract question type shared by accepted members; no case ids or table names",
+  "pre_sql_signature_draft": "initial abstract SQL pre-condition",
+  "pre_sql_signature_self_check": {{
+    "matched_member_case_ids": ["..."],
+    "missed_member_case_ids": ["..."],
+    "estimated_recall": 0.0,
+    "rewrite_needed": true
+  }},
   "pre_sql_signature": "abstract pred_sql shape shared by accepted members; prefer role_family language",
   "observed_failure_summary": "common observed pred-vs-target difference; audit only, not runtime trigger",
   "repair_direction": "actionable common repair direction for branch/binder instantiation",
@@ -161,7 +193,11 @@ If not admitting, return the same object shape with:
   "excluded_case_ids": ["all or relevant ids"],
   "stable_bias_key": "",
   "primary_repair_interface": "",
+  "pre_question_signature_draft": "",
+  "pre_question_signature_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
   "pre_question_signature": "",
+  "pre_sql_signature_draft": "",
+  "pre_sql_signature_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
   "pre_sql_signature": "",
   "observed_failure_summary": "",
   "repair_direction": "",
@@ -197,6 +233,9 @@ Pattern recognition contract:
 - Use natural language and role_family descriptions from the case cards. Do not
   select from a closed vocabulary, and do not copy case ids, exact table names,
   SQL aliases, or database-specific labels.
+- If either signature self-check has estimated_recall below 0.8 for the
+  accepted members, rewrite the signature before returning. If no signature can
+  reach that recall while staying precise, reject admission.
 """
 
 

@@ -1434,6 +1434,7 @@ def _pre_condition_channel_call(
     group: GroupSummary,
     case_view: RuntimeCaseView,
     signature: str,
+    repair_direction: str = "",
 ) -> Dict[str, Any]:
     _load_pre_condition_cache()
     if channel == "q":
@@ -1458,6 +1459,7 @@ def _pre_condition_channel_call(
             channel,
             str(group.group_id),
             hashlib.sha1(str(signature or "").encode("utf-8")).hexdigest()[:16],
+            hashlib.sha1(str(repair_direction or "").encode("utf-8")).hexdigest()[:16],
             content_hash,
         ]
     )
@@ -1474,12 +1476,14 @@ def _pre_condition_channel_call(
         if channel == "q":
             prompt = build_pattern_pre_condition_q_prompt(
                 signature=signature,
+                repair_direction=repair_direction,
                 question=case_view.question,
                 evidence=case_view.evidence or "",
             )
         else:
             prompt = build_pattern_pre_condition_s_prompt(
                 signature=signature,
+                repair_direction=repair_direction,
                 pred_sql=case_view.pred_manifestation.top1_sql,
                 schema_excerpt_json=json.dumps(
                     _schema_excerpt_for_pre_condition(case_view.local_schema_view),
@@ -1531,6 +1535,7 @@ def _evaluate_pattern_pre_condition(
         return {}, False, ["missing_pattern_recognition_contract"]
     pre_question = str(contract.get("pre_question_signature") or "").strip()
     pre_sql = str(contract.get("pre_sql_signature") or "").strip()
+    repair_direction = str(contract.get("repair_direction") or "").strip()
     if not pre_question or not pre_sql:
         return {
             "schema_version": "pre-condition-audit-v1",
@@ -1541,12 +1546,14 @@ def _evaluate_pattern_pre_condition(
         group=group,
         case_view=case_view,
         signature=pre_question,
+        repair_direction=repair_direction,
     )
     s_match = _pre_condition_channel_call(
         channel="s",
         group=group,
         case_view=case_view,
         signature=pre_sql,
+        repair_direction=repair_direction,
     )
     blockers: List[str] = []
     if not q_match.get("matches"):

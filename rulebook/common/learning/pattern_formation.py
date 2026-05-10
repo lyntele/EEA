@@ -15,7 +15,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from method.EEA.rulebook.common.core.data_structures import (
     CoreInterface,
@@ -2432,18 +2432,93 @@ def _contract_text(value: Any, limit: int = 200) -> str:
 
 
 def _pattern_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
-    pre_question = _contract_text(raw.get("pre_question_signature"))
-    pre_sql = _contract_text(raw.get("pre_sql_signature"))
+    pre_question = _contract_text(raw.get("pre_question_signature"), limit=150)
+    pre_sql = _contract_text(raw.get("pre_sql_signature"), limit=150)
     repair_direction = _contract_text(raw.get("repair_direction"))
     if not (pre_question and pre_sql and repair_direction):
         return {}
     return {
         "schema_version": "pattern-recognition-v1",
         "pre_question_signature": pre_question,
+        "pre_question_signature_self_check": _model_dump(
+            raw.get("pre_question_signature_self_check") or {}
+        ),
         "pre_sql_signature": pre_sql,
+        "pre_sql_signature_self_check": _model_dump(
+            raw.get("pre_sql_signature_self_check") or {}
+        ),
         "observed_failure_summary": _contract_text(raw.get("observed_failure_summary")),
         "repair_direction": repair_direction,
     }
+
+
+def _signature_self_check_rate(
+    raw: Mapping[str, Any],
+    *,
+    key: str,
+    accepted_case_ids: Sequence[str],
+) -> Tuple[float, Dict[str, Any]]:
+    payload = _model_dump(raw.get(key) or {})
+    accepted = {str(case_id) for case_id in accepted_case_ids if str(case_id)}
+    matched = {
+        str(case_id)
+        for case_id in (payload.get("matched_member_case_ids") or [])
+        if str(case_id)
+    }
+    missed = {
+        str(case_id)
+        for case_id in (payload.get("missed_member_case_ids") or [])
+        if str(case_id)
+    }
+    try:
+        estimated = float(payload.get("estimated_recall"))
+    except Exception:
+        estimated = -1.0
+    if estimated < 0.0:
+        if accepted:
+            estimated = len(accepted & matched) / max(len(accepted), 1)
+        elif matched or missed:
+            estimated = len(matched) / max(len(matched | missed), 1)
+        else:
+            estimated = 0.0
+    audit = {
+        "key": key,
+        "matched_member_case_ids": sorted(matched, key=_case_id_sort_key),
+        "missed_member_case_ids": sorted(missed, key=_case_id_sort_key),
+        "estimated_recall": max(0.0, min(1.0, estimated)),
+        "rewrite_needed": bool(payload.get("rewrite_needed")),
+        "raw": payload,
+    }
+    return float(audit["estimated_recall"]), audit
+
+
+def _admission_signature_self_check_blocker(
+    response: Mapping[str, Any],
+    *,
+    admitted_case_ids: Sequence[str],
+    min_recall: float = 0.8,
+) -> Tuple[str, Dict[str, Any]]:
+    question_rate, question_audit = _signature_self_check_rate(
+        response,
+        key="pre_question_signature_self_check",
+        accepted_case_ids=admitted_case_ids,
+    )
+    sql_rate, sql_audit = _signature_self_check_rate(
+        response,
+        key="pre_sql_signature_self_check",
+        accepted_case_ids=admitted_case_ids,
+    )
+    audit = {
+        "min_recall": min_recall,
+        "pre_question_signature_self_check": question_audit,
+        "pre_sql_signature_self_check": sql_audit,
+    }
+    blockers = []
+    if question_rate < min_recall:
+        blockers.append(f"pre_question_signature_self_check_below_{min_recall:g}")
+    if sql_rate < min_recall:
+        blockers.append(f"pre_sql_signature_self_check_below_{min_recall:g}")
+    return ",".join(blockers), audit
 
 
 def _pattern_recognition_contract_for_group(group: GroupSummary) -> Dict[str, Any]:
@@ -3630,6 +3705,25 @@ def _build_pattern_admission_candidates(
                 or "Pattern admission must explicitly list accepted_case_ids; "
                 "code will not infer membership from the full candidate."
             )
+        signature_self_check_blocker = ""
+        signature_self_check_audit: Dict[str, Any] = {}
+        if admitted:
+            signature_self_check_blocker, signature_self_check_audit = (
+                _admission_signature_self_check_blocker(
+                    response,
+                    admitted_case_ids=admitted_case_ids,
+                )
+            )
+            if signature_self_check_audit:
+                response["signature_self_check_audit"] = signature_self_check_audit
+            if signature_self_check_blocker:
+                admitted = False
+                admission_blocker = signature_self_check_blocker
+                response["reject_reason"] = (
+                    response.get("reject_reason")
+                    or "Pattern admission signatures do not recall admitted members "
+                    "well enough for answer-blind runtime use."
+                )
         core_branch_coverage = (
             _core_signature_branch_coverage(admitted_groups, response)
             if admitted
@@ -3731,6 +3825,7 @@ def _build_pattern_admission_candidates(
                 ),
                 "stable_bias_key": response.get("stable_bias_key"),
                 "primary_repair_interface": response.get("primary_repair_interface"),
+                "signature_self_check_audit": signature_self_check_audit,
                 "branch_axes": response.get("branch_axes") or [],
                 "branch_specs": response.get("branch_specs") or [],
                 "negative_guards": response.get("negative_guards") or [],

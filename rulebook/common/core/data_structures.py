@@ -984,7 +984,9 @@ class PatternRecognitionContract(BaseModel):
 
     schema_version: Literal["pattern-recognition-v1"] = "pattern-recognition-v1"
     pre_question_signature: str = ""
+    pre_question_signature_self_check: Dict[str, Any] = Field(default_factory=dict)
     pre_sql_signature: str = ""
+    pre_sql_signature_self_check: Dict[str, Any] = Field(default_factory=dict)
     observed_failure_summary: str = ""
     repair_direction: str = ""
 
