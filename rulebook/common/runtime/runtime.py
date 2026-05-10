@@ -1455,7 +1455,7 @@ def _pre_condition_channel_call(
         ).hexdigest()[:16]
     key = "|".join(
         [
-            "pre-condition-v1",
+            "pre-condition-v2",
             channel,
             str(group.group_id),
             hashlib.sha1(str(signature or "").encode("utf-8")).hexdigest()[:16],
