@@ -1684,6 +1684,51 @@ def _evaluate_applicability_contract(
     return audit, bool(not blockers), blockers
 
 
+def _case_has_negative_guard_hit(
+    *,
+    case_view: RuntimeCaseView,
+    library_state: LibraryStateV2,
+) -> Tuple[bool, List[str]]:
+    """Return whether any memory-level regression guard matches this case.
+
+    Guards stay stored on the group that learned the regression, but the final
+    runtime emission gate is case-level so a sibling singleton cannot bypass a
+    pattern-local negative guard.
+    """
+
+    hit_group_ids: List[str] = []
+    all_groups = (
+        list(getattr(library_state, "patterns", []) or [])
+        + list(getattr(library_state, "experience_families", []) or [])
+        + list(getattr(library_state, "singletons", []) or [])
+    )
+    for group in all_groups:
+        if str(getattr(group, "db_id", "") or "") != str(case_view.db_id):
+            continue
+        contract = _pattern_recognition_contract(group)
+        if not contract:
+            continue
+        applicability = _contract_applicability_payload(contract)
+        guards = [
+            _payload(item)
+            for item in (applicability.get("regression_negative_guards") or [])
+            if _payload(item)
+        ]
+        if not guards:
+            continue
+        for guard in guards:
+            result = _regression_guard_match_call(
+                group=group,
+                case_view=case_view,
+                guard=guard,
+            )
+            if result.get("matches"):
+                hit_group_ids.append(str(getattr(group, "group_id", "") or ""))
+                break
+    hit_group_ids = sorted({item for item in hit_group_ids if item})
+    return bool(hit_group_ids), hit_group_ids
+
+
 def _branch_candidate_matches(candidate: Any, branch: Mapping[str, Any]) -> bool:
     bundle_ids = _runtime_branch_bundle_ids(branch)
     args = _payload(getattr(candidate, "arguments", None))
@@ -4157,6 +4202,7 @@ def _runtime_audit_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
         "trigger": _compact_trigger_result(payload.get("trigger_result")),
         "compiler": _compact_compiler_output(compiler_output, candidate_sets),
         "hint_audit": payload.get("hint_audit") or {},
+        "fallback_guard_hit_groups": list(payload.get("fallback_guard_hit_groups") or []),
         "guard": {
             "scope_guard_mode": str((payload.get("guard") or {}).get("scope_guard_mode") or ""),
             "allowed_edit_scope": list((payload.get("guard") or {}).get("allowed_edit_scope") or []),
@@ -4751,6 +4797,29 @@ def prepare_rewrite_plan(
             "rewrite_allowed": False,
             "rewrite_enabled_reason": "no_trigger_match",
             "hint_instantiation_notes": "",
+            "reason": "passthrough_no_match",
+        })
+
+    case_guard_hit, fallback_guard_hit_groups = _case_has_negative_guard_hit(
+        case_view=case_view,
+        library_state=library,
+    )
+    if case_guard_hit:
+        return finish({
+            "case_view": case_view,
+            "matched_groups": [],
+            "trigger_result": trigger_result,
+            "compiler_candidate_sets": [],
+            "compiler_schema_diagnostics_pre": None,
+            "compiler_output": None,
+            "instantiated_hint": "",
+            "raw_hint": "",
+            "repair_brief": "",
+            "hint_applicable": False,
+            "rewrite_allowed": False,
+            "fallback_guard_hit_groups": fallback_guard_hit_groups,
+            "rewrite_enabled_reason": "case_negative_guard_hit",
+            "hint_instantiation_notes": "case_negative_guard_hit",
             "reason": "passthrough_no_match",
         })
 
