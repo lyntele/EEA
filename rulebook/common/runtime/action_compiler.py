@@ -60,6 +60,9 @@ MAX_MULTI_SLOT_COMBINATIONS = 80
 MAX_MULTI_SLOT_OPTION_POOL = 12
 MAX_PAIR_REPLACE_OPTION_POOL = 24
 MAX_REPLACE_SELECT_CANDIDATES = 60
+WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON = (
+    "wuv2_2_seed_target_binding_disabled_pending_binding_contract"
+)
 
 
 def _hash_cand(payload: str) -> str:
@@ -599,9 +602,10 @@ def _same_source_target(
 
 
 def _ref_identity(ref: Dict[str, Any]) -> str:
-    table = str(ref.get("table") or "").strip().lower()
-    column = str(ref.get("column") or "").strip().lower()
-    expression = str(ref.get("expression") or "").strip().lower()
+    evidence = _payload(ref.get("evidence"))
+    table = str(evidence.get("original_table") or "").strip().lower()
+    column = str(evidence.get("original_column") or "").strip().lower()
+    expression = str(evidence.get("original_expression") or ref.get("expression") or "").strip().lower()
     if table or column:
         return f"{table}.{column}"
     return expression
@@ -1381,18 +1385,96 @@ def _canonical_refs_for_action(canonical_op: Dict[str, Any]) -> List[Dict[str, A
         payload = _payload(ref)
         if not payload:
             continue
-        refs.append(
-            {
-                "table": payload.get("table"),
-                "column": payload.get("column"),
-                "expression": payload.get("expression"),
-                "sql_role": payload.get("sql_role"),
-                "column_role": payload.get("column_role"),
-                "path_role": payload.get("path_role"),
-                "relation_role": payload.get("relation_role"),
-            }
-        )
+        if str(payload.get("source") or "") == "target_sql":
+            refs.append(_role_profile_from_target_ref(payload))
+        else:
+            refs.append(
+                {
+                    "table": payload.get("table"),
+                    "column": payload.get("column"),
+                    "expression": payload.get("expression"),
+                    "sql_role": payload.get("sql_role"),
+                    "column_role": payload.get("column_role"),
+                    "path_role": payload.get("path_role"),
+                    "relation_role": payload.get("relation_role"),
+                }
+            )
     return refs
+
+
+def _meaningful_role_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower() in {"unknown", "unknown_table", "table_node", "other", "none", "null"}:
+        return ""
+    return text
+
+
+def _role_profile_from_target_ref(ref: Dict[str, Any]) -> Dict[str, Any]:
+    """Executable role profile for a target output ref.
+
+    Legacy role refs can still carry table/column/expression for audit, but
+    runtime candidate binding must not execute those seed literals directly.
+    """
+    evidence = dict(_payload(ref.get("evidence")))
+    for source_key, evidence_key in (
+        ("table", "original_table"),
+        ("column", "original_column"),
+        ("expression", "original_expression"),
+    ):
+        value = ref.get(source_key)
+        if value and evidence_key not in evidence:
+            evidence[evidence_key] = value
+    return {
+        "slot_index": ref.get("slot_index"),
+        "sql_role": ref.get("sql_role"),
+        "column_role": _meaningful_role_value(ref.get("column_role")),
+        "path_role": _meaningful_role_value(ref.get("path_role")),
+        "direct_role_path": _meaningful_role_value(ref.get("direct_role_path")),
+        "derived_role_path": _meaningful_role_value(ref.get("derived_role_path")),
+        "role_side_group": _meaningful_role_value(ref.get("role_side_group")),
+        "side_key": _meaningful_role_value(ref.get("side_key")),
+        "relation_role": _meaningful_role_value(ref.get("relation_role")),
+        "evidence": evidence,
+    }
+
+
+def _role_profile_has_binding_signal(ref: Dict[str, Any]) -> bool:
+    return any(
+        _meaningful_role_value(ref.get(key))
+        for key in (
+            "column_role",
+            "path_role",
+            "direct_role_path",
+            "derived_role_path",
+            "role_side_group",
+            "side_key",
+            "relation_role",
+        )
+    )
+
+
+def _option_matches_role_profile(option: Dict[str, Any], ref: Dict[str, Any]) -> bool:
+    expected_role = _meaningful_role_value(ref.get("column_role")).lower()
+    option_role = _meaningful_role_value(option.get("target_role_family")).lower()
+    if expected_role and option_role != expected_role:
+        return False
+    return True
+
+
+def _runtime_binding_contract_for_action(canonical_op: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the future WUv2-5 binding contract, if present.
+
+    WUv2-2 deliberately refuses to execute seed target refs without this
+    contract. Seed target role refs are evidence, not executable binding.
+    """
+    args = _payload(canonical_op.get("arguments"))
+    for key in ("binding_contract", "runtime_binding_contract"):
+        payload = _payload(args.get(key) or canonical_op.get(key))
+        if payload:
+            return payload
+    return {}
 
 
 def _target_output_refs_for_action(
@@ -1400,6 +1482,9 @@ def _target_output_refs_for_action(
     *,
     member_variants: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    if not _runtime_binding_contract_for_action(canonical_op):
+        return []
+
     refs: List[Dict[str, Any]] = []
 
     def add_ref(ref: Any) -> None:
@@ -1410,17 +1495,10 @@ def _target_output_refs_for_action(
             return
         if str(payload.get("sql_role") or "") != "output_slot":
             return
-        refs.append(
-            {
-                "table": payload.get("table"),
-                "column": payload.get("column"),
-                "expression": payload.get("expression"),
-                "slot_index": payload.get("slot_index"),
-                "column_role": payload.get("column_role"),
-                "path_role": payload.get("path_role"),
-                "relation_role": payload.get("relation_role"),
-            }
-        )
+        profile = _role_profile_from_target_ref(payload)
+        if not _role_profile_has_binding_signal(profile):
+            return
+        refs.append(profile)
 
     args = _payload(canonical_op.get("arguments"))
     variants = list(member_variants or [])
@@ -1453,13 +1531,12 @@ def _target_ref_keys(refs: Sequence[Dict[str, Any]]) -> tuple[set[tuple[str, str
     pairs: set[tuple[str, str]] = set()
     columns: set[str] = set()
     for ref in refs or []:
-        table = str(ref.get("table") or "").strip().lower()
-        column = str(ref.get("column") or "").strip().lower()
-        if not column:
-            continue
-        columns.add(column)
-        if table:
-            pairs.add((table, column))
+        role = _meaningful_role_value(ref.get("column_role")).lower()
+        path = _meaningful_role_value(ref.get("path_role")).lower()
+        if role:
+            columns.add(f"role:{role}")
+        if path:
+            pairs.add(("path", path))
     return pairs, columns
 
 
@@ -1477,8 +1554,8 @@ def _output_ref_keys_from_refs(refs: Sequence[Dict[str, Any]]) -> List[tuple[str
     for ref in _ordered_output_refs(refs):
         keys.append(
             (
-                str(ref.get("table") or "").strip().lower(),
-                str(ref.get("column") or "").strip().lower(),
+                str(ref.get("role_side_group") or ref.get("path_role") or "").strip().lower(),
+                str(ref.get("column_role") or "").strip().lower(),
             )
         )
     return keys
@@ -1508,13 +1585,11 @@ def _output_key_matches_ref(
     ref: Dict[str, Any],
 ) -> bool:
     cur_table, cur_col = current
-    ref_table = str(ref.get("table") or "").strip().lower()
-    ref_col = str(ref.get("column") or "").strip().lower()
+    ref_table = str(ref.get("role_side_group") or ref.get("path_role") or "").strip().lower()
+    ref_col = str(ref.get("column_role") or "").strip().lower()
     if not cur_col or not ref_col:
         return False
-    if cur_col != ref_col:
-        return False
-    return not cur_table or not ref_table or cur_table == ref_table
+    return cur_col == ref_col or bool(ref_table and cur_table == ref_table)
 
 
 def _int_or_none(value: Any) -> Optional[int]:
@@ -1567,29 +1642,17 @@ def _target_columns_supported_by_refs(
     if not ref_pairs and not ref_columns:
         return True
     for column in target_columns:
-        table = str(column.get("target_table") or "").strip().lower()
-        col = str(column.get("target_column") or "").strip().lower()
-        if not col:
+        role = _meaningful_role_value(column.get("target_role_family")).lower()
+        if not role:
             return False
-        if table and (table, col) in ref_pairs:
-            continue
-        # Role graph refs can carry an incorrect table when the target SQL used
-        # aliases or unqualified projection expressions. The column itself is
-        # still case-derived target evidence, so allow a column-name fallback.
-        if col in ref_columns:
+        if f"role:{role}" in ref_columns:
             continue
         return False
     return True
 
 
 def _target_column_matches_ref(column: Dict[str, Any], ref: Dict[str, Any]) -> bool:
-    table = str(column.get("target_table") or "").strip().lower()
-    col = str(column.get("target_column") or "").strip().lower()
-    ref_table = str(ref.get("table") or "").strip().lower()
-    ref_col = str(ref.get("column") or "").strip().lower()
-    if not col or not ref_col or col != ref_col:
-        return False
-    return not table or not ref_table or table == ref_table
+    return _option_matches_role_profile(column, ref)
 
 
 def _scoped_target_output_refs_for_candidate(
@@ -1642,7 +1705,8 @@ def _ordered_output_refs(refs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
         key=lambda ref: (
             1 if ref.get("slot_index") is None else 0,
             int(ref.get("slot_index") or 0),
-            str(ref.get("expression") or ""),
+            str((ref.get("evidence") or {}).get("original_expression") or ""),
+            str(ref.get("column_role") or ""),
         ),
     )
 
@@ -1651,35 +1715,30 @@ def _schema_column_option_from_ref(
     ref: Dict[str, Any],
     view: LocalSchemaView,
 ) -> Optional[Dict[str, Any]]:
-    column = str(ref.get("column") or "").strip()
-    if not column:
+    expected_role = _meaningful_role_value(ref.get("column_role"))
+    if not expected_role:
         return None
-    table = str(ref.get("table") or "").strip()
-
-    def has_column(tbl: str) -> bool:
-        return any(col.lower() == column.lower() for col in (view.columns_by_table.get(tbl) or []))
-
-    resolved_table: Optional[str] = None
-    if table and table in view.columns_by_table and has_column(table):
-        resolved_table = table
-    if resolved_table is None:
-        matches = [
-            tbl
-            for tbl, cols in view.columns_by_table.items()
-            if any(col.lower() == column.lower() for col in cols)
-        ]
-        if len(matches) == 1:
-            resolved_table = matches[0]
-    if resolved_table is None:
-        return None
-    role = _get_column_role(resolved_table, column, view)
-    return {
-        "target_table": resolved_table,
-        "target_column": column,
-        "target_role_family": role,
-        "target_expression": ref.get("expression"),
-        "target_slot_index": ref.get("slot_index"),
-    }
+    options: List[Dict[str, Any]] = []
+    for table, cols in view.columns_by_table.items():
+        for column in cols:
+            role = _get_column_role(table, column, view)
+            option = {
+                "target_table": table,
+                "target_column": column,
+                "target_role_family": role,
+                "target_role_profile": dict(ref),
+                "target_slot_index": ref.get("slot_index"),
+            }
+            if _option_matches_role_profile(option, ref):
+                options.append(option)
+    ranked = sorted(
+        options,
+        key=lambda option: (
+            str(option.get("target_table") or "").lower(),
+            str(option.get("target_column") or "").lower(),
+        ),
+    )
+    return ranked[0] if ranked else None
 
 
 def _schema_column_options_from_refs(
@@ -2569,6 +2628,12 @@ def _enumerate_add_select_slot(
         target_counts.append(1)
         target_counts = sorted(set(count for count in target_counts if count > 0), reverse=True)
 
+        if not preferred_target_refs:
+            return ActionCandidateSet(
+                primitive=ActionPrimitive.ADD_SELECT_SLOT,
+                candidates=[],
+                empty_reason=WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON,
+            )
         preferred_options = _schema_column_options_from_refs(preferred_target_refs, view)
         if strict_preferred_targets and preferred_target_refs:
             option_pool = _dedupe_column_options(preferred_options)
@@ -2695,6 +2760,12 @@ def _enumerate_replace_select_slot(
 
     shape_payload = _shape_delta_payload(skeleton)
     contract_repair_program = [dict(step) for step in repair_program]
+    if not preferred_target_refs:
+        return ActionCandidateSet(
+            primitive=ActionPrimitive.REPLACE_SELECT_SLOT,
+            candidates=[],
+            empty_reason=WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON,
+        )
     direction = str(shape_payload.get("arity_direction") or "").lower()
     try:
         current_arity = int(shape_payload.get("current_arity") or len(pred_exprs) or 0)
@@ -3376,6 +3447,12 @@ def _enumerate_reroute_fact(
     canonical_op: Optional[Dict[str, Any]] = None,
     repair_program: Sequence[Dict[str, Any]] = (),
 ) -> ActionCandidateSet:
+    if canonical_op is None or not _runtime_binding_contract_for_action(canonical_op):
+        return ActionCandidateSet(
+            primitive=ActionPrimitive.REROUTE_FACT,
+            candidates=[],
+            empty_reason=WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON,
+        )
     candidates: List[ActionCandidate] = []
     variants = list(member_variants or [])
     if not variants and canonical_op:
@@ -3584,6 +3661,12 @@ def _enumerate_change_grain(
     canonical_op: Dict[str, Any],
     repair_program: Sequence[Dict[str, Any]] = (),
 ) -> ActionCandidateSet:
+    if not _runtime_binding_contract_for_action(canonical_op):
+        return ActionCandidateSet(
+            primitive=ActionPrimitive.CHANGE_GRAIN,
+            candidates=[],
+            empty_reason=WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON,
+        )
     grain_delta = _canonical_signature_section(canonical_op, "grain_delta")
     shape = _canonical_shape(canonical_op)
     source_grain = (
@@ -3620,7 +3703,7 @@ def _enumerate_change_grain(
             empty_reason="aggregate_answer_unit_mismatch",
         )
     target_anchor = (
-        str((target_refs[0] or {}).get("expression") or "")
+        str(((target_refs[0] or {}).get("evidence") or {}).get("original_expression") or "")
         if target_refs
         else ""
     ) or _current_anchor_expr(case_view)
@@ -3679,6 +3762,7 @@ def _enumerate_switch_canonical_field(
         memory_text=memory_text,
         repair_program=repair_program,
         preferred_target_refs=preferred_target_refs,
+        strict_preferred_targets=bool(preferred_target_refs),
     )
     converted: List[ActionCandidate] = []
     for candidate in replace_set.candidates or []:
@@ -3718,6 +3802,12 @@ def _enumerate_materialize_ranking_output(
     member_variants: Sequence[Dict[str, Any]],
     repair_program: Sequence[Dict[str, Any]] = (),
 ) -> ActionCandidateSet:
+    if not _runtime_binding_contract_for_action(canonical_op):
+        return ActionCandidateSet(
+            primitive=ActionPrimitive.MATERIALIZE_RANKING_OUTPUT,
+            candidates=[],
+            empty_reason=WUV2_2_SEED_TARGET_BINDING_DISABLED_REASON,
+        )
     policies = [
         policy
         for policy in _canonical_accessory_policies(
@@ -4056,6 +4146,7 @@ def _enumerate_for_canonical_op(
                     memory_text=memory_text,
                     repair_program=repair_program,
                     preferred_target_refs=preferred_refs,
+                    strict_preferred_targets=bool(preferred_refs),
                 )
             ]
             switch_set = _enumerate_switch_canonical_field(

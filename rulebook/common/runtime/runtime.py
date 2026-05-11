@@ -3867,6 +3867,7 @@ def _compact_compiler_output(
     actions = list(getattr(compiler_output, "actions", []) or []) if compiler_output else []
     empty_reasons: Dict[str, int] = {}
     candidate_counts: Dict[str, int] = {}
+    disabled_primitives: Dict[str, int] = {}
     for candidate_set in candidate_sets or []:
         primitive = str(getattr(getattr(candidate_set, "primitive", ""), "value", getattr(candidate_set, "primitive", "")) or "")
         count = len(getattr(candidate_set, "candidates", []) or [])
@@ -3876,6 +3877,10 @@ def _compact_compiler_output(
         if reason:
             key = f"{primitive}:{reason}" if primitive else reason
             empty_reasons[key] = empty_reasons.get(key, 0) + 1
+            if "wuv2_2_seed_target_binding_disabled" in reason:
+                disabled_primitives[primitive or "unknown"] = (
+                    disabled_primitives.get(primitive or "unknown", 0) + 1
+                )
     return {
         "action_count": len(actions),
         "actions": [
@@ -3895,6 +3900,8 @@ def _compact_compiler_output(
             for action in actions
         ],
         "candidate_counts_by_primitive": dict(sorted(candidate_counts.items())),
+        "disabled_primitives_count": len(disabled_primitives),
+        "disabled_primitives_by_name": dict(sorted(disabled_primitives.items())),
         "empty_reason_counts": dict(
             sorted(empty_reasons.items(), key=lambda item: (-item[1], item[0]))[:20]
         ),

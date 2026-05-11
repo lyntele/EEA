@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from method.EEA.rulebook.common.core.vocabulary import (
     ActionPrimitive,
@@ -497,9 +497,10 @@ class RepairInsightSignature(BaseModel):
 class CanonicalRoleRef(BaseModel):
     """A schema-agnostic reference to a SQL role.
 
-    Concrete table/column names stay available for compiler instantiation, but
-    grouping/promotion should compare the role fields instead of the concrete
-    identifiers.
+    WUv2-2 makes target_sql literals audit-only: seed target table/column/
+    expression values are migrated into evidence.original_* and must not be
+    executed by runtime binding. Source-side refs remain executable because
+    they describe the current pred SQL.
     """
 
     ref_id: str
@@ -526,6 +527,23 @@ class CanonicalRoleRef(BaseModel):
     relation_role: Optional[str] = None
     """Graph-derived relation role; never derived from fixed business words."""
     evidence: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _migrate_target_sql_literals_to_evidence(self) -> "CanonicalRoleRef":
+        if str(self.source or "") != "target_sql":
+            return self
+        evidence = dict(self.evidence or {})
+        for attr, audit_key in (
+            ("table", "original_table"),
+            ("column", "original_column"),
+            ("expression", "original_expression"),
+        ):
+            value = getattr(self, attr)
+            if value and audit_key not in evidence:
+                evidence[audit_key] = value
+            setattr(self, attr, None)
+        self.evidence = evidence
+        return self
 
 
 class ContrastiveRepairEffect(BaseModel):

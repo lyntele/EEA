@@ -8,7 +8,7 @@ for anti-unification; they must not be converted into pre-defined error types.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from method.EEA.rulebook.common.core.data_structures import (
     CanonicalRepairIR,
@@ -88,6 +88,42 @@ def _target_output_refs(target_graph: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _source_output_refs(source_graph: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(source_graph.get("output_refs") or [])
+
+
+def _strip_target_role_ref_literals(refs: Sequence[Any]) -> List[Any]:
+    """Move target SQL table/column/expression into audit evidence.
+
+    WUv2-2 makes target refs non-executable. The compiler may not carry seed
+    target SQL identifiers into a future case; WUv2-5 binding contracts will
+    reintroduce legitimate runtime binding.
+    """
+    out: List[Any] = []
+    for ref in refs:
+        payload = ref.model_dump(mode="json") if hasattr(ref, "model_dump") else _payload(ref)
+        if str(payload.get("source") or "") != "target_sql":
+            out.append(ref)
+            continue
+        evidence = dict(_payload(payload.get("evidence")))
+        for key, audit_key in (
+            ("table", "original_table"),
+            ("column", "original_column"),
+            ("expression", "original_expression"),
+        ):
+            value = payload.get(key)
+            if value and audit_key not in evidence:
+                evidence[audit_key] = value
+        update = {
+            "table": None,
+            "column": None,
+            "expression": None,
+            "evidence": evidence,
+        }
+        if hasattr(ref, "model_copy"):
+            out.append(ref.model_copy(update=update))
+        else:
+            payload.update(update)
+            out.append(payload)
+    return out
 
 
 def _output_shape(graph: Dict[str, Any]) -> Dict[str, Any]:
@@ -1310,7 +1346,9 @@ class RepairProgramNormalizer:
         # they are summarized as deltas; attaching all raw refs to every op
         # makes online libraries grow quadratically across repeated updates.
         role_refs = role_refs_from_graph(source_graph, sections=("output_refs",))
-        target_role_refs = role_refs_from_graph(target_graph, sections=("output_refs",))
+        target_role_refs = _strip_target_role_ref_literals(
+            role_refs_from_graph(target_graph, sections=("output_refs",))
+        )
         all_role_refs = (role_refs + target_role_refs)[:16]
 
         ops: List[CanonicalRepairOp] = []
