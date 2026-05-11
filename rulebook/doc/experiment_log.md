@@ -2503,3 +2503,20 @@ EF2 损失分解:
 - WUv2-3 完成。详见 `doc/emergence_refactor_plan_v2_verification.md` §2。commit: `e9800e7`。关键观察: 8-case probe 无反向不符合，singleton strict audit 生效。
 - WUv2-4 完成。详见 `doc/emergence_refactor_plan_v2_verification.md` §3。commit: `2cf8696`。关键观察: 7/7 人工同源组汇合，其中 6/7 exact bucket，1/7 axis 粗筛。
 - gate 状态: WUv2-5 可以开始；后续 WU 验收只追加到 verification 文档，不再新建独立 probe report。
+
+### 2026-05-11 WUv2-5 补充验证：D1 修正版暂停
+
+- 详见 `doc/emergence_refactor_plan_v2_verification.md` §5。
+- 已执行规模: D1 baseline-ready 前置筛选覆盖 5 库候选 pattern pair；只有 toxicology 找到 baseline-ready pair(q249/q253)。
+- 关键观察 1: formula_1 / california_schools / card_games 的已测 runtime_usable pattern pair baseline replay 均为 `no_match`; superhero 758/805 也 baseline `no_match`，不能作为 guard 稳健性 probe。
+- 关键观察 2: toxicology q249 注入 guard 后，pattern candidate 被 `regression_negative_guard_hit:249` 阻断；但 q249/q253 最终仍通过 `grp-sing-toxicology-206` fallback 变成 `ready`。这说明 pattern-local guard 不能阻断同源 singleton fallback。
+- 反模式信号: 未发现新的预定义闭集词表。D2 字段要求已对齐当前 `HistoricalRegressGuard` schema，但因 D1 未通过未执行 D2。
+- gate 状态: 按补充验证终结条件暂停，未执行 D2/D3/D4，未改代码，未提交 commit。
+
+### 2026-05-11 WUv2-5b case-level fallback guard gate
+
+- 详见 `doc/emergence_refactor_plan_v2_verification.md` §6。
+- commit: `3a13389`。
+- 关键观察 1: q249 自我验证通过，runtime 返回 `no_match`，`rewrite_enabled_reason=case_negative_guard_hit`，`fallback_guard_hit_groups=["grp-pat-toxicology-206-253-93286776"]`。
+- 关键观察 2: sibling singleton fallback 已被切断，但 q249 guard 同时阻断 q253/q268/q277/q285/q302/q307，D3 阻断率远超 30%。
+- gate 状态: 按 D3 暂停规则停止；未调阈值、未扩规则、未执行 D2/D4。
