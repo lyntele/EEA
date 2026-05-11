@@ -3492,6 +3492,78 @@ def _action_primitive_name(action: Any) -> str:
     return str(getattr(primitive, "value", primitive) or "").strip().upper()
 
 
+_PRIMITIVE_CORE_VERBS = {
+    "ADD_SELECT_SLOT": {"add"},
+    "REPLACE_SELECT_SLOT": {"replace"},
+    "SWITCH_CANONICAL_FIELD": {"replace", "switch"},
+    "DROP_SELECT_SLOT": {"drop", "remove"},
+    "DROP_SIDE": {"drop", "remove"},
+    "INSERT_BRIDGE": {"insert", "add"},
+    "REROUTE_FACT": {"reroute", "route", "use"},
+    "CHANGE_GRAIN": {"change"},
+    "MOVE_CONDITION": {"move"},
+    "MATERIALIZE_RANKING_OUTPUT": {"materialize", "output"},
+}
+
+
+def _hint_verb_tokens(text: str) -> set[str]:
+    tokens = {token.lower() for token in re.findall(r"[A-Za-z]+", str(text or ""))}
+    variants: set[str] = set(tokens)
+    for token in tokens:
+        if token.endswith("ing") and len(token) > 5:
+            variants.add(token[:-3])
+        if token.endswith("ed") and len(token) > 4:
+            variants.add(token[:-2])
+        if token.endswith("s") and len(token) > 3:
+            variants.add(token[:-1])
+    return variants
+
+
+def _hint_instantiation_semantic_audit(
+    *,
+    actions: Sequence[Any],
+    raw_hint: str,
+    instantiated_hint: str,
+) -> Dict[str, Any]:
+    """Audit whether hint instantiation preserved primitive core verbs.
+
+    Audit only: this never rejects, rewrites, or falls back. It uses a fixed
+    positive ActionPrimitive→core-verb table, not a negative keyword blacklist.
+    """
+    raw_tokens = _hint_verb_tokens(raw_hint)
+    instantiated_tokens = _hint_verb_tokens(instantiated_hint)
+    rows: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    seen: set[str] = set()
+    for action in actions or []:
+        primitive = _action_primitive_name(action)
+        if not primitive or primitive in seen:
+            continue
+        seen.add(primitive)
+        expected = sorted(_PRIMITIVE_CORE_VERBS.get(primitive) or [])
+        if not expected:
+            continue
+        raw_hits = sorted(verb for verb in expected if verb in raw_tokens)
+        instantiated_hits = sorted(verb for verb in expected if verb in instantiated_tokens)
+        rows.append(
+            {
+                "primitive": primitive,
+                "expected_core_verbs": expected,
+                "raw_core_verb_hits": raw_hits,
+                "instantiated_core_verb_hits": instantiated_hits,
+                "core_verb_preserved": bool(instantiated_hits),
+            }
+        )
+        if raw_hits and not instantiated_hits:
+            missing.append(primitive)
+    return {
+        "schema_version": "hint-primitive-core-verb-audit-v1",
+        "hint_introduces_non_primitive_action": bool(missing),
+        "missing_core_verb_primitives": missing,
+        "primitive_core_verb_rows": rows,
+    }
+
+
 def _append_scope(scopes: List[str], scope: Any) -> None:
     value = _scope_value(scope)
     if value and value in _EDIT_SCOPE_ORDER and value not in scopes:
@@ -3931,6 +4003,7 @@ def _runtime_audit_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "trigger": _compact_trigger_result(payload.get("trigger_result")),
         "compiler": _compact_compiler_output(compiler_output, candidate_sets),
+        "hint_audit": payload.get("hint_audit") or {},
         "guard": {
             "scope_guard_mode": str((payload.get("guard") or {}).get("scope_guard_mode") or ""),
             "allowed_edit_scope": list((payload.get("guard") or {}).get("allowed_edit_scope") or []),
@@ -4687,6 +4760,12 @@ def prepare_rewrite_plan(
             rewrite_allowed = True
             hint_notes = f"instantiation_error:{type(exc).__name__}"
 
+    hint_audit = _hint_instantiation_semantic_audit(
+        actions=compiler_output.actions,
+        raw_hint=raw_hint,
+        instantiated_hint=instantiated_hint,
+    )
+
     if not raw_hint:
         return finish({
             "case_view": case_view,
@@ -4701,6 +4780,7 @@ def prepare_rewrite_plan(
             "hint_applicable": False,
             "rewrite_allowed": True,
             "guard_scope_contract": guard_scope_contract,
+            "hint_audit": hint_audit,
             "rewrite_enabled_reason": "ready_with_actions_no_repair_brief",
             "hint_instantiation_notes": "structured actions did not yield a repair brief",
             "reason": "ready",
@@ -4719,6 +4799,7 @@ def prepare_rewrite_plan(
             "hint_applicable": False,
             "rewrite_allowed": True,
             "guard_scope_contract": guard_scope_contract,
+            "hint_audit": hint_audit,
             "rewrite_enabled_reason": "ready_with_actions_hint_not_applicable",
             "hint_instantiation_notes": hint_notes,
             "reason": "ready",
@@ -4739,6 +4820,7 @@ def prepare_rewrite_plan(
             "hint_instantiation_notes": hint_notes,
             "rewrite_allowed": False,
             "guard_scope_contract": guard_scope_contract,
+            "hint_audit": hint_audit,
             "rewrite_enabled_reason": "brief_action_conflict",
             "reason": "passthrough_unsafe_hint",
         })
@@ -4757,6 +4839,7 @@ def prepare_rewrite_plan(
         "hint_instantiation_notes": hint_notes,
         "rewrite_allowed": True,
         "guard_scope_contract": guard_scope_contract,
+        "hint_audit": hint_audit,
         "rewrite_enabled_reason": "ready_with_repair_brief_and_actions",
         "reason": "ready",
     })
