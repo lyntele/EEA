@@ -38,6 +38,9 @@ from method.EEA.rulebook.common.analysis.signal_summary import (
     build_trigger_contract,
     compact_synthesized_program_for_memory,
 )
+from method.EEA.rulebook.common.analysis.repair_card_normalizer import (
+    repair_card_from_group_summary,
+)
 from method.EEA.rulebook.common.learning.shared_program_synthesizer import (
     canonical_op_lowering_family,
     repair_program_steps_from_canonical_program,
@@ -337,6 +340,7 @@ def _evolution_card(group: GroupSummary) -> Dict[str, Any]:
         "version": int(group.version or 0),
         "case_ids": [str(case_id) for case_id in group.case_ids or []],
         "db_id": group.db_id,
+        "repair_card": repair_card_from_group_summary(group),
         "effect_core": [list(item) for item in _primary_effect_rows(group)],
         "delta_axes": sorted(_signal_axes(group)),
         "shape_key": list(_shape_retrieval_key(group)),
@@ -348,23 +352,25 @@ def _evolution_card(group: GroupSummary) -> Dict[str, Any]:
 def _retrieval_keys_for_card(card: Dict[str, Any]) -> Set[Tuple[str, str]]:
     keys: Set[Tuple[str, str]] = set()
     db_id = str(card.get("db_id") or "")
-    for effect in card.get("effect_core") or []:
-        effect_key = _canonical_payload(effect)
-        if effect_key:
-            keys.add((db_id, f"effect:{effect_key}"))
+    repair_card = _model_dump(card.get("repair_card") or {})
+    source_kind = str(
+        _model_dump(repair_card.get("source_answer_unit") or {}).get("kind") or ""
+    ).strip()
+    target_kind = str(
+        _model_dump(repair_card.get("target_answer_unit") or {}).get("kind") or ""
+    ).strip()
+    ops_signature = "|".join(
+        sorted(str(item) for item in (repair_card.get("operation_family") or []) if str(item))
+    )
+    if source_kind or target_kind or ops_signature:
+        primary_key = f"answer_unit_op:{source_kind}->{target_kind}|{ops_signature}"
+        keys.add((db_id, primary_key))
 
     axes = [str(axis) for axis in card.get("delta_axes") or [] if str(axis)]
-    shape_key = tuple(str(item) for item in card.get("shape_key") or [])
-    shape_family = "|".join(shape_key[:5])
+    if not axes:
+        axes = [str(axis) for axis in repair_card.get("effect_axis") or [] if str(axis)]
     for axis in axes:
-        if shape_family:
-            keys.add((db_id, f"axis_shape:{axis}|{shape_family}"))
-        for family in card.get("lowering_families") or []:
-            keys.add((db_id, f"axis_lowering:{axis}|{family}"))
-
-    interface = str(card.get("repair_insight_interface") or "").strip()
-    if interface:
-        keys.add((db_id, f"insight:{interface}"))
+        keys.add((db_id, f"axis:{axis}"))
     return keys
 
 
