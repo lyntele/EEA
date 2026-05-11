@@ -72,6 +72,7 @@ _EDIT_SCOPE_ORDER = [
 ]
 
 _PRE_CONDITION_MATCH_CACHE: Dict[str, Dict[str, Any]] = {}
+_REGRESSION_GUARD_MATCH_CACHE: Dict[str, Dict[str, Any]] = {}
 _BINDER_DRY_RUN_CACHE: Dict[str, Tuple[List[Tuple[str, Any]], str]] = {}
 _TWO_STAGE_PATTERN_TRIGGER_ENABLED = (
     os.environ.get("EEA_PATTERN_TWO_STAGE_TRIGGER", "1").strip().lower()
@@ -1569,6 +1570,120 @@ def _evaluate_pattern_pre_condition(
     return audit, bool(not blockers), blockers
 
 
+def _contract_applicability_payload(contract: Mapping[str, Any]) -> Dict[str, Any]:
+    return _payload(contract.get("applicability") or contract.get("applicability_contract") or {})
+
+
+def _regression_guard_match_call(
+    *,
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+    guard: Mapping[str, Any],
+) -> Dict[str, Any]:
+    guard_case_id = str(guard.get("case_id") or "")
+    guard_question = str(guard.get("case_question_snippet") or "")[:400]
+    guard_pred_sql = str(guard.get("case_pred_sql_snippet") or "")[:800]
+    guard_summary = str(guard.get("rewrite_failure_summary") or "")[:300]
+    current_question = str(case_view.question or "")[:800]
+    current_evidence = str(case_view.evidence or "")[:400]
+    current_pred_sql = str(case_view.pred_manifestation.top1_sql or "")[:1200]
+    key = "|".join(
+        [
+            "regression-guard-v1",
+            str(group.group_id),
+            hashlib.sha1(guard_case_id.encode("utf-8")).hexdigest()[:12],
+            hashlib.sha1((guard_question + "\n" + guard_pred_sql + "\n" + guard_summary).encode("utf-8")).hexdigest()[:16],
+            hashlib.sha1((current_question + "\n" + current_pred_sql).encode("utf-8")).hexdigest()[:16],
+        ]
+    )
+    cached = _REGRESSION_GUARD_MATCH_CACHE.get(key)
+    if cached:
+        return dict(cached)
+    try:
+        from method.EEA.rulebook.common.llm.prompts.regression_guard_match import (
+            build_regression_guard_match_prompt,
+        )
+        from method.EEA.rulebook.common.llm.utils import call_llm
+
+        prompt = build_regression_guard_match_prompt(
+            guard_case_id=guard_case_id,
+            guard_question=guard_question,
+            guard_pred_sql=guard_pred_sql,
+            guard_summary=guard_summary,
+            current_question=current_question,
+            current_evidence=current_evidence,
+            current_pred_sql=current_pred_sql,
+        )
+        raw = call_llm(
+            prompt,
+            expect_json=True,
+            stage="regression_guard_match",
+            trace_context={
+                "group_id": group.group_id,
+                "case_id": case_view.case_id,
+                "guard_case_id": guard_case_id,
+            },
+        )
+        payload = dict(raw) if isinstance(raw, dict) else {}
+    except Exception as exc:
+        payload = {
+            "matches": False,
+            "confidence": 0.0,
+            "reason": f"llm_error:{type(exc).__name__}",
+        }
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    out = {
+        "guard_case_id": guard_case_id,
+        "matches": bool(payload.get("matches")),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": str(payload.get("reason") or "")[:240],
+        "cache_key": key,
+    }
+    _REGRESSION_GUARD_MATCH_CACHE[key] = out
+    return out
+
+
+def _evaluate_applicability_contract(
+    *,
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+    recognition_contract: Mapping[str, Any],
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    applicability = _contract_applicability_payload(recognition_contract)
+    guards = [
+        _payload(item)
+        for item in (applicability.get("regression_negative_guards") or [])
+        if _payload(item)
+    ]
+    audit = {
+        "schema_version": "applicability-audit-v1",
+        "mode": "regression_negative_guard",
+        "intent_description": str(applicability.get("intent_description") or "")[:240],
+        "guard_count": len(guards),
+        "negative_guard_check_results": [],
+    }
+    if not guards:
+        audit["result"] = "no_negative_guards_yet"
+        return audit, True, []
+    blockers: List[str] = []
+    for guard in guards:
+        result = _regression_guard_match_call(
+            group=group,
+            case_view=case_view,
+            guard=guard,
+        )
+        audit["negative_guard_check_results"].append(result)
+        if result.get("matches"):
+            guard_case_id = str(result.get("guard_case_id") or "")
+            blockers.append(f"regression_negative_guard_hit:{guard_case_id}")
+            break
+    audit["result"] = "blocked" if blockers else "applicability_ok"
+    return audit, bool(not blockers), blockers
+
+
 def _branch_candidate_matches(candidate: Any, branch: Mapping[str, Any]) -> bool:
     bundle_ids = _runtime_branch_bundle_ids(branch)
     args = _payload(getattr(candidate, "arguments", None))
@@ -2290,6 +2405,7 @@ def _gate_group(
     compiler_candidate_reasons: List[str] = []
     pre_condition_match: Dict[str, Any] = {}
     pre_condition_matched = False
+    applicability_audit: Dict[str, Any] = {}
     singleton_canonical_exact_passed = False
     diagnostic_only = False
 
@@ -2343,6 +2459,20 @@ def _gate_group(
                 variant_required_match = True
                 generalized_canonical_gate_passed = True
                 required_misses = []
+                (
+                    applicability_audit,
+                    applicability_passed,
+                    applicability_blockers,
+                ) = _evaluate_applicability_contract(
+                    group=group,
+                    case_view=case_view,
+                    recognition_contract=recognition_contract,
+                )
+                if applicability_blockers:
+                    passed = False
+                    reasons.extend(applicability_blockers)
+                elif applicability_passed:
+                    reasons.append("applicability_matched")
             else:
                 # WUv2-3, plan v2 §1.0/§3: singleton is not the
                 # generalization unit. Its pre-condition match is audit-only;
@@ -2706,6 +2836,7 @@ def _gate_group(
         compiler_candidate_reasons=compiler_candidate_reasons,
         pre_condition_match=pre_condition_match,
         pre_condition_matched=pre_condition_matched,
+        applicability_audit=applicability_audit,
         singleton_strict_audit={
             "singleton_strict_mode": "wuv2_3_pre_condition_audit_only",
             "singleton_pre_condition_matched": bool(
@@ -3890,6 +4021,7 @@ def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
         "singleton_strict_audit": payload.get("singleton_strict_audit") or {},
         "diagnostic_only": bool(payload.get("diagnostic_only", False)),
         "pre_condition_match": payload.get("pre_condition_match") or {},
+        "applicability_audit": payload.get("applicability_audit") or {},
         "final_score": payload.get("final_score"),
     }
 

@@ -1351,6 +1351,7 @@ class TriggerCandidateAudit(BaseModel):
     bias_recognized: bool = False
     pre_condition_match: Dict[str, Any] = Field(default_factory=dict)
     pre_condition_matched: bool = False
+    applicability_audit: Dict[str, Any] = Field(default_factory=dict)
     singleton_strict_audit: Dict[str, Any] = Field(default_factory=dict)
     diagnostic_only: bool = False
 
