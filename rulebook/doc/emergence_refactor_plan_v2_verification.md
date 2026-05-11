@@ -295,7 +295,7 @@ quick probe: `workspace/probes/wuv2_5_b/*.json`
 
 ### sub-commit c: regression negative feedback
 
-commit: 本 WUv2-5c 提交。
+commit: EEA `4fcdc40`, DeepEye `1cb42c0`
 
 实现内容:
 
