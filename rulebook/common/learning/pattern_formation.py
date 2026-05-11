@@ -51,6 +51,7 @@ from method.EEA.rulebook.common.runtime.trigger_contract import (
     materialize_library_runtime_contracts,
 )
 from method.EEA.rulebook.common.core.vocabulary import (
+    ActionPrimitive,
     Confidence,
     GrainType,
     GroupStatus,
@@ -1959,6 +1960,47 @@ def _extract_shared_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _binding_slot_guidance_for_admission() -> Dict[str, Any]:
+    """Literal-free slot guidance for WUv2-5 admission output."""
+
+    return {
+        "allowed_slot_fields": [
+            "kind",
+            "role_family",
+            "path_role",
+            "relation_role",
+            "answer_unit_role",
+            "optional",
+            "constraints",
+        ],
+        "forbidden_literal_fields": [
+            "table",
+            "column",
+            "expression",
+            "alias",
+            "table_name",
+            "column_name",
+            "source_table",
+            "target_table",
+            "source_column",
+            "target_column",
+            "source_expression",
+            "target_expression",
+        ],
+        "slot_kind_examples": [
+            "answer_slot",
+            "predicate_slot",
+            "join_path",
+            "aggregate_slot",
+        ],
+        "rule": (
+            "Describe role families and path roles only. Do not copy seed "
+            "case table names, column names, SQL aliases, expressions, or "
+            "database-specific labels into binding slots."
+        ),
+    }
+
+
 def _pattern_pair_decision(
     pair: PairScore,
     *,
@@ -2426,6 +2468,9 @@ def _call_pattern_admission_judge(
     from method.EEA.rulebook.common.llm.utils import call_llm
     from method.EEA.rulebook.common.llm.prompts.pattern_admission_judge import build_pattern_admission_judge_prompt
 
+    action_primitives = [item.value for item in ActionPrimitive]
+    binding_slot_guidance = _binding_slot_guidance_for_admission()
+
     def build_prompt(
         cards: Sequence[Dict[str, Any]],
         pair_context: Dict[str, Any],
@@ -2453,6 +2498,11 @@ def _call_pattern_admission_judge(
             ),
             pair_semantic_decisions_json=json.dumps(pair_context, **dumps_kwargs),
             component_summary_json=json.dumps(summary, **dumps_kwargs),
+            action_primitives_json=json.dumps(action_primitives, **dumps_kwargs),
+            binding_slot_guidance_json=json.dumps(
+                binding_slot_guidance,
+                **dumps_kwargs,
+            ),
         )
 
     prompt = build_pattern_admission_judge_prompt(
@@ -2476,6 +2526,18 @@ def _call_pattern_admission_judge(
         ),
         pair_semantic_decisions_json=json.dumps(pair_decision_context, ensure_ascii=False, indent=2, default=str),
         component_summary_json=json.dumps(component_summary, ensure_ascii=False, indent=2, default=str),
+        action_primitives_json=json.dumps(
+            action_primitives,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        binding_slot_guidance_json=json.dumps(
+            binding_slot_guidance,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
     )
     sampled_case_ids: List[str] = []
     if len(prompt) > PATTERN_ADMISSION_PROMPT_BUDGET_CHARS:
@@ -2529,25 +2591,275 @@ def _contract_text(value: Any, limit: int = 200) -> str:
     return text[:limit]
 
 
-def _pattern_recognition_contract_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
-    pre_question = _contract_text(raw.get("pre_question_signature"), limit=150)
-    pre_sql = _contract_text(raw.get("pre_sql_signature"), limit=150)
-    repair_direction = _contract_text(raw.get("repair_direction"))
-    if not (pre_question and pre_sql and repair_direction):
-        return {}
-    return {
-        "schema_version": "pattern-recognition-v1",
+_BINDING_LITERAL_FIELD_KEYS = {
+    "alias",
+    "column",
+    "column_name",
+    "expression",
+    "from_expr",
+    "from_exprs",
+    "source_alias",
+    "source_column",
+    "source_expression",
+    "source_table",
+    "table",
+    "table_name",
+    "target_alias",
+    "target_column",
+    "target_expression",
+    "target_table",
+}
+
+
+def _recognition_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    return _model_dump(raw.get("recognition") or raw.get("recognition_contract") or {})
+
+
+def _applicability_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    return _model_dump(raw.get("applicability") or raw.get("applicability_contract") or {})
+
+
+def _binding_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    return _model_dump(raw.get("binding") or raw.get("binding_contract") or {})
+
+
+def _self_check_payload(raw: Mapping[str, Any], key: str) -> Dict[str, Any]:
+    payload = _model_dump(raw.get(key) or {})
+    if payload:
+        return payload
+    recognition = _recognition_payload(raw)
+    nested_keys = {
+        "pre_question_signature_self_check": (
+            "question_self_check",
+            "pre_question_signature_self_check",
+        ),
+        "pre_sql_signature_self_check": (
+            "sql_self_check",
+            "pre_sql_signature_self_check",
+        ),
+    }.get(key, ())
+    for nested_key in nested_keys:
+        payload = _model_dump(recognition.get(nested_key) or {})
+        if payload:
+            return payload
+    return {}
+
+
+def _literal_binding_paths(value: Any, *, prefix: str = "") -> List[str]:
+    paths: List[str] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key) in _BINDING_LITERAL_FIELD_KEYS and child not in (None, "", [], {}):
+                paths.append(path)
+            paths.extend(_literal_binding_paths(child, prefix=path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_literal_binding_paths(child, prefix=f"{prefix}[{index}]"))
+    return paths
+
+
+def _anchor_terms(anchor: Mapping[str, Any]) -> List[str]:
+    terms: List[str] = []
+    for key in ("role_family", "path_role", "relation_role", "value"):
+        text = str(anchor.get(key) or "").strip().lower()
+        if len(text) >= 3:
+            terms.append(text)
+    return terms
+
+
+def _case_evidence_blob(group: GroupSummary) -> str:
+    try:
+        card = _pattern_case_card(group)
+    except Exception:
+        card = _model_dump(group)
+    return json.dumps(card, ensure_ascii=False, sort_keys=True, default=str).lower()
+
+
+def _validate_grounded_anchors(
+    anchors: Sequence[Mapping[str, Any]],
+    *,
+    admitted_groups: Sequence[GroupSummary],
+) -> List[str]:
+    errors: List[str] = []
+    if len(anchors) < 2:
+        errors.append("recognition_grounded_anchors_lt_2")
+        return errors
+    admitted_case_ids = {
+        str(case_id)
+        for group in admitted_groups
+        for case_id in (group.case_ids or [])
+        if str(case_id)
+    }
+    blobs_by_case = {
+        str(case_id): _case_evidence_blob(group)
+        for group in admitted_groups
+        for case_id in (group.case_ids or [])
+        if str(case_id)
+    }
+    for index, raw_anchor in enumerate(anchors):
+        anchor = _model_dump(raw_anchor)
+        if not str(anchor.get("kind") or "").strip():
+            errors.append(f"grounded_anchor_{index}_missing_kind")
+        if not _anchor_terms(anchor):
+            errors.append(f"grounded_anchor_{index}_missing_descriptor")
+        support_case_ids = {
+            str(case_id)
+            for case_id in (anchor.get("support_case_ids") or [])
+            if str(case_id)
+        }
+        if not support_case_ids:
+            errors.append(f"grounded_anchor_{index}_missing_support_case_ids")
+            continue
+        if admitted_case_ids and not support_case_ids <= admitted_case_ids:
+            errors.append(f"grounded_anchor_{index}_support_outside_admitted")
+        terms = _anchor_terms(anchor)
+        if admitted_groups and terms:
+            support_blob = "\n".join(
+                blobs_by_case.get(case_id, "") for case_id in sorted(support_case_ids)
+            )
+            if support_blob and not any(term in support_blob for term in terms):
+                errors.append(f"grounded_anchor_{index}_not_observed_in_support")
+    return errors
+
+
+def _validate_pattern_contract_payload(
+    raw: Dict[str, Any],
+    *,
+    admitted_groups: Sequence[GroupSummary] = (),
+) -> Tuple[Dict[str, Any], List[str]]:
+    recognition = _recognition_payload(raw)
+    applicability = _applicability_payload(raw)
+    binding = _binding_payload(raw)
+
+    pre_question = _contract_text(
+        recognition.get("question_precondition") or raw.get("pre_question_signature"),
+        limit=180,
+    )
+    pre_sql = _contract_text(
+        recognition.get("sql_precondition") or raw.get("pre_sql_signature"),
+        limit=180,
+    )
+    observed_failure = _contract_text(
+        recognition.get("observed_failure_summary") or raw.get("observed_failure_summary")
+    )
+    repair_direction = _contract_text(
+        recognition.get("repair_direction") or raw.get("repair_direction")
+    )
+
+    errors: List[str] = []
+    if not pre_question:
+        errors.append("missing_recognition_question_precondition")
+    if not pre_sql:
+        errors.append("missing_recognition_sql_precondition")
+    if not repair_direction:
+        errors.append("missing_recognition_repair_direction")
+
+    anchors = [
+        _model_dump(anchor)
+        for anchor in (recognition.get("grounded_anchors") or raw.get("grounded_anchors") or [])
+        if _model_dump(anchor)
+    ]
+    errors.extend(
+        _validate_grounded_anchors(
+            anchors,
+            admitted_groups=admitted_groups,
+        )
+    )
+
+    intent_description = _contract_text(applicability.get("intent_description"), limit=240)
+    if applicability and not intent_description:
+        errors.append("applicability_intent_description_empty")
+
+    allowed_operations = [
+        str(item).strip()
+        for item in (binding.get("allowed_operations") or [])
+        if str(item).strip()
+    ]
+    allowed_action_values = {item.value for item in ActionPrimitive}
+    invalid_operations = sorted(
+        {item for item in allowed_operations if item not in allowed_action_values}
+    )
+    if invalid_operations:
+        errors.append(f"invalid_binding_allowed_operations:{','.join(invalid_operations)}")
+
+    literal_paths = _literal_binding_paths(binding)
+    if literal_paths:
+        errors.append(f"binding_contains_literal_fields:{','.join(literal_paths[:8])}")
+
+    payload = {
+        "schema_version": "pattern-recognition-v2",
+        "recognition": {
+            "question_precondition": pre_question,
+            "question_self_check": _self_check_payload(
+                raw,
+                "pre_question_signature_self_check",
+            ),
+            "sql_precondition": pre_sql,
+            "sql_self_check": _self_check_payload(
+                raw,
+                "pre_sql_signature_self_check",
+            ),
+            "grounded_anchors": anchors,
+            "observed_failure_summary": observed_failure,
+            "repair_direction": repair_direction,
+        },
+        "applicability": {
+            "intent_description": intent_description,
+            "regression_negative_guards": [
+                _model_dump(item)
+                for item in (applicability.get("regression_negative_guards") or [])
+            ],
+            "evidence": _model_dump(applicability.get("evidence") or {}),
+        },
+        "binding": {
+            "source_slots": [
+                _model_dump(item) for item in (binding.get("source_slots") or [])
+            ],
+            "target_slots": [
+                _model_dump(item) for item in (binding.get("target_slots") or [])
+            ],
+            "allowed_operations": allowed_operations,
+            "preserve_invariants": [
+                _contract_text(item, limit=120)
+                for item in (binding.get("preserve_invariants") or [])
+                if _contract_text(item, limit=120)
+            ],
+            "evidence": _model_dump(binding.get("evidence") or {}),
+        },
+        # Legacy mirrors for current runtime until WUv2-5b switches to layers.
         "pre_question_signature": pre_question,
-        "pre_question_signature_self_check": _model_dump(
-            raw.get("pre_question_signature_self_check") or {}
+        "pre_question_signature_self_check": _self_check_payload(
+            raw,
+            "pre_question_signature_self_check",
         ),
         "pre_sql_signature": pre_sql,
-        "pre_sql_signature_self_check": _model_dump(
-            raw.get("pre_sql_signature_self_check") or {}
+        "pre_sql_signature_self_check": _self_check_payload(
+            raw,
+            "pre_sql_signature_self_check",
         ),
-        "observed_failure_summary": _contract_text(raw.get("observed_failure_summary")),
+        "observed_failure_summary": observed_failure,
         "repair_direction": repair_direction,
     }
+    return ({} if errors else payload), errors
+
+
+def _pattern_recognition_contract_payload(
+    raw: Dict[str, Any],
+    *,
+    admitted_groups: Sequence[GroupSummary] = (),
+) -> Dict[str, Any]:
+    payload, errors = _validate_pattern_contract_payload(
+        raw,
+        admitted_groups=admitted_groups,
+    )
+    if errors:
+        raw["structural_contract_validation_failed"] = True
+        raw["structural_contract_validation_errors"] = list(errors)
+        return {}
+    raw["structural_contract_validation_passed"] = True
+    raw["pattern_recognition_contract_payload"] = payload
+    return payload
 
 
 def _signature_self_check_rate(
@@ -2556,7 +2868,7 @@ def _signature_self_check_rate(
     key: str,
     accepted_case_ids: Sequence[str],
 ) -> Tuple[float, Dict[str, Any]]:
-    payload = _model_dump(raw.get(key) or {})
+    payload = _self_check_payload(raw, key)
     accepted = {str(case_id) for case_id in accepted_case_ids if str(case_id)}
     matched = {
         str(case_id)
@@ -3547,7 +3859,10 @@ def _build_pattern_candidate(
         else pattern.instantiation_program.shared_status
     )
     pattern = _materialize_admission_branches(pattern, groups)
-    recognition_payload = _pattern_recognition_contract_payload(admission_response)
+    recognition_payload = _pattern_recognition_contract_payload(
+        admission_response,
+        admitted_groups=groups,
+    )
     recognition_contract = (
         PatternRecognitionContract.model_validate(recognition_payload)
         if recognition_payload
@@ -3833,6 +4148,21 @@ def _build_pattern_admission_candidates(
                     or "Pattern admission signatures do not recall admitted members "
                     "well enough for answer-blind runtime use."
                 )
+        if admitted:
+            contract_payload = _pattern_recognition_contract_payload(
+                response,
+                admitted_groups=admitted_groups,
+            )
+            if not contract_payload:
+                admitted = False
+                admission_blocker = "structural_contract_validation_failed"
+                response["reject_reason"] = "structural_contract_validation_failed"
+                response["admission_audit"] = {
+                    **dict(_model_dump(response.get("admission_audit") or {})),
+                    "structural_contract_validation_errors": list(
+                        response.get("structural_contract_validation_errors") or []
+                    ),
+                }
         core_branch_coverage = (
             _core_signature_branch_coverage(admitted_groups, response)
             if admitted

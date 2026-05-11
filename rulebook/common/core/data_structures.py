@@ -22,6 +22,9 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from method.EEA.rulebook.common.core.data_structures_v2 import (
+    PatternRecognitionContractV2,
+)
 from method.EEA.rulebook.common.core.vocabulary import (
     ActionPrimitive,
     AnswerSlotType,
@@ -1104,20 +1107,12 @@ class BiasRecognitionContract(BaseModel):
     min_signal_overlap: float = 0.6
 
 
-class PatternRecognitionContract(BaseModel):
-    """Emergent pattern/singleton recognition contract.
+class PatternRecognitionContract(PatternRecognitionContractV2):
+    """Compatibility alias for the WUv2-5 three-contract schema.
 
-    The pre_* fields are answer-blind pre-conditions learned during accumulate
-    or multi-case admission. observed_failure_summary stays audit-only.
+    Existing runtime code still reads the legacy ``pre_*`` mirror fields. New
+    admission writes the structured recognition/applicability/binding sections.
     """
-
-    schema_version: Literal["pattern-recognition-v1"] = "pattern-recognition-v1"
-    pre_question_signature: str = ""
-    pre_question_signature_self_check: Dict[str, Any] = Field(default_factory=dict)
-    pre_sql_signature: str = ""
-    pre_sql_signature_self_check: Dict[str, Any] = Field(default_factory=dict)
-    observed_failure_summary: str = ""
-    repair_direction: str = ""
 
 
 class TriggerSignature(BaseModel):

@@ -117,17 +117,29 @@ Negative examples:
   column names, or database-specific vocabulary.
 
 Runtime-use requirement:
-- The pre_question_signature and pre_sql_signature are later used by a runtime
-  judge on a new answer-blind case. They must be neither narrower than the
-  admitted members nor so broad that unrelated cases match.
-- pre_question_signature describes only the question-side target intent that is
-  observable from the natural-language question. Do not put SQL-side failure
-  mechanisms such as wrong route, bridge misuse, duplicated joins, or proxy
-  source choice into the question signature unless the question itself states
-  them.
-- pre_sql_signature describes the current pred_sql source-side shape or
-  antipattern. SQL-side misconception belongs here, not in the question
-  signature.
+- recognition.question_precondition and recognition.sql_precondition are later
+  used by a runtime judge on a new answer-blind case. They must be neither
+  narrower than the admitted members nor so broad that unrelated cases match.
+- recognition.question_precondition describes only the question-side target
+  intent observable from the natural-language question. Do not put SQL-side
+  failure mechanisms such as wrong route, bridge misuse, duplicated joins, or
+  proxy source choice into the question precondition unless the question itself
+  states them.
+- recognition.sql_precondition describes the current pred_sql source-side shape
+  or antipattern. SQL-side misconception belongs here, not in the question
+  precondition.
+- recognition.grounded_anchors must contain at least two code-verifiable
+  anchors observed in admitted members. Anchors are generic roles/path facts,
+  not exact table names, exact columns, aliases, or case ids.
+- applicability is audit-only during admission. Write only a concise
+  intent_description explaining when the repair seems applicable. Do not write
+  executable predicates, signals, fact kinds, or negative guards; those are
+  learned later only from real regression feedback.
+- binding.source_slots and binding.target_slots must be literal-free. Use
+  role_family/path_role/relation_role/answer_unit_role only. Never write table,
+  column, expression, alias, SQL text, or seed case target names in binding.
+- binding.allowed_operations must only use ActionPrimitive values from
+  action_primitives below.
 - Calibrate each signature against the admitted members before returning it.
   First draft the signature, then list admitted members it would match or miss,
   then rewrite it if estimated_recall is below 0.8.
@@ -149,24 +161,70 @@ Return strict JSON only:
   "excluded_case_ids": ["..."],
   "stable_bias_key": "short normalized phrase",
   "primary_repair_interface": "answer-blind repair interface compiler must instantiate later",
-  "pre_question_signature_draft": "initial abstract question pre-condition",
-  "pre_question_signature_self_check": {{
-    "matched_member_case_ids": ["..."],
-    "missed_member_case_ids": ["..."],
-    "estimated_recall": 0.0,
-    "rewrite_needed": true
+  "recognition": {{
+    "question_precondition_draft": "initial abstract question precondition",
+    "question_self_check": {{
+      "matched_member_case_ids": ["..."],
+      "missed_member_case_ids": ["..."],
+      "estimated_recall": 0.0,
+      "rewrite_needed": true
+    }},
+    "question_precondition": "abstract question type shared by accepted members; no case ids or table names",
+    "sql_precondition_draft": "initial abstract SQL precondition",
+    "sql_self_check": {{
+      "matched_member_case_ids": ["..."],
+      "missed_member_case_ids": ["..."],
+      "estimated_recall": 0.0,
+      "rewrite_needed": true
+    }},
+    "sql_precondition": "abstract pred_sql shape shared by accepted members; prefer role_family language",
+    "observed_failure_summary": "common observed pred-vs-target difference; audit only, not runtime trigger",
+    "repair_direction": "actionable common repair direction for branch/binder instantiation",
+    "grounded_anchors": [
+      {{
+        "kind": "column_role | path_role | relation_role | aggregate_kind | operation_family | answer_unit",
+        "role_family": "role family if applicable, no table/column literal",
+        "path_role": "path role if applicable",
+        "relation_role": "relation role if applicable",
+        "value": "generic non-literal value if needed",
+        "source_channel": "question | pred_sql | schema | delta",
+        "support_case_ids": ["..."],
+        "evidence": {{"why_grounded": "short audit text"}}
+      }}
+    ]
   }},
-  "pre_question_signature": "abstract question type shared by accepted members; no case ids or table names",
-  "pre_sql_signature_draft": "initial abstract SQL pre-condition",
-  "pre_sql_signature_self_check": {{
-    "matched_member_case_ids": ["..."],
-    "missed_member_case_ids": ["..."],
-    "estimated_recall": 0.0,
-    "rewrite_needed": true
+  "applicability": {{
+    "intent_description": "audit-only sentence describing when this repair seems applicable; no executable predicates",
+    "regression_negative_guards": [],
+    "evidence": {{"why_applicable": "short audit text"}}
   }},
-  "pre_sql_signature": "abstract pred_sql shape shared by accepted members; prefer role_family language",
-  "observed_failure_summary": "common observed pred-vs-target difference; audit only, not runtime trigger",
-  "repair_direction": "actionable common repair direction for branch/binder instantiation",
+  "binding": {{
+    "source_slots": [
+      {{
+        "kind": "answer_slot | predicate_slot | join_path | aggregate_slot",
+        "role_family": "source role family, no literal name",
+        "path_role": "path role if applicable",
+        "relation_role": "relation role if applicable",
+        "answer_unit_role": "answer unit role if applicable",
+        "optional": false,
+        "constraints": {{}}
+      }}
+    ],
+    "target_slots": [
+      {{
+        "kind": "answer_slot | predicate_slot | join_path | aggregate_slot",
+        "role_family": "target role family, no literal name",
+        "path_role": "path role if applicable",
+        "relation_role": "relation role if applicable",
+        "answer_unit_role": "answer unit role if applicable",
+        "optional": false,
+        "constraints": {{}}
+      }}
+    ],
+    "allowed_operations": ["ActionPrimitive value from action_primitives"],
+    "preserve_invariants": ["scope/grain/answer-unit invariant"],
+    "evidence": {{"why_bindable": "short audit text"}}
+  }},
   "branch_axes": [
     {{
       "name": "finite branch axis",
@@ -201,14 +259,29 @@ If not admitting, return the same object shape with:
   "excluded_case_ids": ["all or relevant ids"],
   "stable_bias_key": "",
   "primary_repair_interface": "",
-  "pre_question_signature_draft": "",
-  "pre_question_signature_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
-  "pre_question_signature": "",
-  "pre_sql_signature_draft": "",
-  "pre_sql_signature_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
-  "pre_sql_signature": "",
-  "observed_failure_summary": "",
-  "repair_direction": "",
+  "recognition": {{
+    "question_precondition_draft": "",
+    "question_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
+    "question_precondition": "",
+    "sql_precondition_draft": "",
+    "sql_self_check": {{"matched_member_case_ids": [], "missed_member_case_ids": [], "estimated_recall": 0.0, "rewrite_needed": false}},
+    "sql_precondition": "",
+    "observed_failure_summary": "",
+    "repair_direction": "",
+    "grounded_anchors": []
+  }},
+  "applicability": {{
+    "intent_description": "",
+    "regression_negative_guards": [],
+    "evidence": {{}}
+  }},
+  "binding": {{
+    "source_slots": [],
+    "target_slots": [],
+    "allowed_operations": [],
+    "preserve_invariants": [],
+    "evidence": {{}}
+  }},
   "branch_axes": [],
   "branch_specs": [],
   "membership_by_case": [],
@@ -235,21 +308,30 @@ pair_semantic_decisions (relation counts plus representative pairs only):
 component_summary:
 {component_summary_json}
 
+action_primitives:
+{action_primitives_json}
+
+binding_slot_guidance:
+{binding_slot_guidance_json}
+
 Pattern recognition contract:
-- If admit_pattern is true, fill pre_question_signature, pre_sql_signature,
-  observed_failure_summary, and repair_direction.
-- pre_question_signature and pre_sql_signature are runtime pre-conditions:
-  describe what a future answer-blind case should look like before knowing gold.
-- observed_failure_summary is audit-only. Do not phrase it as something runtime
-  can check.
-- repair_direction must be actionable enough for branch + binder to instantiate;
-  if it cannot be actionable, reject admission.
-- Use natural language and role_family descriptions from the case cards. Do not
-  select from a closed vocabulary, and do not copy case ids, exact table names,
-  SQL aliases, or database-specific labels.
-- If either signature self-check has estimated_recall below 0.8 for the
-  accepted members, rewrite the signature before returning. If no signature can
-  reach that recall while staying precise, reject admission.
+- If admit_pattern is true, fill recognition, applicability, and binding.
+- recognition.question_precondition and recognition.sql_precondition are runtime
+  preconditions: describe what a future answer-blind case should look like
+  before knowing gold.
+- recognition.observed_failure_summary is audit-only. Do not phrase it as
+  something runtime can check.
+- recognition.repair_direction must be actionable enough for branch + binder to
+  instantiate; if it cannot be actionable, reject admission.
+- applicability is audit-only at admission time. Do not invent pre-rewrite
+  predicates or negative guards. Runtime negative guards are learned only from
+  real regressions.
+- binding slots must be literal-free. Use role_family/path_role/relation_role
+  language from the case cards. Do not copy exact table names, column names, SQL
+  aliases, expressions, database-specific labels, or case ids.
+- If either self-check has estimated_recall below 0.8 for the accepted members,
+  rewrite the precondition before returning. If no precondition can reach that
+  recall while staying precise, reject admission.
 """
 
 
@@ -260,6 +342,8 @@ def build_pattern_admission_judge_prompt(
     case_cards_shared_view_json: str,
     pair_semantic_decisions_json: str,
     component_summary_json: str,
+    action_primitives_json: str,
+    binding_slot_guidance_json: str,
 ) -> str:
     return PATTERN_ADMISSION_JUDGE_PROMPT.format(
         case_cards_question_view_json=case_cards_question_view_json,
@@ -267,6 +351,8 @@ def build_pattern_admission_judge_prompt(
         case_cards_shared_view_json=case_cards_shared_view_json,
         pair_semantic_decisions_json=pair_semantic_decisions_json,
         component_summary_json=component_summary_json,
+        action_primitives_json=action_primitives_json,
+        binding_slot_guidance_json=binding_slot_guidance_json,
     )
 
 
