@@ -2290,6 +2290,7 @@ def _gate_group(
     compiler_candidate_reasons: List[str] = []
     pre_condition_match: Dict[str, Any] = {}
     pre_condition_matched = False
+    singleton_canonical_exact_passed = False
     diagnostic_only = False
 
     reasons: List[str] = []
@@ -2335,11 +2336,18 @@ def _gate_group(
             reasons.extend(pre_condition_blockers)
         else:
             reasons.append("pre_condition_matched")
-            # Pre-condition matching is the answer-blind stage-1 trigger.
-            # Strict instantiation remains branch matching and binder dry-run.
-            variant_required_match = True
-            generalized_canonical_gate_passed = True
-            required_misses = []
+            if group.group_type == GroupType.PATTERN:
+                # Pattern remains the generalization unit: its stage-1
+                # pre-condition can open the runtime path, then branch/binder
+                # checks instantiate the concrete repair.
+                variant_required_match = True
+                generalized_canonical_gate_passed = True
+                required_misses = []
+            else:
+                # WUv2-3, plan v2 §1.0/§3: singleton is not the
+                # generalization unit. Its pre-condition match is audit-only;
+                # runtime must still pass the exact singleton structural check.
+                reasons.append("singleton_pre_condition_audit_only_wuv2_3")
 
     if raw_variant_required_signal_sets and not variant_required_signal_sets:
         if defer_pattern_contract_to_branch:
@@ -2434,6 +2442,7 @@ def _gate_group(
             contract=contract,
             current_summary=current_summary,
         )
+        singleton_canonical_exact_passed = bool(exact_ok)
         binder_dry_run_success = binder_dry_run_success or exact_dry_success
         if not exact_ok:
             preliminary_source_trigger_passed = bool(
@@ -2697,6 +2706,17 @@ def _gate_group(
         compiler_candidate_reasons=compiler_candidate_reasons,
         pre_condition_match=pre_condition_match,
         pre_condition_matched=pre_condition_matched,
+        singleton_strict_audit={
+            "singleton_strict_mode": "wuv2_3_pre_condition_audit_only",
+            "singleton_pre_condition_matched": bool(
+                group.group_type == GroupType.SINGLETON and pre_condition_matched
+            ),
+            "singleton_canonical_exact_passed": bool(
+                group.group_type == GroupType.SINGLETON and singleton_canonical_exact_passed
+            ),
+        }
+        if group.group_type == GroupType.SINGLETON
+        else {},
         diagnostic_only=diagnostic_only,
     )
 
@@ -3867,6 +3887,7 @@ def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
         "branch_runtime_usable_count": int(payload.get("branch_runtime_usable_count") or 0),
         "branch_blockers": [str(item) for item in (payload.get("branch_blockers") or [])[:6]],
         "pre_condition_matched": bool(payload.get("pre_condition_matched", False)),
+        "singleton_strict_audit": payload.get("singleton_strict_audit") or {},
         "diagnostic_only": bool(payload.get("diagnostic_only", False)),
         "pre_condition_match": payload.get("pre_condition_match") or {},
         "final_score": payload.get("final_score"),
