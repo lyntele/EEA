@@ -821,10 +821,14 @@ def _memory_objects_prompt_payload(
                         _compact_branch_rule_payload(rule)
                         for rule in (instantiation.get("branch_rules") or [])[:8]
                     ],
-                    "repair_program": [
-                        _compact_repair_step_contract(step)
-                        for step in (instantiation.get("repair_program") or [])[:8]
-                    ],
+                    "repair_program_omitted_from_prompt": {
+                        "reason": (
+                            "source-case repair_program steps are audit evidence; "
+                            "runtime may only execute current action candidates and "
+                            "bound rewrite_contract dependency edits"
+                        ),
+                        "count": len(instantiation.get("repair_program") or []),
+                    },
                     "synthesized_program": _compact_synthesized_program_for_compiler(
                         instantiation.get("synthesized_program")
                     ),
@@ -985,6 +989,99 @@ def _compact_action_candidate_arguments(args: Any) -> Dict[str, Any]:
 def _compact_repair_program_steps_for_runtime_prompt(steps: Any) -> List[Dict[str, Any]]:
     if not isinstance(steps, list):
         return []
+
+    seed_binding_argument_keys = {
+        "alias",
+        "aliases",
+        "column",
+        "columns",
+        "condition",
+        "conditions",
+        "expression",
+        "expressions",
+        "from_expr",
+        "from_exprs",
+        "join_condition",
+        "minimal_patch_ops",
+        "new_alias",
+        "new_column",
+        "new_condition",
+        "new_expression",
+        "new_expr",
+        "old_alias",
+        "old_column",
+        "old_condition",
+        "old_expression",
+        "old_expr",
+        "predicate",
+        "predicate_ref",
+        "policy_payload",
+        "source_alias",
+        "source_column",
+        "source_columns",
+        "source_equality_relations",
+        "source_expression",
+        "source_expressions",
+        "source_output_refs",
+        "source_table",
+        "source_tables",
+        "sql",
+        "table",
+        "tables",
+        "target_alias",
+        "target_column",
+        "target_columns",
+        "target_equality_relations",
+        "target_expr",
+        "target_expression",
+        "target_expressions",
+        "target_limit",
+        "target_order_by",
+        "target_output_refs",
+        "target_predicates",
+        "target_relation_edges",
+        "target_table",
+        "target_tables",
+        "where_condition",
+    }
+
+    def sanitize_arguments(value: Any) -> Any:
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for key, item in value.items():
+                key_text = str(key)
+                if key_text.lower() in seed_binding_argument_keys:
+                    continue
+                cleaned = sanitize_arguments(item)
+                if cleaned not in (None, "", [], {}):
+                    out[key_text] = cleaned
+            return out
+        if isinstance(value, list):
+            return [
+                cleaned
+                for item in value
+                if (cleaned := sanitize_arguments(item)) not in (None, "", [], {})
+            ]
+        return value
+
+    def compact_slots(value: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for slot in value or []:
+            slot_payload = _payload_for_prompt(slot)
+            if not isinstance(slot_payload, dict):
+                continue
+            rows.append(
+                {
+                    "name": slot_payload.get("name"),
+                    "kind": slot_payload.get("kind"),
+                    "required": bool(slot_payload.get("required", True)),
+                    "allowed_role_families": list(
+                        slot_payload.get("allowed_role_families") or []
+                    )[:8],
+                }
+            )
+        return rows
+
     rows: List[Dict[str, Any]] = []
     for step in steps[:6]:
         payload = _payload_for_prompt(step)
@@ -993,32 +1090,18 @@ def _compact_repair_program_steps_for_runtime_prompt(steps: Any) -> List[Dict[st
         arguments = _payload_for_prompt(payload.get("arguments") or {})
         if not isinstance(arguments, dict):
             arguments = {}
-        safe_arguments = {
-            str(key): value
-            for key, value in arguments.items()
-            if str(key)
-            not in {
-                "canonical_refs",
-                "canonical_arguments",
-                "canonical_invariants",
-                "canonical_op_type",
-                "source_case_contract",
-                "source_evidence",
-                "member_argument_variants",
-            }
+        safe_arguments = sanitize_arguments(arguments)
+        row = {
+            "step_id": payload.get("step_id"),
+            "op": payload.get("op"),
+            "locus": payload.get("locus"),
+            "is_dependency": bool(payload.get("is_dependency") or False),
+            "required": bool(payload.get("required", True)),
+            "slots": compact_slots(payload.get("slots") or [])[:8],
         }
-        rows.append(
-            {
-                "step_id": payload.get("step_id"),
-                "op": payload.get("op"),
-                "locus": payload.get("locus"),
-                "is_dependency": bool(payload.get("is_dependency") or False),
-                "required": bool(payload.get("required", True)),
-                "slots": list(payload.get("slots") or [])[:8],
-                "guards": list(payload.get("guards") or [])[:8],
-                "arguments": safe_arguments,
-            }
-        )
+        if safe_arguments:
+            row["arguments"] = safe_arguments
+        rows.append(row)
     return rows
 
 
@@ -1308,16 +1391,13 @@ def _rewrite_contract_prompt_payload(
                                 }
                             )
                 else:
-                    contract["dependency_edits"].append(
+                    contract.setdefault("dependency_edits_omitted", []).append(
                         {
                             "action_id": action_id,
                             "step_id": step_payload.get("step_id"),
                             "op": op,
-                            "edit": "apply_explicit_dependency_step",
                             "scope": step_payload.get("locus"),
-                            "required": bool(step_payload.get("required", True)),
-                            "arguments": _payload_for_prompt(step_payload.get("arguments") or {}),
-                            "binding_status": "provided_by_action_contract",
+                            "reason": "unbound_source_case_dependency_step",
                         }
                     )
         elif primitive == "REROUTE_FACT":
@@ -1414,15 +1494,18 @@ def _runtime_action_prompt_payload(action: Any) -> Dict[str, Any]:
         arguments.get("repair_program") or []
     )
     if repair_steps:
-        compact_args["repair_program"] = repair_steps
+        compact_args["repair_program_omitted_from_prompt"] = {
+            "reason": (
+                "source-case repair_program steps are not runtime-bound; "
+                "only current action arguments and rewrite_contract edits are exposed"
+            ),
+            "count": len(repair_steps),
+        }
     allowed_scope = [
         _enum_value(scope) for scope in (payload.get("allowed_edit_scope") or [])
     ]
     allows_select = "SELECT" in {str(scope).upper() for scope in allowed_scope}
-    has_select_dependency = any(
-        str(step.get("locus") or "").upper() == "SELECT"
-        for step in repair_steps
-    )
+    has_select_dependency = False
     if not allows_select and not has_select_dependency:
         compact_args.pop("target_output_refs", None)
         contract = compact_args.get("canonical_contract")

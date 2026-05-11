@@ -421,6 +421,95 @@ class Guardrail(BaseModel):
     kind: str  # negative_evidence / anti_trigger / scope_limit / ...
 
 
+_REPAIR_STEP_SEED_BINDING_ARGUMENT_KEYS = {
+    "alias",
+    "aliases",
+    "column",
+    "columns",
+    "condition",
+    "conditions",
+    "expression",
+    "expressions",
+    "from_expr",
+    "from_exprs",
+    "join_condition",
+    "minimal_patch_ops",
+    "new_alias",
+    "new_column",
+    "new_condition",
+    "new_expression",
+    "new_expr",
+    "old_alias",
+    "old_column",
+    "old_condition",
+    "old_expression",
+    "old_expr",
+    "predicate",
+    "predicate_ref",
+    "policy_payload",
+    "source_alias",
+    "source_column",
+    "source_columns",
+    "source_equality_relations",
+    "source_expression",
+    "source_expressions",
+    "source_output_refs",
+    "source_table",
+    "source_tables",
+    "sql",
+    "table",
+    "tables",
+    "target_alias",
+    "target_column",
+    "target_columns",
+    "target_equality_relations",
+    "target_expr",
+    "target_expression",
+    "target_expressions",
+    "target_limit",
+    "target_order_by",
+    "target_output_refs",
+    "target_predicates",
+    "target_relation_edges",
+    "target_table",
+    "target_tables",
+    "where_condition",
+}
+
+
+def _sanitize_repair_step_arguments_for_memory(value: Any) -> tuple[Any, Any]:
+    """Remove seed-case executable bindings from stored repair-program steps.
+
+    RepairProgramStep is learned from a source case. Before WUv2-5 introduces a
+    binding_contract, step arguments are audit evidence, not runtime binding.
+    """
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        removed: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.lower() in _REPAIR_STEP_SEED_BINDING_ARGUMENT_KEYS:
+                removed[key_text] = item
+                continue
+            sub_cleaned, sub_removed = _sanitize_repair_step_arguments_for_memory(item)
+            if sub_cleaned not in (None, "", [], {}):
+                cleaned[key_text] = sub_cleaned
+            if sub_removed not in (None, "", [], {}):
+                removed[key_text] = sub_removed
+        return cleaned, removed
+    if isinstance(value, list):
+        cleaned_items: List[Any] = []
+        removed_items: List[Any] = []
+        for item in value:
+            sub_cleaned, sub_removed = _sanitize_repair_step_arguments_for_memory(item)
+            if sub_cleaned not in (None, "", [], {}):
+                cleaned_items.append(sub_cleaned)
+            if sub_removed not in (None, "", [], {}):
+                removed_items.append(sub_removed)
+        return cleaned_items, removed_items
+    return value, None
+
+
 class RepairProgramStep(BaseModel):
     """A case-extracted repair-program step.
 
@@ -440,11 +529,33 @@ class RepairProgramStep(BaseModel):
     guards: List[Guardrail] = Field(default_factory=list)
     arguments: Dict[str, Any] = Field(default_factory=dict)
     source_evidence: List[str] = Field(default_factory=list)
+    evidence: Dict[str, Any] = Field(default_factory=dict)
     origin: str = "case_extracted"
     """case_extracted / group_merged."""
     extraction_source: str = "llm_explicit"
     """llm_explicit / group_merged."""
     supporting_case_ids: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _migrate_seed_bindings_to_evidence(self) -> "RepairProgramStep":
+        evidence = dict(self.evidence or {})
+        cleaned_args, removed_args = _sanitize_repair_step_arguments_for_memory(
+            dict(self.arguments or {})
+        )
+        if removed_args:
+            existing = evidence.get("original_arguments")
+            if isinstance(existing, dict):
+                merged = dict(existing)
+                merged.update(removed_args)
+                evidence["original_arguments"] = merged
+            else:
+                evidence["original_arguments"] = removed_args
+        if self.source_evidence:
+            evidence.setdefault("source_evidence", list(self.source_evidence))
+            self.source_evidence = []
+        self.arguments = cleaned_args if isinstance(cleaned_args, dict) else {}
+        self.evidence = evidence
+        return self
 
 
 class PossibleEffectAxis(BaseModel):
