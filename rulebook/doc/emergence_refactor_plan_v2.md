@@ -117,7 +117,7 @@ v2 不是"v1 的补丁",而是**在 v1 基础设施上重建 5 个接口**。
 | **pair 候选评分** | code 端 score_pair 已存在 | 保留,但召回扩大(WU2) |
 | **pair 同根偏差判断** | shared_insight_judge | 保留,LLM 只判 "yes/no" 不再生成 key |
 | **pattern recognition_contract 生成** | admission LLM 写自由 signature | LLM 在 schema_role_annotator 的角色词汇下写 signature + 强制 grounded_anchors 数组(改造 ⑤) |
-| **pattern applicability_contract 生成** | 无 | LLM 写 `must_hold_before_rewrite` + `negative_guards`,字段必须可代码端检验(改造 ④) |
+| **pattern applicability_contract 生成** | 无 | admission 阶段只写 audit-only intent;真正的 applicability 由 runtime regression negative_feedback 累积 `HistoricalRegressGuard`(改造 ④) |
 | **pattern binding_contract 生成** | 隐含在 synthesized_program 中,含字面 table/column | LLM 写 source/target role profile,**不写字面值**(改造 ② + ④) |
 | **runtime 触发判断** | 单一 LLM Q+S 通道 | 五层判断,LLM 只在 recognition 层判 "matches=bool"(改造 ④) |
 | **runtime rewrite SQL 生成** | LLM 写最终 SQL | 保留(DeepEye memory_rewrite) |
@@ -127,7 +127,7 @@ v2 不是"v1 的补丁",而是**在 v1 基础设施上重建 5 个接口**。
 v1 已明确"runtime 只看 case 已携带的特征",但实测仍有滑动倾向(`full11_analysis_r1.md §7.1.1 修正 4`)。v2 强化为:
 
 - **recognition 层**:LLM 只判"特征是否落入 pattern 描述区域",**不暗示对错**(prompt 末尾不出现 "correct"/"wrong"/"error"/"needs repair" 等字眼)
-- **applicability 层**:**纯代码检验**,对照 pattern.applicability_contract 的 `must_hold_before_rewrite` 字段(都是结构化可机械判定的谓词,如 `current_select_uses_count_star: true` / `join_path_includes_one_to_many: true`)
+- **applicability 层**:基于 regression 学习的 negative_guard。第一次类似 case 不挡;若某次触发导致 `s0=对/final=错`,accumulate negative_feedback 会把该 regress case 作为 `HistoricalRegressGuard` 写入触发 pattern。后续 runtime 对每个 guard 做一次受约束 LLM yes/no 相似性判断,命中则 no_action。不预定义任何 applicability 谓词或 fact_kind 闭集。
 - **binding 层**:**纯代码派生**,在当前 LocalSchemaView 上根据 binding_contract.source_slots/target_slots 的 role_family 找候选列
 - 任何一层失败 → no_action;不靠下游 LLM 自由发挥兜底
 
@@ -138,16 +138,15 @@ v1 已明确"runtime 只看 case 已携带的特征",但实测仍有滑动倾向
 | **recognition_contract** | `question_precondition` | 自然语言,LLM 写 | LLM 通道 Q 匹配 |
 | | `sql_precondition` | 自然语言,LLM 写 | LLM 通道 S 匹配 |
 | | `grounded_anchors[]` | 结构化 `{kind, role/path/relation, value}` | 代码端短路:无任何 anchor 在新 case 命中直接 false |
-| **applicability_contract** | `required_answer_unit_change` | 枚举值(`row_count→distinct_entity_count` 等) | 代码端检验当前 case 是否符合 |
-| | `must_hold_before_rewrite[]` | 谓词数组(代码可机械判定)| 代码端检验全部 hold |
-| | `negative_guards[]` | 谓词数组 | 代码端检验全部 not hold |
+| **applicability_contract** | `intent_description` | 自由文本,audit-only | admission 记录适用性意图,不参与 runtime 决策 |
+| | `regression_negative_guards[]` | 历史 regress case 引用 | runtime 受约束 LLM yes/no 判断当前 case 是否与历史 regress 形态相似 |
 | **binding_contract** | `source_slots[]` | `{kind, role_family, optional}` 元组 | 代码端在当前 schema 找候选 |
 | | `target_slots[]` | 同上 | 同上 |
 | | `allowed_operations[]` | ActionPrimitive 集合 | 限制 ActionCompiler 候选 |
 
 **关键约束**:
 - recognition_contract 不允许 LLM 不填 grounded_anchors。无 anchor 的 pattern 由 admission 直接拒绝
-- applicability_contract 不允许 LLM 写自由文本谓词,只能从 v2 引入的有限谓词词表选(可扩展但 admission 时必须从词表内选)
+- applicability_contract 不允许 admission LLM 预写可执行谓词或闭集 signal;runtime 只消费历史 regression 产生的 case-grounded guard
 - binding_contract 的 source_slots/target_slots **不允许字面 table/column**,只能用 role_family
 
 ---
@@ -205,50 +204,46 @@ v1 已明确"runtime 只看 case 已携带的特征",但实测仍有滑动倾向
 
 例 toxicology pat-206-253 的 grounded_anchors 自然含 `{kind: "column_role", role_family: "first atom reference"}` + `{kind: "column_role", role_family: "second atom reference"}` → 任何新 case 涉及 atom_id + atom_id2 的 SQL 都至少含这 2 个 anchors → LLM 进一步判断;EF2 pat-1035-1045 由于 anchors 太抽象("entity attribute" 不是有效 anchor),admission 阶段就被拒绝(改造 ⑤)。
 
-### 2.3 Applicability contract 词表(谓词必须代码可检)
+### 2.3 Applicability contract:regression-driven negative_guard(不预定义信号闭集)
 
-v2 定义有限 applicability 谓词词表(初始 ~30 个,可扩展):
+WUv2-5 的 applicability 字段不再是预定义谓词词表,也不再由 admission LLM 预写可执行条件。
+
+字段语义:
+
+- admission 时 `applicability.intent_description` 只是一句 audit-only 说明,不参与 runtime 决策。
+- `applicability.regression_negative_guards` 初始为空。
+- 每次触发导致 regression(`s0_correct=True, final_correct=False`)时,accumulate negative_feedback 会给触发该 regression 的 pattern 追加一个 `HistoricalRegressGuard`。
+- 下次新 case 到达,runtime applicability 层对每个 guard 调一次受约束 LLM yes/no:当前 case 的 question/pred_sql 是否与该历史 regress case 的失败形态相似。相似则 no_action。
+
+数据结构:
 
 ```python
-APPLICABILITY_PREDICATES = {
-    # SELECT 形态
-    "current_select_uses_count_star": lambda case: ...,
-    "current_select_uses_count_distinct": ...,
-    "current_select_uses_aggregate": ...,
-    "current_select_arity_eq": lambda case, n: ...,
-    "current_select_arity_gt": ...,
-    # JOIN 路径
-    "join_path_includes_one_to_many": ...,
-    "join_path_includes_bridge_table": ...,
-    "join_path_includes_aliased_self_join": ...,
-    # WHERE
-    "where_predicates_constrain_unique_per_row": ...,
-    "where_uses_literal_string_filter": ...,
-    # answer unit
-    "answer_unit_role_eq": lambda case, role_family: ...,
-    "answer_unit_question_focus_eq": ...,
-    # ...
-}
+class HistoricalRegressGuard(BaseModel):
+    case_id: str
+    case_question_snippet: str
+    case_pred_sql_snippet: str
+    triggered_at_step: int
+    rewrite_failure_summary: str
+
+class ApplicabilityContract(BaseModel):
+    intent_description: str = ""  # admission 写,audit-only
+    regression_negative_guards: List[HistoricalRegressGuard] = []
 ```
 
-admission_judge prompt 提供这个词表,LLM 必须从词表中选;不能选时降级为不形成 pattern(`admit_pattern=false`)。
+runtime 伪代码:
 
-### 2.4 Negative guard(改造 ④ 引入)
-
-每次 regression(s0_correct=True, final_correct=False),自动给已触发的 group 加 negative_guard。例 thrombosis 第一次 regress(q1267)后:
-
-```json
-{
-  "applicability_contract": {
-    "must_hold_before_rewrite": ["join_path_includes_one_to_many", "current_select_uses_count_star"],
-    "negative_guards": [
-      "where_predicates_constrain_unique_per_row"  // ← q1267 触发该 guard, 后续阻止
-    ]
-  }
-}
+```python
+def _evaluate_applicability_contract(group, case_view):
+    guards = group.instantiation_program.pattern_recognition_contract.applicability.regression_negative_guards
+    if not guards:
+        return True, "no_negative_guards_yet"
+    for guard in guards:
+        if _check_case_similar_to_regress_guard(case_view, guard):
+            return False, f"regression_negative_guard_hit:{guard.case_id}"
+    return True, "applicability_ok"
 ```
 
-后续 q1278-q1304 触发同 pattern 时,applicability 层检查 `where_predicates_constrain_unique_per_row=true`(IGG / ALP / GOT 等 lab 指标在 WHERE 锁定单一 patient × lab 组合),negative_guard 触发 → no_action。
+这个设计的代价是第一次 regression 不可避免;收益是 guard 从真实失败案例中生长,不引入新的闭集规则系统。
 
 ---
 
@@ -468,7 +463,7 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 
 具体 case:q292。WUv2-2 后 `REPLACE_SELECT_SLOT` 已被 `wuv2_2_seed_target_binding_disabled_pending_binding_contract` 阻断,但 `MOVE_CONDITION` 仍是保留 primitive。`hint_instantiation` 把 raw action "Move the bound predicate..." 自由解释为 `"Prefix the column 'element' in the WHERE clause with the table alias 'atom'"`,随后 rewrite 按 alias-prefix 执行导致 regress。
 
-责任归属:WUv2-5 在 admission/accumulate 引入 `applicability_contract.must_hold_before_rewrite` 与 `negative_guards` 后,q292 类 case 应在 runtime 第 2 层 applicability 检验阶段 no_action,例如命中 `schema_has_only_one_resolvable_column` 这类结构化 negative guard,根本不进入 hint 阶段。
+责任归属:WUv2-5 在 accumulate 引入 regression negative_feedback 后,q292 类 case 若发生 regress,会写入 `HistoricalRegressGuard`;后续相似 case 应在 runtime 第 2 层 applicability 检验阶段命中 historical guard → no_action,根本不进入 hint 阶段。
 
 硬约束:WUv2-2 阶段绝对禁止在 `hint_instantiation` prompt 加"禁止输出 alias"、"`MOVE_CONDITION` 不允许引入 X"一类规则;绝对禁止加 hint 输出关键词黑名单 / hint 后处理 fallback;绝对禁止用代码端 hint 内容拦截。这些都属于 case-by-case 反模式。WUv2-2 只记录 `hint_audit`,不做决策。
 
@@ -636,7 +631,7 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 
 #### **WUv2-5** — Pattern 三 contract 拆分 + Runtime 五层判断 + Regression negative feedback
 
-**目的**:把 v1 单一 `pattern_recognition_contract` 拆成三 contract(recognition/applicability/binding),admission_judge 输出从自由文本变成受词表约束的结构化字段;runtime 拆五层判断,任何一层失败 no_action;regression 案例进入 negative_feedback 模式给已触发 group 加 negative_guard。
+**目的**:把 v1 单一 `pattern_recognition_contract` 拆成三 contract(recognition/applicability/binding)。admission_judge 负责 recognition + binding 的结构化输出,applicability 只记录 audit-only intent;runtime 拆五层判断,其中 applicability 由 regression negative_feedback 学到的 `HistoricalRegressGuard` 驱动。任何一层失败 no_action。
 
 **这是 v2 最大的 WU,工程量 3d,可能需要拆 3 个 sub-commit**。
 
@@ -664,10 +659,16 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
        sql_precondition: str
        grounded_anchors: List[GroundedAnchor]  # 必须 ≥ 2 个
 
+   class HistoricalRegressGuard(BaseModel):
+       case_id: str
+       case_question_snippet: str
+       case_pred_sql_snippet: str
+       triggered_at_step: int
+       rewrite_failure_summary: str
+
    class ApplicabilityContract(BaseModel):
-       required_answer_unit_change: str        # 枚举值
-       must_hold_before_rewrite: List[str]     # 谓词词表名
-       negative_guards: List[str]              # 谓词词表名
+       intent_description: str = ""            # admission 写,audit-only
+       regression_negative_guards: List[HistoricalRegressGuard] = []
 
    class BindingContract(BaseModel):
        source_slots: List[Dict[str, Any]]      # role_family + kind
@@ -684,14 +685,16 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 **改动 b:Admission_judge prompt 重写**
 
 3. **改 `llm/prompts/pattern_admission_judge.py`**:
-   - 删除自由文本 4 字段(`pre_question_signature` etc.)
+   - 删除自由文本 4 字段(`pre_question_signature` etc.)作为主结构,保留兼容镜像
    - 改为输出三 contract JSON 结构
-   - prompt 末尾提供 `APPLICABILITY_PREDICATES` 词表(~30 个谓词)+ `ROLE_FAMILY_DICTIONARY`(从 schema_role_annotator 派生)+ `ACTION_PRIMITIVES`
+   - recognition + binding 受结构约束;binding 不允许 table/column/expression/alias 字面
+   - applicability 只允许输出 `intent_description`(audit-only),不得输出可执行谓词/闭集 signal
+   - prompt 末尾提供 `ACTION_PRIMITIVES` 与 literal-free binding slot guidance
    - 强制 grounded_anchors ≥ 2(否则 `admit_pattern=false`)
-   - `applicability.must_hold_before_rewrite` 必须从词表选(否则 `admit_pattern=false`)
 4. **加 `pattern_admission_judge_postprocessor`**:LLM 输出后,代码端校验:
-   - grounded_anchors 中每个 anchor 必须真实存在于 admitted member 的 schema/SQL(代码端可验证)
-   - applicability 谓词必须在词表内
+   - grounded_anchors 中每个 anchor 必须真实存在于 admitted member 的 schema/SQL/repair evidence(代码端可验证)
+   - applicability 只校验 intent_description 长度与类型,不校验任何谓词
+   - binding 中不得含 table/column/expression/alias 等 seed 字面字段
    - 校验失败 → `admit_pattern=false, reject_reason=structural_contract_validation_failed`
 
 **改动 c:Runtime 五层判断**
@@ -703,7 +706,7 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
    if not recognition_passed:
        passed = False; reasons.extend(recognition_blockers); return ...
 
-   # Layer 2: applicability (代码端谓词检验, 新增)
+   # Layer 2: applicability (regression negative guard, 新增)
    applicability_audit, applicability_passed, applicability_blockers = _evaluate_applicability_contract(group, case_view)
    if not applicability_passed:
        passed = False; reasons.extend(applicability_blockers); return ...
@@ -723,8 +726,9 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
    - 先做 grounded_anchors 短路:无任一 anchor 在新 case 命中直接 false
    - 否则调 LLM Q+S 通道(沿用 v1 `_pre_condition_channel_call`)
 7. **新增 `_evaluate_applicability_contract`**:
-   - 纯代码端,根据 case_view 检验 must_hold 全部 hold + negative_guards 全部 not hold
-   - 谓词词表实现在 `analysis/applicability_predicates.py`
+   - 若 `regression_negative_guards=[]`,直接通过并记录 `no_negative_guards_yet`
+   - 若存在 guard,对每个 guard 调一次受约束 LLM yes/no 判断当前 case 是否与历史 regress case 形态相似
+   - 命中则 no_action,reason=`regression_negative_guard_hit:<case_id>`
 8. **新增 `_evaluate_binding_contract`**:
    - 在 case_view.local_schema_view 中查找 binding.source_slots / target_slots role_family 对应列
    - 无候选 → no_action(类 III 行为)
@@ -753,10 +757,10 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 10. **改 `accumulate_v2.py::accumulate_wrong_case`**:
     - 支持 `mode="negative_feedback"`:
       - 不形成新 singleton
-      - 对每个 matched_group_id,**代码端**派生当前 case 的 applicability 谓词集合
-      - 把"在该 case 上 hold 的、与 group.applicability.must_hold_before_rewrite 不冲突的谓词"作为 `negative_guards` 增量加入 group
-      - 例 thrombosis q1267:谓词派生出 `where_predicates_constrain_unique_per_row=true`,该谓词不在 pat-1172-1257 的 must_hold 中 → 加入 negative_guards
-      - 后续 q1278 触发同 pattern 时,applicability 层检验 `where_predicates_constrain_unique_per_row=true` 命中 negative_guards → no_action
+      - 对每个 matched_group_id,追加 `HistoricalRegressGuard`
+      - guard 内容来自真实 regression case 的 question/pred_sql 与 rewrite_failure_summary
+      - 不形成新 singleton,不跑 admission,不写任何预定义谓词
+      - 后续相似 case 触发同 pattern 时,applicability 层命中该 historical guard → no_action
 11. **加 negative_guard 收敛限制**:
     - 同 group 累积超过 N 个 negative_guard 后,标记 `pattern_overgeneralized` 并降级为 audit-only
     - 这是终极保护:某 pattern 反复加 guard 说明它本身就是错的形态
@@ -771,18 +775,17 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 
 13. **改 `evolution.py::_member_case_views_for_group`**:
     - WU12 已实现在 online local_evolve 时跑 self_recall
-    - v2 扩展:同时跑 applicability self-check(每个 seed case 的代码端谓词集合应满足 group.applicability.must_hold_before_rewrite)
-    - 这是 admission 端 LLM 写的谓词是否真的在 seed 上 hold 的代码端验证
+    - v2 扩展:保留 recognition self-check;applicability 不做 seed 谓词 self-check,因为 applicability 由 regression negative_feedback 填充
 
 **验收**:
 
-- thrombosis pat-1172-1257 在 admission 时被强制输出 applicability.must_hold_before_rewrite,例如 `["current_select_uses_count_star", "join_path_includes_one_to_many"]`
+- thrombosis pat-1172-1257 在 admission 时不再输出可执行 applicability 谓词;applicability 初始只含 audit-only intent 与空的 `regression_negative_guards`
 - 重跑 thrombosis,q1267 第一次触发 pat-1172-1257 时:
   - recognition 通过
-  - applicability 当前通过(`current_select_uses_count_star=true`, `join_path_includes_one_to_many=true`)
+  - applicability 当前通过(`no_negative_guards_yet`)
   - 但 selector(WUv2-1)选 S0,final_correct=True 不退化
-  - 即使 selector 没救住(假设 q1267 仍 regress),触发 negative_feedback,给 pat-1172-1257 加 `where_predicates_constrain_unique_per_row` 到 negative_guards
-- q1278 起,触发 pat-1172-1257 时 applicability 层检测 negative_guard 命中 → no_action
+  - 即使 selector 没救住(假设 q1267 仍 regress),触发 negative_feedback,给 pat-1172-1257 追加 q1267 的 `HistoricalRegressGuard`
+- q1278 起,触发 pat-1172-1257 时 applicability 层把当前 case 与 q1267 guard 做受约束 LLM 相似性判断,命中 → no_action
 - thrombosis 13 regress 下降到 ≤ 1(只丢首次 regress 教训)
 - card_games / debit_card / student_club / formula_1 同机制,各库 regress 下降到 ≤ 1
 - 11 库整体净 Δ 从 (WUv2-4 后)+5~+10 提升至 +12~+18
@@ -800,7 +803,7 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 **风险**:
 
 - admission_judge LLM 在新 prompt 下可能大量返回 `admit_pattern=false`(因为强制 grounded_anchors + applicability 词表约束)。缓解:验收时观察 pattern 形成数,如比 v1 显著少(如 < 50%),需放宽 grounded_anchors 数量从 ≥ 2 到 ≥ 1
-- applicability 谓词词表初始 ~30 个可能覆盖不全。缓解:留 LLM 一个 `applicability_predicates_extension_request` 输出字段,记录"我想用但词表没有的谓词",作为词表扩展依据
+- historical guard 需要至少一次真实 regression 才能学习。缓解:保留 selector 安全网,并在 probe 中模拟 negative_feedback 验证第二次相似 case 能被挡住
 - negative_guards 可能过度积累导致 pattern 完全失效。缓解:加上限保护(改动 11)
 
 ---
@@ -908,8 +911,8 @@ WUv2-2 已验证切断两条 seed 字面泄漏路径:RoleRefV2 target_sql 字面
 | WUv2-2 ActionCompiler 在新 schema 找不到 role_family 列 | toxicology 7 helped 触发数下降 | 加 fallback:role_family 找不到时,用 evidence.original_table/column 作为参考(audit 用法,不强制 binding) |
 | WUv2-3 singleton 严格化挡太严 | 11 库 helped 数下降 | 放宽 singleton_canonical_exact_check 阈值;允许 "exact 形态 + role_family 一致" 时触发 |
 | WUv2-4 结构化 answer_unit 派生失败 | 大量 case 的 repair_card 缺字段 | 派生失败时降级到 effect_axis 单维度 bucket |
-| WUv2-5 admission 大量 admit=false | pattern 形成数 < v1 50% | 放宽 grounded_anchors 从 ≥ 2 到 ≥ 1;applicability 谓词词表扩展 |
-| applicability 词表覆盖不全 | LLM 在 admission 大量请求扩展词表 | 收集请求,迭代扩展词表(每两周 review) |
+| WUv2-5 admission 大量 admit=false | pattern 形成数 < v1 50% | 放宽 grounded_anchors 从 ≥ 2 到 ≥ 1;检查 binding slot 约束是否过严 |
+| regression guard 误挡 | negative_guard 命中后 saved-s0 但原本 S1 会改对 | 记录 guard similarity audit,必要时人工审查该 guard 是否应降级 |
 | negative_guards 过度积累让 pattern 失效 | 同 pattern negative_guards ≥ 10 | 触发 audit-only 降级保护(WUv2-5 改动 11 已设计) |
 
 ### 6.2 回滚机制
@@ -981,7 +984,7 @@ v1 r24 暴露 3 个根因后,加 WU11/12/13 三个补丁,虽各自落地正确,�
 
 LLM 在 yes/no 判断上几乎不给中等 confidence。**这不是 prompt 问题,是 LLM 在二值判断任务上的固有行为**。加阈值无效。
 
-正确做法:**用代码端结构化约束**(grounded_anchors / applicability_predicates / role_family binding),不依赖 LLM 自报 confidence。
+正确做法:**用结构化 recognition/binding 约束 + regression-grounded applicability guard**,不依赖 LLM 自报 confidence,也不引入新的预定义 applicability 闭集。
 
 ### 8.3 为什么不再用"this case really needs repair?"反问
 
@@ -990,7 +993,7 @@ LLM 在 yes/no 判断上几乎不给中等 confidence。**这不是 prompt 问�
 1. **违反 answer-blind 硬边界**(plan v1 §0.2 与 §8.1):runtime 不应做对错判断
 2. **无法验证**:LLM 反问输出是另一段自由文本判断,与 recognition LLM 同样的不稳定问题
 
-替代方案:**applicability_contract 代码端检验**。把"什么时候 repair 适用"显式写成代码端可机械判定的谓词(WUv2-5)。LLM 在 admission 时从词表选谓词,runtime 时只做谓词代码端检验,不做自由判断。
+替代方案:**applicability_contract 由 regression negative_feedback 学习**。第一次类似 case 不预判"是否需要修",若 rewrite 造成 `s0=对/final=错`,系统把该真实 regress case 写成 `HistoricalRegressGuard`;后续 runtime 只做受约束 yes/no 相似性判断,命中则 no_action。这仍不问"当前 SQL 是否真的错",而是问"当前 case 是否像历史上已证实会被该 pattern 改坏的 case"。
 
 ### 8.4 为什么 schema literal anchors → grounded anchors
 
@@ -1023,7 +1026,7 @@ v1 WU5-WU8 撤销了:
 
 这些撤销是对的(详见 v1 §1.1)。v2 不回退。
 
-**v2 解决 v1 撤销后留下的真空**:用代码端结构化(repair_card / grounded_anchors / applicability_predicates / role_family)替代旧 case-specific 启发式。
+**v2 解决 v1 撤销后留下的真空**:用代码端结构化(repair_card / grounded_anchors / role_family binding)与 regression-grounded negative guard 替代旧 case-specific 启发式。
 
 ### 8.7 为什么 WUv2-2 不在新 case 上用 role_family 派生 target(2026-05-11 修订)
 
@@ -1039,10 +1042,10 @@ v1 WU5-WU8 撤销了:
 正确做法:**WUv2-2 完全不再派生 target_columns**。"在新 case 上合法派生 target"的能力由 WUv2-5 用 binding_contract 引入:
 
 - WUv2-5 admission 时,LLM 在每个 admitted pattern 上输出 `binding_contract.target_slots`(含 role_family,**不含字面列名**)
-- WUv2-5 admission 同时强制输出 `applicability_contract.must_hold_before_rewrite` 谓词,代码端可机械检验
-- runtime 时,只有同时满足 (applicability_contract 全部 hold) + (binding_contract 在当前 schema 找到唯一 target column) 的情况,才允许走 SELECT_REPLACE 等改变 answer unit 的 primitive
+- WUv2-5 admission 同时输出 `applicability.intent_description` 作为 audit-only 说明,不写闭集谓词
+- runtime 时,只有 (未命中历史 regression guard) + (binding_contract 在当前 schema 找到唯一 target column) 的情况,才允许走 SELECT_REPLACE 等改变 answer unit 的 primitive
 
-这样保证:**不存在"在没有 WUv2-5 binding_contract 的情况下,把 seed target role 泄漏到新 case"的路径**。WUv2-2 与 WUv2-5 配合后,seed target binding 只在严格契约下复用,不会泛化滑动。
+这样保证:**不存在"在没有 WUv2-5 binding_contract 的情况下,把 seed target role 泄漏到新 case"的路径**。WUv2-2 与 WUv2-5 配合后,seed target binding 只在严格契约下复用;applicability 不靠预定义谓词,而靠真实 regression 反馈收紧。
 
 ### 8.8 为什么 v2 保留 WU0 final_freeze skip
 
@@ -1052,6 +1055,21 @@ WU0 节省 1h freeze 时间,代价是失去 cross-pattern replay 安全网。v2 
 - DeepEye selector(WUv2-1)作为运营层兜底
 
 freeze skip 保留,后续 v3 再考虑恢复。
+
+### 8.10 为什么 applicability 不用预定义谓词词表(避免 v1 14 闭词反模式覆辙)
+
+实施 WUv2-5a 时发现,plan v2 原 §1.2 / §2.3 的"结构化可机械判定谓词"设计本质上仍是预定义闭集。即使包装成 `fact_kind` 或 SQL 结构 predicate,仍会变成代码端预设有限集合 → LLM 在集合上选择 → runtime 用集合做 hard gate。这与 v1 14 phenomenon 闭词的反模式同构,也违背本轮"从案例和记忆中生长,不预定义规则"的核心原则。
+
+修订方向:applicability 不再由 admission 预写可执行谓词,而由 regression 学习驱动。每个 guard 都引用真实历史 regress case,包含 question / pred_sql / failure summary,是 case-grounded evidence,不是通用闭集标签。runtime 用受约束 LLM yes/no 判断当前 case 是否与历史 regress guard 相似;相似则 no_action。
+
+代价:
+- 第一次 regression 不可避免,因为系统需要真实负反馈样本。
+- 每个带 guard 的候选 pattern 多一次受约束 LLM 调用。
+
+收益:
+- 不引入新的预定义 signal 词表。
+- negative guard 的来源可审计,能回溯到具体 regression case。
+- 与 §0.2 第 5 条"regression 进入 negative feedback"目标统一,不是另起一套规则系统。
 
 ---
 
@@ -1110,7 +1128,7 @@ git tag pre-v2-refactor
 |---|---|---|
 | 改造单元数 | WU0-WU13 共 14 个 | WUv2-1 to WUv2-6 共 6 个(其中 WUv2-5 是大单元) |
 | 工时 | 12.5d | 7.25d |
-| 核心方法 | LLM 自由文本贯穿(retrieval / admission / runtime 三处 LLM 协作)| 代码端结构化接口(repair_card / grounded_anchors / applicability_predicates / role_family binding)+ LLM 在每个接口受限职能 |
+| 核心方法 | LLM 自由文本贯穿(retrieval / admission / runtime 三处 LLM 协作)| 代码端结构化接口(repair_card / grounded_anchors / role_family binding)+ regression-grounded applicability guard + LLM 在每个接口受限职能 |
 | pattern contract | 单一 pattern_recognition_contract(4 字段自由文本)| 三 contract(recognition + applicability + binding,每个含代码端可检字段)|
 | runtime 判断 | 单一 LLM Q+S 通道 | 五层判断(recognition LLM,applicability 代码,binding 代码,compile,rewrite)|
 | singleton 触发 | 与 pattern 共用,描述粒度自然区分 | 严格化,只走 exact/near-exact;泛化责任在 admission 升 pattern |
@@ -1131,7 +1149,7 @@ v2 计划终结条件:
    - codebase / financial 形成 ≥ 2 pattern(对比 v1 r1 codebase 4 个错位 / financial 0)
    - 人工标注 6 个 EF2 group 中至少 4 个有 pattern 形成
 3. **稳定性**:连续 2 轮 r2 跑结果差异 ≤ 5%
-4. **可维护性**:applicability 谓词词表稳定(连续 1 轮 r2 后无新增词表请求)
+4. **可维护性**:negative guard 数量可控,且每个 guard 都能回溯到真实 regression case
 
 达成上述条件后,`git tag v2-refactor-complete`,在 main 上 squash merge,关闭 `eea-mechanism-rebuild-v2` 分支。
 
