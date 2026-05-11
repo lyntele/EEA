@@ -2071,6 +2071,303 @@ r19 后补丁：
 - 直接调用 `final_evolve_and_freeze(library=empty)` 返回 `final_freeze_skipped=True`、`promotion_skipped_reason=skip_final_freeze`。
 - 通过 DeepEye `finalize_eea_library(...)` 空库 smoke，返回的 `audit.final_event.final_freeze_skipped=True`，`freeze_manifest.skipped=True`。
 
+### 2026-05-10 Full-11 库横向探底（第 1 批 9 库已完成）
+
+详细分析见 `rulebook/doc/full11_analysis_r1.md`。
+
+**触发数据**（commit 起点 `f6f2601`，含 WU0-WU13 落地，未做 question_view 纯化）：
+
+- 9 库总计：1226 case，baseline 916 → enhanced 907，**净 -9**
+- 触发率 54/1226 ≈ 4.4%
+- 1 库正收益（european_football_2 +1，q1087）
+- 5 库退化（card_games -5 / debit_card -2 / formula_1 -1 / student_club -2）
+- 3 库 0 变化（california / codebase / financial / superhero，触发 0-1）
+
+**4 类失败模式**：
+- 类 A 触发率 0：codebase（4 pattern 形成但 runtime 全 no_match）/ financial（admission 阶段 0 pattern）
+- 类 B 误触发退化：card_games 36 触发全错 / debit_card 5 触发 4 错 — **核心发现：触发的多数是 singleton 不是 pattern**（card_games 34/36 来自 grp-sing-card_games-351 过度泛化）
+- 类 C 低触发 0 改对：california / superhero / student_club / formula_1
+- 类 D 唯一正收益：european_football_2 q1087（pattern 1 仅 2 case 但 question_family_tags 精准）
+
+**人工标注命中情况**：
+- 人工期望 11 库共 ~30 个正式 pattern + ~30 个 family
+- 实际形成约 25 个 pattern，大部分与人工标注不对应
+- 完全命中（pattern 形成且 case 全收）：仅 european_football_2 部分（pattern 2 的 q1052/1087 子集）
+- 完全缺失（人工标注 pattern 未形成）：codebase 4/4 / financial 3/3 / superhero 部分
+
+**机制层瓶颈**：
+1. admission 形成层：financial 0 pattern 出库 / codebase 4 pattern 全不命中人工标注
+2. runtime 触发层：codebase 4 pattern runtime_usable=True 但 0 触发 / 总体触发率 4.4% 过低
+3. 实例化层：触发后 0 改对 + 退化 10 个（SELECT_REPLACE_SLOT 机械绑定 / GROUP BY 注入无 form-aware guard）
+4. singleton 路径：未走 self_recall gate，过度泛化是退化主因（card_games 主毒源）
+
+**未来方向（按优先级排到 full11_analysis_r1.md §6）**：
+1. 阻止 singleton 过度泛化触发（singleton 通道阈值 0.8，0.5d）
+2. admission_judge 在小样本上的形成率改进（1d）
+3. 修改 #1 question_view 纯化（0.25d，未做）
+4. Runtime 触发加 output column semantic guard（1d）
+5. ActionCompiler 加 form-aware pre-check（1.5d）
+
+**剩余 2 库**：thrombosis_prediction（110/192 进行中）/ toxicology（103/145 进行中）。跑完后追加到 `full11_analysis_r1.md`。
+
+**追加 §4.4.B EF2 + toxicology 深度分析**（2026-05-11，toxicology 跑完后补）：toxicology 实际 +5（baseline 95 → enhanced 100），是 11 库唯一明显正收益库；EF2 +1。两库共同暴露 EEA 当前架构的"成功条件"和"未达成理想"边界：
+
+- **toxicology pattern-206-253-93286776 是首个全链路成功样本**：step 12 q206 wrong → 形成 sing-206；step 55 q249 触发 sing-206 helped → 形成 pat-206-249；step 59 q253 触发 pattern helped → 扩展为 pat-206-253；step 74/83/91/108/113 共 5 个未来 case 都被 pat-206-253 触发并 helped。pattern 的 pre_sql signature 字面包含 `atom_id and atom_id2`（schema 列名），LLM Q+S gate 可做字面匹配 → 触发率高。
+- **EF2 的 +1 是"online singleton 学习"，不是"pattern 抽象"**：q1087 改对靠 sing-1052（q1052 失败后形成的 singleton）；EF2 形成的 2 个 runtime_usable pattern（含 13 member 的 1035-1045 和 2 member 的 1052-1087）**0 runtime 触发**——所有 pattern member 都在 pattern 形成前处理过；pattern 之外的 case 因 pre_q/pre_sql 抽象（"entity attribute column..."）被 LLM Q+S gate 拒绝。
+- **toxicology 2 个 regression（q255 q292）仍是 §4.2.B 同机制**：sing-219 把 seed q219 的整个聚合表达式（含 `m.label='+'`、`COUNT(DISTINCT m.molecule_id)`）字面编码进 canonical_op，应用到 q255 时把正确的 `COUNT(b.bond_id)` 改成 `COUNT(DISTINCT m.molecule_id)` 破坏分母语义；sing-205 把 seed gold SELECT 列 `molecule_id` 字面化，应用到 q292 时把正确的 `SELECT atom_id` 改成 `SELECT T.molecule_id`。
+- **成功条件总结**：schema 简单（5 表）+ question 重复（toxicology 多个 case 都问"elements of bond X"）+ pre_*_signature 含 schema 字面值 + pattern 早形成 + pattern_extension 增量扩展（toxicology `pattern_extension_pre_condition_equivalence` 跑了 154 次）。BIRD 大多数库不满足这些条件。
+
+新修复方向 9-12（补充 §4.3.B 5-8）：
+- 方向 9（0.5d）：admission_judge prompt 强制 pre_sql_signature 含 ≥ 2 个 schema-specific 列名/表名，否则拒绝
+- 方向 10（1.5d）：pattern 形成后回溯重审已 singleton-错位触发的近邻 case
+- 方向 11（1d）：early-pattern fast path（不等 admission_judge 跑完，用代码端形态距离临时绑 pair pattern）
+- 方向 12（0.25d）：self_recall 阈值 0.8 → 0.5 + audit-only 监控（toxicology 5 个被卡 pattern 中含 pat-220-304 / pat-207-326 等合理形态）
+
+**最小可行修复包**：方向 5（confidence 阈值）+ 方向 9（schema-specific signature）+ 方向 2（output-role guard）+ 方向 7（schema role 预热）共约 2d，预期把 11 库整体从 -9 拉到 +5~+10。
+
+**追加 §4.4.B.10 EF2 专门深挖**（2026-05-11）：还原 EF2 全 5 个 admission_judge + 2 个最终 pattern + 0 runtime 触发的完整链路。
+
+- **5 founding pair → 2 final pattern**：admission 在 step 26 / 33 / step 后多次形成临时 pattern，被 `pattern_equivalence_judge`（2 次调用）合并为最终 2 个 pattern
+- **Pattern P1 (1035-1045) 13 case 全部是历史 wrong-then-absorb**：在 step 26 后通过 `pattern_extension_pre_condition_equivalence`（54 次）逐步吸收 11 个新成员，但**无一个是"先看到 pattern 再被 pattern 救活"**
+- **核心机制：两层 LLM judge 抽象度不对齐**
+  - `pattern_extension_pre_condition_equivalence` (`pattern_formation.py:2694`)：抽象 contract A vs 抽象 contract B → LLM 宽容 → P1 顺利吸收 13 member
+  - `pattern_pre_condition_q/s` (`runtime.py:1431`)：抽象 signature vs 具体 question/SQL → LLM 严格 → 0 runtime 触发
+  - EF2 P1 pre_sql "joined with its attribute table" 无 schema 字面值;toxicology pat-206-253 pre_sql "atom_id and atom_id2" 含字面值 → 后者在 runtime 字面对照成功
+- **sing-1023 错位触发 q1052 精确链路**：q1052 prefilter 选 6 候选，5 个 case-specific 被 LLM 正确拒绝，唯独 sing-1023 pre_q "Count the number of primary entities..." 跨过 gate。canonical_op `pred:COUNT(*) → target:COUNT(id)` 没编码 DISTINCT（seed q1023 single table 不需要），应用到 JOIN 的 q1052 缺 DISTINCT 仍 wrong
+- **39 次 schema_role_annotator 为何不起作用**：annotator 调用是 11 库最高（11 库中位 2-6），但输出只进入 ActionCompiler `_is_role_allowed` 列过滤 + runtime schema_excerpt（LLM 自由判断不当硬 gate 用）—— **无症状改进**
+- **toxicology 已接近其 DB 理论上限**：7 helped 全部 from pat-206-253 / sing-206 / pat-206-249；其余 8 ready case 主题正交（atom pair / percentage / molecule_id），不在 pattern 范围。EF2 +1 离 6-9 理想差 5-8 是真损失
+
+新增修复方向 13-14：
+- 方向 13（0.5d）：runtime gate pre_sql/pre_q 检查改 schema-aware 硬匹配（无字面交集直接跳过 LLM 判 matches=false），强制 admission 写 schema-specific signature
+- 方向 14（1d）：admission 形成新 pattern 后立即对最近 N=20 步内 wrong case 做 retroactive runtime dry-run，标记 `retroactive_match_candidate` 留给 batch finalize 重做
+
+**最终结论**：EEA 当前架构在 toxicology 型 DB（小 schema + 重复 question + schema-字面 signature）能接近最优;在 EF2 / codebase / financial 型 DB（大 schema + 多样 question + 抽象 signature）系统性失败。修复必须解决"抽象 signature 在 runtime gate 上不可用"这一底层缺陷。
+
+**WUv2-2 边界修订**(2026-05-11,第一次执行越界后):
+
+第一版 WUv2-2 执行后,codex 用 q366 探针发现:撤掉 seed 字面 `cards.name` 后,compiler 仍能通过 `column_role="primary name"` 在当前 schema 找到 `cards.name`,产 hint "把 l.format 换成 T1.name" → 仍然 regress。**问题从"字面列泄漏"变成"seed target role 泄漏"**。临时补的 answer-focus guard 是看到错误后加启发式拦截,属于反模式。
+
+修订要点:
+- 新增 §1.0 WUv2-2 与 WUv2-5 职责分工:WUv2-2 = 保守阻断,不负责恢复 helped;WUv2-5 = 用 binding_contract 合法重建
+- WUv2-2 改动列表精简:撤销 LocalSchemaView 派生 + answer-focus guard;改为对 6 个会改 answer unit 的 enumerator 短路:`_enumerate_replace_select_slot` / `_enumerate_switch_canonical_field` / `_enumerate_add_select_slot` / `_enumerate_reroute_fact` / `_enumerate_change_grain` / `_enumerate_materialize_ranking_output` 在 seed target refs 为空时立即返回空 ActionCandidateSet
+- 保留 5 个 enumerator 工作:`_enumerate_drop_select_slot` / `_enumerate_drop_side` / `_enumerate_insert_bridge` / `_enumerate_move_condition` / SELECT_ENFORCE_DISTINCT — 它们不依赖 seed target binding。toxicology 7 helped(走 DROP + DISTINCT)因此保留
+- 预期 Δ 调整:WUv2-2 后 -16 → +3~+5(22 regress 几乎全转 saved-s0,EF2 q1087 等少量 helped 因 SELECT_REPLACE 被阻断而丢失);WUv2-5 后通过 binding_contract 重建 SELECT 类 primitive,helped 恢复 + 扩大到 +12~+18
+- 工时:WUv2-2 从 1.5d → 1d;总计从 7.75d → 7.25d
+- 新增 §8.7 决策记录:为什么 WUv2-2 不在新 case 上用 role_family 派生 target
+
+核心原则保留:**不允许在 WUv2-2 加任何"恢复 helped"的启发式**;helped 数下降是设计上接受的过渡期代价,WUv2-5 用结构化 binding 合法恢复。
+
+**emergence_refactor_plan_v2 已落地**(2026-05-11,7.75d 工时,6 个 WU):
+
+`rulebook/doc/emergence_refactor_plan_v2.md` 完整写成,基于 11 库 r1 实测(net -16)+ codex 独立诊断 + §7 5 改造方案。
+
+v2 与 v1 的核心差异:
+
+| 维度 | v1 | v2 |
+|---|---|---|
+| 改造单元数 | WU0-WU13 共 14 个 | WUv2-1 to WUv2-6 共 6 个 |
+| 工时 | 12.5d | 7.75d |
+| pattern contract | 单一(4 字段自由文本) | 三 contract(recognition + applicability + binding,代码端可检) |
+| runtime 判断 | 单 LLM Q+S 通道 | 五层(recognition LLM + applicability 代码 + binding 代码 + compile + rewrite) |
+| singleton 触发 | 与 pattern 共用 | 严格化,只 exact/near-exact |
+| canonical_op IR | 含 seed gold table/column 字面 | 仅 role_family / path_role,字面进 evidence audit |
+| regression 反馈 | 无(s0_correct=True 跳过) | negative_feedback 加 negative_guard |
+| 运营层安全网 | 无(direct_accept_s1) | DeepEye selector 默认开启 |
+
+WU 清单 + 起点 commit `667a940`:
+
+- **阶段 A 止血 (D1-D2, 1.75d)**
+  - WUv2-1 DeepEye selector 默认开启 (0.25d): `run_single_db_e2e.py:2105/2615` 默认 True;预期 -16 → -8~-12
+  - WUv2-2 Compiler 去 seed target 字面绑定 (1.5d): `action_compiler.py:1398/1650/3655` + `data_structures_v2.py RoleRefV2`;预期 -8 → -2~0
+- **阶段 B 机制层 (D3-D4, 2.5d)**
+  - WUv2-3 Singleton 严格化 (1d): `runtime.py:2327` 分组 type 区分;预期 0 → +5
+  - WUv2-4 Retrieval bucket 结构化 repair card (1.5d): `pattern_formation.py:348/129` + 新 `analysis/repair_card_normalizer.py`;预期 +5 → +5~+10
+- **阶段 C 架构层 (D5-D7, 3d,可拆 3 sub-commit)**
+  - WUv2-5 Pattern 三 contract + Runtime 五层 + Regression negative feedback;预期 +10 → +12~+18
+- **阶段 D 配套 (D8, 0.5d)**
+  - WUv2-6 Schema role annotator 启动时预热;预期 +13~+20
+
+验收终结条件:11 库整体净 Δ ≥ +10,类 IV regress ≤ 5(对比 v1 r1 22 例),codebase/financial ≥ 2 pattern,连续 2 轮 r2 差异 ≤ 5%。
+
+**追加 §7 方法论收敛 5 点接口改造**(2026-05-11,基于 codex 独立诊断对照 + 源码核对):
+
+§4.\*.B 和 §6 列出的 17 个分散方向收敛成 **5 个接口改造**。每条都用 codex 提供的 + 我核对的源码行号 + 实测数据支撑。
+
+**先做 3 项重要修正(基于 codex 独立分析)**:
+
+1. **本轮 run 已包含 question_view 物理分栏**(commit 667a940 + eb1271e 已落地 `pattern_formation.py:1892 _extract_question_evidence` 三 view 分离),不再说"未做"
+2. **confidence 阈值不是主修**:实测 `pre_condition_cache.json` 1000 条 entry,matches=true 平均 confidence 0.97,matches=false 0.947,**LLM 不给中等 confidence**,加阈值无效
+3. **"this case really needs repair?" 反问 violates answer-blind 硬边界**:应改为 applicability_contract 代码端检验,只看 question/SQL/schema
+4. **"强制 schema literal" 改为 "grounded anchors"**:可以是 column_role/path_role/relation_role 代码派生,不一定字面列名
+
+**新发现:DeepEye selector 默认完全关闭**(plan 完全没分析,codex 首次定位):
+
+`run_single_db_e2e.py:2615 if not args.postsel_select_after_rewrite: → guard_accepted_direct_s1`,默认 False。thrombosis 实测:
+
+```
+attempted: 18, guard_reject: 2, direct_accept_s1: 16, selector_choose_s1: 0, selector_keep_s0: 0
+```
+
+**16/16 触发都没经过 S0/S1 selector**。EEA 一旦改坏就一定退化,运营层没有安全网。
+
+**四类失败重新归类**(收敛 §4.\*.B):
+- 类 I 没聚类(类 II 类 III 类 IV 的前提条件) —— retrieval bucket 错位
+- 类 II 聚了不触发 —— LLM Q+S abstract↔concrete 不对齐
+- 类 III 触发不实例化(pre_condition_matched_branch_unbindable / branch_binder_no_candidates) —— canonical_op 在新 schema 上不可绑定
+- 类 IV 错误触发并改坏(22 例 regress) —— runtime + compiler + deepeye 三层失守
+
+**5 个接口改造(按止血优先 → 机制重建)**:
+
+| 改造 | 源码位置 | 工程量 | 预期影响 |
+|---|---|---|---|
+| ① DeepEye selector 安全网 | `run_single_db_e2e.py:2615` 默认 True | 0.25d | -16 → -10~-12(selector 50% 准确率) |
+| ② Compiler 去 seed target 字面绑定 | `action_compiler.py:1398/3655` IR 改 role_family + path_role 不存 table/column 字面 | 1.5d | 类 IV 字面错配 9 例消除 |
+| ③ Singleton 严格化 | `runtime.py:2327` singleton 不走 pre-condition 泛化通道 | 1d | 类 IV singleton 误触发 11 例显著降 |
+| ④ Pattern 三 contract + Regression negative feedback | `data_structures.py` + `runtime.py:2327` 拆 5 层 + `accumulate.py` 新 mode | 3d | thrombosis -12→-1;applicability guard 阻止后续 regress |
+| ⑤ Retrieval 改结构化 repair card | `pattern_formation.py:348/129` 撤 `_repair_insight_interface_key` 入桶,改 (source_answer_unit, target_answer_unit, operation_family) | 1.5d | 类 I 没聚类的 case 形成 pattern(EF2 损失 13/18 中 8-10 救回) |
+
+**优先级**:
+- 立即止血(1.75d): ① + ② → 预期 11 库从 -16 → 0
+- 完整机制重建(8d 含上述): 5 改全做 → 预期 +15~+20
+
+**核心论断**:
+- LLM 自由文本做 retrieval key 是错的(EF2 q581/q582 同源 case 不同 bucket 实证)
+- singleton canonical_op 字面绑定是 IR bug(5 库 22 regress 同根因)
+- regression 没负反馈是方法缺口(11 库 22 regress 全 status=skipped)
+- self_recall=1.0 ≠ 安全(thrombosis pat-1172-1257 self_recall=1.0 通过 → 13 次造灾)
+
+**下一轮 plan(emergence_refactor_plan_v2)应取代 WU11/12/13 增量补丁,直接按 §7.3 5 改造组织 5 个新 WU**。
+
+**追加 §6 emergence_refactor_plan 逐 WU 设计反思**(2026-05-11,基于 11 库全量数据):
+
+14 个 WU 全部按设计落地,但实测发现 9 个 WU 的核心假设被证伪(用代码行号 + 实测数据),3 个关键问题完全不在 plan 设计范围内:
+
+**已落地但假设失效的 WU**:
+- WU1 schema_role_annotator:缓存 cumulative 工作正常(toxicology cache 11 列预热完所以 0 LLM 调用,EF2 39 LLM 调用是 lazy-write 没启动预热),但**输出未进 runtime 硬 gate**(只进 schema_excerpt 让 LLM 阅读)
+- WU2/WU3 pre_condition_local/contract:LLM 输出**跨 case 措辞不一致**(EF2 q1038/q1085 同源 interface_key 完全不同) + **抽象度两极化**(EF2 "entity attribute column" 太抽象/thrombosis "COUNT(\*) Patient-Laboratory" 形态正确但 repair 不普适)
+- WU4 runtime 2 通道:**confidence 字段实测无区分度** —— 读 `runtime/workspace/pre_condition_cache.json` 1000 条 entry,matches=true 平均 confidence 0.97 / matches=false 0.947 几乎相同,LLM 不给"中等 confidence",方向 5(加阈值)实测无效
+- WU9 self_recall:**self_recall=1.0 ≠ runtime 安全**。thrombosis pat-1172-1257 self_recall=1.0 通过 gate,后 16 次触发 13 次造灾。self_recall 是过拟合检验不是泛化检验
+- WU11 admission self_check:LLM 自报 estimated_recall 与实际 runtime 触发率脱节(多个 pattern 自报 1.0 但 0 次 runtime 触发)
+- WU12 online self_recall:落地正确(thrombosis 4 pattern 在形成时跑了 self_recall,1 个被卡),但**单边屏蔽 singleton**(formula_1 sing-973 因 case_ids=[973] self_recall=1.0 自指通过,继续触发 q988 改坏)
+
+**plan 完全没涉及的 3 个盲区**:
+1. **canonical_op 字面绑定**(§4.2.B):`action_compiler.py:1650 _schema_column_option_from_ref` 把 seed gold 的 `{table, column}` 字面值直接复用。5 个库(card_games/student_club/formula_1/toxicology 双 regress)同一根因。plan 关注 pre_condition 字段,完全没动 canonical_op
+2. **s0 累积 gate**(§5,用户提出):`run_single_db_e2e.py:2716 local_gate_wrong = baseline_correct is not True`。regress case(s0=对 final=错)全跳过 accumulate。11 库 22 个 regress 全部 status=skipped。EEA 没有 negative feedback 循环
+3. **repair_direction 领域可逆性**(§4.5.B):thrombosis pat-1172-1257 signature 形态匹配完美但 repair 在 BIRD 答案语义上反向错误。WU3 只要求 repair 是"成员上共性",不要求"领域内普适"
+
+**核心方法论错位**:
+- plan 假设"多处 LLM 自动语义对齐",实测 3 个 LLM 调用位置(WU3 admission 看 case_cards 写 contract / WU8 extension 比对两段 contract / WU4 runtime 用 contract 匹配新 case)行为系统不一致 —— extension 宽容,runtime 严格,导致 EF2 pat-1035-1045 通过 extension 收 13 member 但 runtime 0 触发
+- plan §1.1 把"撤除具体词表"等同于"撤除所有结构",过度反弹。撤 14 闭词后没引入"结构化模板"替代,LLM 自由文本写 retrieval bucket key 导致 §4.1.B 错位
+- plan 用 git revert 颗粒回滚替代双轨保留,牺牲了对照实验能力,r24-r26 三轮 focus18 卡 7/18 反馈周期长
+
+**架构性调整方向(取代再加 WU14/15/16 增量补丁)**:
+- Layer 1: retrieval bucket 用 `(source_role_family_set, target_role_family_set)` 代码端 key,撤 `repair_insight_interface` LLM 自由文本(方向 1)
+- Layer 2: runtime LLM 前置代码端短路(无 schema 字面 token 交集直接 false,方向 13)+ 后置反问校验(方向 15)
+- Layer 3: `synthesized_program.ops[*].role_refs` 改存 column_role_family + path_role,不存 table/column 字面值,运行时 ActionCompiler 在新 case schema 派生
+- Layer 4: gate 改"final 错时也学",regress 走 negative_feedback mode 给已触发 group 加 negative_guard(方向 16)
+
+**追加 §4.5.B thrombosis 深度分析 + §5 s0 累积逻辑缺陷**（2026-05-11，11 库收尾）:
+
+thrombosis_prediction 是 11 库最严重退化:163 case,baseline 106 → enhanced 94 = **-12 净**。18 触发,**16 都来自单 pattern `grp-pat-thrombosis_prediction-1172-1257`**,13 退化 / 仅 1 helped。
+
+**根因:新失效模式"局部正确,全局错误"** (与 §4.1.B-§4.4.B 4 条失效链都不同):
+- pattern signature 准确(含 "COUNT(\*) over Patient-Laboratory" 字面术语,LLM Q+S gate 字面可匹配)
+- repair_direction "COUNT(\*) → COUNT(DISTINCT patient_id)" 在 3 个 seed 上确实正确
+- 但 BIRD 大多数同形态题 gold 就用 COUNT(\*)(thrombosis 数据中 patient × lab 在 WHERE 过滤后多为 1-to-1)
+- pattern 把 13 个 COUNT(\*) 是正确答案的 case 全改成 COUNT(DISTINCT) → 13 个 regress
+
+时间线证据:step 55/74 sing-1172 触发的 2 个 case 都 saved-s0(早期 BIRD 案例形态简单);step 109 pattern 形成后,pre_q 比 singleton 抽象化("Question asks for a count of patients meeting specific...")覆盖更广,step 119 起连续触发 14 个新 case,13 个退化。
+
+新增方向 15:pattern 触发后做 repair_direction 领域语义反问(1.5d),让 LLM 在 q1278 触发时反问"this case asks for count where COUNT(\*) is acceptable?",回答 yes → 不触发。
+
+**§5 用户提出的 s0 累积逻辑缺陷**(关键发现):
+
+`run_single_db_e2e.py:2712-2787` gate 逻辑:
+
+```python
+local_gate_wrong = baseline_correct is not True  # 只看 s0 是否对
+if local_gate_wrong:  # s0 wrong → accumulate
+    update_from_selected_sql(selected_sql=s0_sql, ...)
+else:                  # s0 correct → skipped (reason=s0_local_correct)
+    skip
+```
+
+四种 case 命运:
+
+| s0 | final | 是否 accumulate |
+|---|---|---|
+| wrong | correct (helped) | YES |
+| wrong | wrong (both wrong) | YES |
+| correct | correct (saved) | NO |
+| **correct** | **wrong (regress)** | **NO ← bug** |
+
+**用户的 helped case 顾虑实际不存在**:实测 toxicology 7 helped + thrombosis q1261 全部 `status=accumulated`,且生成新 singleton(如 grp-sing-thrombosis_prediction-1261)。helped case 的 s0 IS 进入了累积。
+
+**但用户的核心直觉是对的**——体现在 regress case 上:
+
+- thrombosis 13 个 regress 全部 `status=skipped, reason=s0_local_correct`
+- pattern 1172-1257 连续 13 次造灾,EEA 学不到任何 negative feedback
+- 同样 card_games 5 regress / debit_card 2 regress / student_club 1 regress / formula_1 1 regress 全部跳过累积
+
+**修复方向 16(关键单点 + 大影响,1d)**:gate 改成"`final wrong` 时也要 accumulate",regress case 走 `negative_feedback` 模式 → 不形成新 singleton,但给已触发的 matched_group_ids 增加 negative_guard。预期 thrombosis 从 -12 拉到 -1(只丢首次 regress),card_games 从 -5 拉到 -1,全 11 库合计预期 **+17**。
+
+**修复方向 17(配套,0.25d)**:reconcile 阶段同样需要 negative accumulate(当前 `s0_official_correct` 也跳过)。
+
+**最终更新 11 库整体数据**:`final_full11_summary` = baseline 1117 / enhanced 1101 / **net -16** / 触发率 5.7%。最严重的 thrombosis 单库 -12,占总损失 75%。
+
+**最小可行修复包升级**:5+9+13+16+17 共约 2.25d,预期把 11 库从 -16 拉到 **+15+**。
+
+**追加 §4.4.B.12 EF2 全 19 人工标注 case 逐项命运**（2026-05-11）：补正之前 §4.4.B 没逐 case 对照人工标注的缺漏。
+
+人工标注 6 group 19 case 在 EF2 的实际命运：
+
+| 人工 group | 期望 case | 实际命运 |
+|---|---|---|
+| P1 排序漏指标 | 1038, 1085 | 2/2 no_match |
+| P2 Player 唯一粒度 | 1040, 1052, 1064, 1087 | 1 helped (q1087) + 1 错位 wrong (q1052) + 2 no_match |
+| P3 AVG→SUM/COUNT | 1068, 1093 | 2/2 no_match |
+| F1 Match 宽表槽位 | 1119, 1120, 1121, 1126, 1127 | 5/5 no_match |
+| F2 并列 top1 | 1028, 1092 | 2/2 no_match |
+| F3 PA.id 当球员标识 | 1024, 1027, 1135, 1144 | 4/4 no_match |
+
+**19 case 中 1 改对 (5%) / 1 错位 / 17 完全没触发**。EF2 +1 的真相：online singleton 学习偶然救活 q1087,与 pattern 抽象设计无关。
+
+EEA pattern 与人工 group 的对应关系：
+
+- EEA pat-1035-1045 (13 case): **与人工无任何重合**,捕获的是 "DISTINCT entity slot" 这种 EEA 自抽象出的形态空 pattern。13 case 中 0 个属于人工 P1-F3,人工把它们标为"低置信 singleton"
+- EEA pat-1052-1087 (2 case): 与人工 P2 部分重合 (P2 4 个 member 只抓到 2 个)
+- 人工 P1 (排序漏指标 q1038/1085): retrieval 从未把 (1038, 1085) 配对 → admission 没机会见到这对
+- 人工 P3 (AVG→SUM/COUNT q1068/1093): retrieval 从未把 (1068, 1093) 配对
+- 人工 F1 (Match 宽表 5 case): 5 个 case 散在 4-5 个不同 bucket
+- 人工 F2/F3: 同样 retrieval bucket 错位
+
+EF2 损失分解:
+- §4.1.B retrieval bucket 错位: 13 case (72%)
+- §4.4.B 抽象 signature 不可触发: 3 case (17%)
+- §4.2.B canonical_op 字面绑定 (sing-1023 缺 DISTINCT): 1 case (q1052)
+
+**EF2 单库最优修复包**: 方向 1 (代码端结构化 retrieval key) + 方向 14 (pattern 形成后回溯 N 步) 共约 2d,预期把 EF2 从 +1 拉到 +6~+8。
+
+**追加 §4.3.B california + superhero + student_club + formula_1 深度分析**（2026-05-11）：4 库总计 550 case，仅 2 例真触发 + 2 例触发后回退，触发率 0.7%。定位 3 个关键发现：
+
+- **WU9 self_recall 单边屏蔽**：formula_1 有 4 个 pattern 被 self_recall=0/0.333/0.5/0 卡进 audit-only（包括 `970-973` 自降级），但同 seed 衍生的 sing-973 因 case_ids=[973] 自指 self_recall=1.0 通过，**继续用同一组危险 canonical_op 触发 q988 改错**。代码位置：`promotion.py:_pattern_precondition_self_recall` 对 singleton 是恒等约束 + `runtime.py:2313-2319` singleton 无额外 gate。
+- **runtime LLM Q+S gate 缺 confidence 阈值**：`runtime.py:1431 _pre_condition_channel_call` 返回 confidence 但**不参与 gate 决策**。formula_1 4 个 runtime_usable pattern 接受 280+ 次 LLM Q-channel 判断 → 0 通过；同时 singleton 路径 LLM 倾向 matches=true → 错位触发。
+- **schema_role_annotator 严重欠调用**：每库仅 2-6 次（california 2 / superhero 2 / student_club 4 / formula_1 6），全库 role_family 覆盖率约 6-12%。ActionCompiler 退化成"穷举所有非 pred 列"，是 card_games q521 选错 c.faceName 的根因之一。
+
+新修复方向（与 §4.1.B/§4.2.B 不冲突，优先级 5-8）：
+- 方向 5（0.25d）：`_evaluate_pattern_pre_condition` 加 confidence 阈值（singleton ≥ 0.8，pattern ≥ 0.5）
+- 方向 6（0.5d）：singleton 加 LOO self_recall（同 db 历史 case 当校准集，避免恒等检验）
+- 方向 7（0.5d）：库初始化阶段对每个 DB 所有表做一次 schema_role_annotator 预热
+- 方向 8（1d）：pattern 形成后回溯标记被 singleton-错位触发的近邻 case
+
+**追加 §4.2.B card_games + debit_card 深度分析**（2026-05-11）：定位"运行时实例化层"独立失效链，与 §4.1.B 演化层根因不同：
+
+- card_games 36 触发全部走 singleton（sing-351×34 + sing-363×2），pattern 一次也没触发
+- 5 退化 case 100% 命中同一机制：`synthesized_program.ops[0].role_refs[target_sql]` 把 seed case 的 gold SELECT 字面 `(table, column, expression)` 编码进 singleton；`_target_output_refs_for_action` → `_enumerate_switch_canonical_field` → `target_columns=[{cards, name}]` 套用到任何 trigger 命中的 case
+- q366 已正确（s0=`SELECT l.format`），但 sing-351 把它改成 `SELECT c.name` —— canonical_op 字面绑定 + 无 output-role guard
+- debit_card sing-1472 加了一层"template 与 role_refs 内部矛盾"：template 让 LLM 加 SUM 进 SELECT，role_refs 又说 SELECT 没变化，DeepEye rewrite LLM 一半跟模板（q1474/1495 退化）一半跟 role_refs（q1487/1497 OK）
+- 修复方向优先级：singleton 触发加 output-role guard（针对性强） > canonical_op 不存字面列名（改动大）> singleton 阈值提升 0.8 > hint 不 expose 字面 target
+
 ### 2026-05-10 emergence_refactor WU11：admission / runtime pre-condition 闭环
 
 改动目标：
@@ -2174,3 +2471,35 @@ r19 后补丁：
 - 静态验证 `python -m py_compile common/learning/pattern_formation.py`。
 - 函数级探针确认 question view 不再包含 SQL-side 字段，`source_misread` 进入 sql view，`interface_key` 进入 shared view。
 - 先用 r26 final library 记录修改前 pre-question SQL keyword 污染作为基线；后续 11 库全量 post-selection 实验结束后，对新 final libraries 复查 pre-question SQL keyword 命中情况和 source-route 类 pattern 的触发表现。
+
+### 2026-05-11 mechanism_rebuild_v2 启动：WUv2-1 DeepEye selector 默认开启
+
+起点：
+
+- EEA 起点 commit: `667a940 Purify admission question evidence view`。
+- 11 库 v1 基线: baseline `1117/1534`，enhanced `1101/1534`，净 `-16`。
+- 已创建 EEA 分支 `eea-mechanism-rebuild-v2` 和 tag `pre-v2-refactor`。
+
+问题：
+
+- post-selection 接入端默认 `guard_accepted_direct_s1`，guard 通过后直接把 S1 写为最终 SQL。
+- 11 库实测里 thrombosis 等库的错误触发会被直接放大成回归，selector 安全网没有默认启用。
+
+实现：
+
+- DeepEye `run_single_db_e2e.py` 中 `--postsel_select_after_rewrite` 改为 `argparse.BooleanOptionalAction`，默认 `True`。
+- 保留 `--no-postsel_select_after_rewrite` 作为显式关闭开关，便于必要时复现实验。
+- `eea_rewrite_stats` 新增 `selector_choose_s1_correctly / selector_keep_s0_correctly / selector_wrong / selector_unknown`，在 execution comparison 后统计 selector 是否选对。
+
+验证：
+
+- `python -m py_compile /data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/rulebook_experiments/run_single_db_e2e.py` 通过。
+- `python /data/liuyining/ace4sql/method/deepeye/DeepEye-SQL/rulebook_experiments/run_single_db_e2e.py --help` 显示 `--postsel_select_after_rewrite | --no-postsel_select_after_rewrite`，默认描述为 selector safety net enabled。
+- DeepEye commit: `17d9196 WUv2-1: enable post-selection selector by default`。
+
+### 2026-05-11 WUv2 验收入口收敛
+
+- WUv2-2 完成。详见 `doc/emergence_refactor_plan_v2_verification.md` §1。commit: `82575c0` / `84fce61`。关键观察: q988 `INSERT_BRIDGE` rewrite 等价，未 regress；q292 hint 越界归 WUv2-5。
+- WUv2-3 完成。详见 `doc/emergence_refactor_plan_v2_verification.md` §2。commit: `e9800e7`。关键观察: 8-case probe 无反向不符合，singleton strict audit 生效。
+- WUv2-4 完成。详见 `doc/emergence_refactor_plan_v2_verification.md` §3。commit: `2cf8696`。关键观察: 7/7 人工同源组汇合，其中 6/7 exact bucket，1/7 axis 粗筛。
+- gate 状态: WUv2-5 可以开始；后续 WU 验收只追加到 verification 文档，不再新建独立 probe report。
