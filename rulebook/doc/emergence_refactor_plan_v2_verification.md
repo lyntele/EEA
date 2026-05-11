@@ -238,6 +238,13 @@ commit: 2cf8696
 
 ## §4 WUv2-5 verification
 
+> WUv2-5b / WUv2-5c negative-guard runtime consumption is now deferred.
+> The schema fields remain for audit/logged feedback, but runtime does not
+> consume `regression_negative_guards` until the guard semantics are redesigned.
+> Reason: the q249 guard matched nearly the whole RoleGraph pattern and several
+> nearby toxicology cases, so case-level guard gating behaved like a broad
+> pattern kill switch.
+
 ### sub-commit a: three-contract IR + admission prompt
 
 commit: `2460bec`
@@ -268,6 +275,9 @@ PYTHONPATH=/data/liuyining/ace4sql python -m py_compile \
 
 ### sub-commit b: runtime regression-aware applicability
 
+Status: deferred by revert. This section is kept as historical verification
+context only; runtime no longer consumes `regression_negative_guards`.
+
 commit: `6ffd44f`
 
 验证内容:
@@ -294,6 +304,11 @@ quick probe: `workspace/probes/wuv2_5_b/*.json`
 - 在没有历史 regression guard 的库上，applicability 层只做 audit，不提前拦截；符合“第一次 regress 不可避免，之后学习 guard”的设计。
 
 ### sub-commit c: regression negative feedback
+
+Status: partially deferred. EEA keeps the guard schema and append function for
+audit/logged feedback, but DeepEye no longer routes regressions into a runtime-
+consumed negative guard path. Regression cases still must not become ordinary
+singletons.
 
 commit: EEA `4fcdc40`, DeepEye `1cb42c0`
 
@@ -325,140 +340,35 @@ quick probe: `workspace/probes/wuv2_5_c/`
 - 后续相似 case 到达时，runtime applicability 层能在 rewrite 前挡住对应 pattern。
 - 本 probe 只验证 WUv2-5 的机制闭环；不评估最终 SQL 改写收益。
 
-## §5 WUv2-5 supplemental verification
+## §5 WUv2-5 supplemental verification (已搁置)
 
-补充验证目标: 在不跑 r_v2_e 全量的前提下，验证 regression-driven negative guard 是否跨库稳健、是否存在过度阻断、以及 DeepEye 负反馈闭环是否真实可用。
+Status: deferred. The previous D1/D3 probes are kept as historical context in
+git history and workspace data, but no longer define an active gate.
 
-### D1 跨库 pattern 覆盖
+Key observation:
 
-probe 数据:
+- Pattern-local guard on q249 blocked the pattern candidate, but sibling
+  singleton fallback could still rewrite.
+- Case-level fallback guard then blocked q249, but also blocked q253/q268/q277/
+  q285/q302/q307, so the guard behaved too broadly.
 
-- `workspace/probes/wuv2_5_extended/d1_corrected/summary.json`
-- `workspace/probes/wuv2_5_extended/d1_corrected/final/toxicology_replay.json`
-- `workspace/probes/wuv2_5_extended/d1_corrected/minpair/*.json`
-- `workspace/probes/wuv2_5_extended/d1_corrected/minpair2/*.json`
+Root-cause dump:
 
-已执行样本:
+- `workspace/probes/wuv2_5b/root_cause/*.json`
+- `doc/wuv2_5b_root_cause.md` (temporary analysis doc; not part of the stable
+  verification record)
 
-| db | pattern_id | regress case | positive case | 结果 |
-|---|---|---:|---:|---|
-| toxicology | `grp-pat-toxicology-206-253-93286776` | 249 | 253 | pattern 自身被 guard 阻断，但 q249/q253 仍通过 `grp-sing-toxicology-206` fallback 变成 `ready` |
-| superhero | `grp-pat-superhero-758-808-154a12fe` | 758 | 805 | baseline replay 下 758/805 本来就是 `no_match`，不是有效 D1 probe pattern |
-| formula_1 | 4 个 runtime_usable pattern pair | - | - | 所有 pair baseline replay 都是 `no_match` |
-| california_schools | 2 个 runtime_usable pattern pair | - | - | 所有 pair baseline replay 都是 `no_match` |
-| card_games | 4 个 runtime_usable pattern pair | - | - | 所有 pair baseline replay 都是 `no_match` |
+## §6 WUv2-5b case-level fallback guard gate verification (已搁置)
 
-toxicology 细节:
+Status: reverted/deferred. The implementation commit `3a13389` and its report
+commit `2e543f5` were reverted.
 
-- baseline 前置检查来自 WUv2-5b quick probe: q249/q253 在未注入 guard 时均 `ready`，matched pattern 为 `grp-pat-toxicology-206-253-93286776`。
-- 向该 pattern 注入 q249 guard 后，pattern candidate 对 q249/q253 均 `gate_passed=false`，hard gate 包含 `regression_negative_guard_hit:249`。
-- 但最终 runtime status 仍是 `ready`，因为 selection pool 改选了 sibling singleton `grp-sing-toxicology-206`，primitive 仍为 `DROP_SELECT_SLOT`。
-- 这说明当前 negative guard 只绑定 pattern，不会同步约束同一修复轨迹的 singleton/source singleton fallback。
+Reason:
 
-结论:
-
-- D1 未通过。
-- 覆盖阈值要求至少 3 个库有可用 baseline-ready pattern pair；实测只有 toxicology 找到，但 toxicology 又暴露 singleton fallback 绕过 pattern guard。
-- superhero / formula_1 / california_schools / card_games 的已测 runtime_usable pattern pair 在 baseline replay 下均不是 `ready`，不能作为 guard 稳健性 probe。
-- 按补充验证终结条件，D2/D3/D4 均暂停；未继续扩边界、未修改 runtime 或 schema。
-
-### D2/D3/D4 状态
-
-未执行。暂停原因:
-
-- D1 已出现非预期 / probe 前提不成立，按计划应先停下报告，不继续扩边界。
-- D2 字段要求已按用户修正为当前 schema，不再检查 `confidence/source_columns/target_columns`。但 D1 未通过，因此没有继续执行 D2。
-
-### Gate
-
-当前补充验证未完成，且未触发代码修改。需要用户确认下一步:
-
-- negative guard 是否需要沿 pattern 的 source/sibling singleton 关系传播，或 runtime 在 pattern 被 guard 阻断时是否应抑制同根 singleton fallback。
-- full11 final_library 中大量 `runtime_usable=True` pattern 在 replay 自身 member 时仍 `no_match`，是否应先作为 WUv2-6 / r_v2_e 前的 pattern runtime consistency 问题处理。
-- 若继续做 D2/D3/D4，需要先确定 D1 的样本选择标准是否允许使用 singleton fallback case，还是必须只看 pattern-selected case。
-
-## §6 WUv2-5b case-level fallback guard gate verification
-
-触发原因:
-
-- §5 D1 修正版发现 pattern-local regression guard 只能挡住写入 guard 的 pattern candidate。
-- 同一修复轨迹的 sibling singleton 仍可被 runtime fallback 选中，导致 q249/q253 在 pattern 被 `regression_negative_guard_hit:249` 阻断后仍 `ready`。
-- 本节验证 WUv2-5b 方案 C: guard 数据仍保持 pattern-local 写入，但 runtime 最终 emission gate 改为 case-level，只要库内任一 memory object 的 regression guard 命中当前 case，就整体 fallback 到 S0。
-
-代码变更:
-
-- commit: `3a13389 WUv2-5b: block fallback on case-level guard hits`
-- 只改 `common/runtime/runtime.py`。
-- 新增 `_case_has_negative_guard_hit(case_view, library_state)`，遍历当前库内 `patterns + experience_families + singletons`，复用现有 `_regression_guard_match_call` 判断 guard 是否命中。
-- 在 `prepare_rewrite_plan()` 中，runtime 选完候选 group 后、进入 `enumerate_candidates()` / rewrite contract 编译前执行 case-level gate。
-- 命中时返回 `passthrough_no_match`，`rewrite_enabled_reason=case_negative_guard_hit`，`matched_groups=[]`，并在 `runtime_audit_summary.fallback_guard_hit_groups` 记录命中的 guard owner group。
-
-probe 数据:
-
-- `workspace/probes/wuv2_5b/self/toxicology_q249_after_case_gate.json`
-- `workspace/probes/wuv2_5b/d1_corrected/toxicology/q249_q253.json`
-- `workspace/probes/wuv2_5b/d3/toxicology/pattern_206_253_members_after_q249_guard.json`
-
-### A1 regression 自我验证
-
-| db | case | guard owner | 结果 |
-|---|---:|---|---|
-| toxicology | 249 | `grp-pat-toxicology-206-253-93286776` | `no_match`, `rewrite_enabled_reason=case_negative_guard_hit` |
-
-直接调用 `prepare_rewrite_plan()` 的审计结果:
-
-```json
-{
-  "reason": "passthrough_no_match",
-  "rewrite_enabled_reason": "case_negative_guard_hit",
-  "fallback_guard_hit_groups": ["grp-pat-toxicology-206-253-93286776"],
-  "runtime_audit_summary.fallback_guard_hit_groups": ["grp-pat-toxicology-206-253-93286776"],
-  "matched_group_ids": [],
-  "hint": ""
-}
-```
-
-结论:
-
-- 自我验证通过。
-- q249 不再被 sibling singleton `grp-sing-toxicology-206` 绕过，最终不会进入 rewrite。
-
-### A2 D1 corrected 重跑
-
-| db | cases | 结果 |
-|---|---|---|
-| toxicology | 249,253 | 二者均 `no_match`, `rewrite_enabled_reason=case_negative_guard_hit` |
-
-观察:
-
-- case-level gate 解决了 §5 的 fallback 绕过问题。
-- 但 q253 作为同 pattern 的正向成员也被 q249 guard 阻断，说明 guard 相似性判断对 RoleGraph 成员过宽。
-- 之前用于扩展覆盖的 superhero / formula_1 / california_schools / card_games 候选 pattern 在 baseline replay 下没有找到 `baseline_ready >= 2` 的有效 pair，因此本次没有达到 D1 “covering ≥ 3 库”的样本覆盖要求。
-
-### A3 D3 过度泛化
-
-对 `grp-pat-toxicology-206-253-93286776` 注入 q249 guard 后，replay 其余成员:
-
-| case | runtime_status | rewrite_enabled_reason |
-|---:|---|---|
-| 206 | `no_match` | `no_trigger_match` |
-| 253 | `no_match` | `case_negative_guard_hit` |
-| 268 | `no_match` | `case_negative_guard_hit` |
-| 277 | `no_match` | `case_negative_guard_hit` |
-| 285 | `no_match` | `case_negative_guard_hit` |
-| 302 | `no_match` | `case_negative_guard_hit` |
-| 307 | `no_match` | `case_negative_guard_hit` |
-
-结论:
-
-- 对 q249 写入的一条 HistoricalRegressGuard 阻断了同 pattern 中 6/6 个本应继续评估的正向成员，阻断率远高于 30%。
-- 按 WUv2-5 补充验证暂停规则，D3 失败后停止，不继续调阈值、不扩规则、不执行 D2/D4。
-
-当前判断:
-
-- case-level emission gate 的工程目标达成: pattern-local guard 不能再被 sibling singleton 绕过。
-- regression guard 的语义粒度仍不合格: 当前 `_regression_guard_match_call` 对“同一 pattern 的相似 case”过度匹配，导致一条 regression guard 变成 pattern-wide kill switch。
-- 下一步不能靠调阈值或加特例解决；需要重新定义 HistoricalRegressGuard 的作用粒度，或者让 guard match 判断能区分“同 pattern 可修正正例”和“与历史 regression 同失败模式的负例”。
+- `_case_has_negative_guard_hit` correctly stopped sibling singleton bypass.
+- The underlying guard hit judgment was too broad because it reused the LLM
+  `regression_guard_match` call. A q249 guard matched almost every same-pattern
+  RoleGraph case, producing over-blocking.
 
 ## §7 WUv2-6 verification (未完成)
 

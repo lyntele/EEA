@@ -53,9 +53,10 @@ class HistoricalRegressGuard(BaseModel):
 class ApplicabilityContract(BaseModel):
     """Regression-driven pre-rewrite contract.
 
-    Admission only writes ``intent_description`` as audit. Runtime negative
-    guards are appended later by negative_feedback updates after a real
-    s0-correct/final-wrong regression.
+    WUv2-5b deferred: admission only writes ``intent_description`` as audit.
+    ``regression_negative_guards`` is retained in the schema for logged
+    negative feedback, but runtime currently does not consume it until the
+    guard semantics are redesigned.
     """
 
     intent_description: str = ""
