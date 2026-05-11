@@ -61,3 +61,25 @@ Probe 入口: `cli/replay_runtime_trigger_v2.py`
 - singleton 误触发数下降: q1052 从预期旧误触发目标变为 `no_match`；q988 未下降。
 
 本轮已完成 WUv2-3 quick probe。按任务要求，此处停止，等待用户 review；未进入 WUv2-4。
+
+## q988 rewrite verification
+
+验证入口: `cli/replay_runtime_rewrite_v2.py`
+
+原始输出: `/tmp/wuv2_3_rewrite_probe/formula_1_q988.json`
+
+| 维度 | v1 r1 | WUv2-3 rewrite replay |
+|---|---|---|
+| matched group | `grp-sing-formula_1-973` | `grp-sing-formula_1-970` |
+| primitive | `SELECT_REPLACE_SLOT` | `INSERT_BRIDGE` |
+| selected SQL / S0 | `SELECT d.forename, d.surname FROM drivers d JOIN pitStops p ON d.driverId = p.driverId ... GROUP BY d.driverId, d.forename, d.surname ...` | 同左 |
+| final SQL / S1 | `SELECT drivers.driverId FROM drivers JOIN pitStops ON drivers.driverId = pitStops.driverId ... GROUP BY drivers.driverId ...` | `SELECT d.forename, d.surname FROM drivers d JOIN pitStops p ON d.driverId = p.driverId ... GROUP BY d.driverId, d.forename, d.surname ...` |
+| final_correct | `False` | `True` |
+| WUv2-2 disabled reason count | 未记录 | `1` |
+| hint audit | 未记录 | `hint_introduces_non_primitive_action=false` |
+
+观察:
+
+- WUv2-3 quick probe 中 q988 的 `INSERT_BRIDGE` ready 不是实际退化；真实 rewrite replay 里 LLM 没改动 SQL，S1 保持 S0，执行结果与 gold 等价。
+- WUv2-2 已切断旧的 `SELECT_REPLACE_SLOT` 退化路径；本次 `wuv2_2_disabled_reason_count=1`。
+- q988 仍说明 singleton exact 可以让 `INSERT_BRIDGE` 路径进入 rewrite，但这次没有造成 regress；后续如果要处理“ready 但不应改”的边界，应归入 WUv2-5 applicability/negative guard，而不是在 WUv2-3/WUv2-4 打补丁。
