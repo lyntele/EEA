@@ -236,9 +236,94 @@ commit: 2cf8696
 - 7/7 人工同源组汇合，其中 6/7 通过 exact `answer_unit_op:*` bucket，1/7 通过 `axis:*` 粗筛轴进入后续 semantic/program 判断。
 - 真实 online 效果待 r_v2_e。
 
-## §4 WUv2-5 verification (未完成)
+## §4 WUv2-5 verification
 
-待 WUv2-5 完成后补充。
+### sub-commit a: three-contract IR + admission prompt
+
+commit: `2460bec`
+
+验证内容:
+
+- `PatternRecognitionContractV2` 已拆成 `recognition / applicability / binding` 三段。
+- `applicability` 在 admission 阶段只保留 `intent_description`，`regression_negative_guards` 默认为空。
+- 已删除静态 applicability predicate 词表路径；admission prompt 不再要求 LLM 从谓词闭集里选择 `must_hold_before_rewrite`。
+- admission postprocessor 会校验 `recognition.grounded_anchors` 和 `binding.allowed_operations`，并拒绝 literal binding fields。
+
+验证命令:
+
+```bash
+PYTHONPATH=/data/liuyining/ace4sql python -m py_compile \
+  common/core/data_structures.py \
+  common/core/data_structures_v2.py \
+  common/llm/prompts/pattern_admission_judge.py \
+  common/learning/pattern_formation.py \
+  common/learning/accumulate.py
+```
+
+结果:
+
+- `py_compile` 通过。
+- 三段 contract 兼容性、prompt placeholder、admission postprocessor 的 ad-hoc 探针通过。
+- 全量 `pytest -q` 当前分支和 clean HEAD 均为 `34 failed / 76 passed / 15 skipped`，属于既有 baseline 失败，不作为本 WU 新失败。
+
+### sub-commit b: runtime regression-aware applicability
+
+commit: `6ffd44f`
+
+验证内容:
+
+- runtime trigger 在 pattern pre-condition 之后新增 applicability 层。
+- 当 `regression_negative_guards` 为空时，audit 记录 `no_negative_guards_yet`，不拦截第一次类似 case。
+- 当存在 guard 时，对每个 guard 调用受约束 LLM yes/no 判断当前 case 是否类似历史 regress case；命中则写入 `regression_negative_guard_hit:<case_id>` 并阻断 rewrite。
+- `TriggerCandidateAudit` 和 replay 输出透传 `applicability_audit`。
+
+quick probe: `workspace/probes/wuv2_5_b/*.json`
+
+| db | case_ids | runtime status | ready cases | 观察 |
+|---|---|---|---|---|
+| card_games | 366 | `no_match` | - | WUv2-2/3 的拦截行为保持 |
+| thrombosis_prediction | 1267 | `no_match` | - | WUv2-2/3 的 replay 状态保持 |
+| debit_card_specializing | 1474 | `no_match` | - | WUv2-2/3 的 replay 状态保持 |
+| toxicology | 249/253/292 | `ready=3` | 249/253/292 | q249/q253 helped 路径保持；q292 仍记录 hint 越界基线 |
+| european_football_2 | 1052 | `no_match` | - | singleton strict 行为保持 |
+| formula_1 | 988 | `ready=1` | 988 | q988 仍可触发，未由 WUv2-5b 改变 |
+
+结论:
+
+- WUv2-5b 未破坏 WUv2-2/3 的 quick probe 行为。
+- 在没有历史 regression guard 的库上，applicability 层只做 audit，不提前拦截；符合“第一次 regress 不可避免，之后学习 guard”的设计。
+
+### sub-commit c: regression negative feedback
+
+commit: 本 WUv2-5c 提交。
+
+实现内容:
+
+- EEA 新增 `append_regression_negative_guard(...)`，只把 `HistoricalRegressGuard` 追加到已触发的 pattern，不创建 singleton，不跑 admission。
+- DeepEye post-selection gate 新增分支: `baseline_correct is True and enhanced_correct is False and matched_group_ids` 时调用 `update_from_selected_sql(..., accumulate_mode="negative_feedback")`。
+- 该分支写入 `eea_negative_feedback_response.json`，并把 `negative_feedback_recorded` 纳入 update stats。
+
+quick probe: `workspace/probes/wuv2_5_c/`
+
+步骤:
+
+1. 从 `full11_thrombosis_prediction_postsel_v1_qwen3coderflash_20260510_164346/final_library.json` 加载库。
+2. 模拟 q1267 发生 regression，将 guard 写入 `grp-pat-thrombosis_prediction-1172-1257-7acbe245`。
+3. 用带 guard 的临时库 replay q1278，不调用真实 rewrite。
+
+结果:
+
+| probe | 结果 |
+|---|---|
+| q1267 negative feedback | `negative_feedback_recorded`, updated group = `grp-pat-thrombosis_prediction-1172-1257-7acbe245` |
+| q1278 replay after guard | `no_match` |
+| target pattern applicability audit | `guard_count=1`, guard q1267 `matches=true`, `confidence=0.95`, result=`blocked` |
+
+结论:
+
+- negative feedback 可以把真实 regress case 转成 pattern-local guard。
+- 后续相似 case 到达时，runtime applicability 层能在 rewrite 前挡住对应 pattern。
+- 本 probe 只验证 WUv2-5 的机制闭环；不评估最终 SQL 改写收益。
 
 ## §5 WUv2-6 verification (未完成)
 

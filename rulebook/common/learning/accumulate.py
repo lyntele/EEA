@@ -12,10 +12,10 @@ Phase 1.4b 的完整 accumulate loop 还会包装成 pipeline 层接口，但 si
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from method.EEA.rulebook.common.core.data_structures import (
     CaseAudit,
@@ -33,6 +33,7 @@ from method.EEA.rulebook.common.core.data_structures import (
     TriggerPolicy,
     TriggerSignature,
 )
+from method.EEA.rulebook.common.core.data_structures_v2 import HistoricalRegressGuard
 from method.EEA.rulebook.common.analysis.repair_program_normalizer import attach_canonical_repair_ir
 from method.EEA.rulebook.common.analysis.repair_card_normalizer import derive_repair_card
 from method.EEA.rulebook.common.analysis.signal_summary import (
@@ -523,7 +524,104 @@ def accumulate_wrong_case(
     return singleton, result.case_audit
 
 
+def _short_snippet(value: Any, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def append_regression_negative_guard(
+    *,
+    db_id: str,
+    case_id: str,
+    question: str,
+    selected_sql: str,
+    final_sql: Optional[str],
+    matched_group_ids: Sequence[str],
+    library: LibraryStateV2,
+    triggered_at_step: int = 0,
+    rewrite_failure_summary: str = "",
+    evidence: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record a runtime regression as pattern-local negative feedback.
+
+    This is WUv2-5c's update path for ``S0 correct -> final wrong`` events.
+    It does not create a singleton and does not run pattern admission. The
+    learned guard is case-grounded and only attaches to matched pattern groups.
+    """
+
+    target_ids = {str(item) for item in (matched_group_ids or []) if str(item).strip()}
+    guard = HistoricalRegressGuard(
+        case_id=str(case_id),
+        case_question_snippet=_short_snippet(question, limit=240),
+        case_pred_sql_snippet=_short_snippet(selected_sql, limit=480),
+        triggered_at_step=max(int(triggered_at_step or 0), 0),
+        rewrite_failure_summary=_short_snippet(
+            rewrite_failure_summary
+            or "Runtime regression: selected SQL was execution-correct but final SQL was execution-wrong.",
+            limit=320,
+        ),
+        matched_group_ids=sorted(target_ids),
+        evidence=dict(evidence or {}),
+    )
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    updated_group_ids: List[str] = []
+    skipped: Dict[str, Any] = {
+        "non_pattern_group_ids": [],
+        "missing_group_ids": [],
+        "duplicate_group_ids": [],
+    }
+    seen_group_ids: set[str] = set()
+    for group in list(library.patterns) + list(library.experience_families) + list(library.singletons):
+        group_id = str(group.group_id)
+        if group_id in target_ids:
+            seen_group_ids.add(group_id)
+        if group_id not in target_ids:
+            continue
+        if group.group_type != GroupType.PATTERN:
+            skipped["non_pattern_group_ids"].append(group_id)
+            continue
+        contract = group.instantiation_program.pattern_recognition_contract
+        if contract is None:
+            contract = PatternRecognitionContract()
+        else:
+            contract = PatternRecognitionContract.model_validate(contract)
+        guards = contract.applicability.regression_negative_guards
+        if any(str(existing.case_id) == str(case_id) for existing in guards):
+            skipped["duplicate_group_ids"].append(group_id)
+            continue
+        guards.append(guard)
+        group.instantiation_program.pattern_recognition_contract = contract
+        group.last_updated_at = now
+        group.formation_signals.setdefault("regression_negative_feedback", []).append(
+            {
+                "schema_version": "regression-negative-feedback-v1",
+                "case_id": str(case_id),
+                "triggered_at_step": int(triggered_at_step or 0),
+                "guard_count": len(guards),
+                "learned_at": now,
+            }
+        )
+        updated_group_ids.append(group_id)
+    skipped["missing_group_ids"] = sorted(target_ids - seen_group_ids)
+    status = "negative_feedback_recorded" if updated_group_ids else "negative_feedback_skipped"
+    return {
+        "update_status": status,
+        "updated_group_ids": updated_group_ids,
+        "guard": guard.model_dump(mode="json"),
+        "skipped": skipped,
+        "library_counts": {
+            "patterns": len(library.patterns),
+            "experience_families": len(library.experience_families),
+            "singletons": len(library.singletons),
+            "cases_processed": int(library.cases_processed or 0),
+        },
+    }
+
+
 __all__ = [
+    "append_regression_negative_guard",
     "error_instance_to_singleton",
     "append_singleton_to_library",
     "accumulate_wrong_case",

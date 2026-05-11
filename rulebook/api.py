@@ -32,6 +32,7 @@ from method.EEA.rulebook.common.io.execution_compare import (
 )
 from method.EEA.rulebook.common.learning.accumulate import (
     accumulate_wrong_case,
+    append_regression_negative_guard,
     error_instance_to_singleton,
 )
 from method.EEA.rulebook.common.learning.evolution import (
@@ -82,6 +83,7 @@ __all__ = [
     "_current_contract_signals",
     "_memory_schema_tables",
     "accumulate_wrong_case",
+    "append_regression_negative_guard",
     "build_repair_signature_diagnostics",
     "build_current_case_signals",
     "build_pool_coverage_report",
