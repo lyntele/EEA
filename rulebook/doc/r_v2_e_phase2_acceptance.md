@@ -15186,3 +15186,205 @@ Dry-run v2 probe for group-level LLM-authored `source_signals`. This run uses r1
 ```
 
 Conclusion: group-level LLM source_signals improved over v1 on the explicit cross checks, but are still not sufficient for P0b because some emitted signals fail on their own seed S0. thrombosis block rate=3/3; student_club transfer blocked=False.
+
+## §P0b-llm-signal-probe-v3
+
+Dry-run v3 probe for group-level LLM `source_signals` with two filters: case-specific signal filtering and seed_sanity_filter. Cross-checks use only the final filtered signals.
+
+### Filtered Source Signals
+
+```json
+{
+  "studentclub_event_type_lookup": {
+    "case_specific_filtered": [
+      {
+        "reason": "signal_filtered_case_specific:full_select_clause",
+        "signal": "s0_contains_token:SELECT type FROM event"
+      }
+    ],
+    "final_source_signals": [
+      "s0_not_contains_token:JOIN",
+      "s0_select_column_count:==1",
+      "s0_join_table_count:==0"
+    ],
+    "gate_disabled_reason": "",
+    "hard_gate_enabled": true,
+    "pre_seed_sanity_source_signals": [
+      "s0_not_contains_token:JOIN",
+      "s0_select_column_count:==1",
+      "s0_join_table_count:==0"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:SELECT type FROM event",
+      "s0_not_contains_token:JOIN",
+      "s0_select_column_count:==1",
+      "s0_join_table_count:==0"
+    ],
+    "seed_sanity_filtered": []
+  },
+  "thrombosis_distinct_count_subject": {
+    "case_specific_filtered": [],
+    "final_source_signals": [
+      "s0_contains_token:COUNT(*)",
+      "s0_not_contains_token:DISTINCT",
+      "s0_select_column_count:==1"
+    ],
+    "gate_disabled_reason": "",
+    "hard_gate_enabled": true,
+    "pre_seed_sanity_source_signals": [
+      "s0_contains_token:COUNT(*)",
+      "s0_not_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:COUNT(*)",
+      "s0_not_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1"
+    ],
+    "seed_sanity_filtered": [
+      {
+        "per_seed": [
+          {
+            "case_id": "1172",
+            "result": false
+          },
+          {
+            "case_id": "1257",
+            "result": false
+          }
+        ],
+        "reason": "signal_filtered_seed_sanity",
+        "signal": "s0_join_table_count:==2"
+      }
+    ]
+  },
+  "toxicology_drop_extra_role_side": {
+    "case_specific_filtered": [],
+    "final_source_signals": [
+      "s0_contains_token:DISTINCT",
+      "s0_select_column_count:==1"
+    ],
+    "gate_disabled_reason": "",
+    "hard_gate_enabled": true,
+    "pre_seed_sanity_source_signals": [
+      "s0_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1",
+      "s0_regex_match:\\bFROM\\s+connected\\s+\\w+\\s+INNER\\s+JOIN\\s+atom\\s+\\w+"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1",
+      "s0_regex_match:\\bFROM\\s+connected\\s+\\w+\\s+INNER\\s+JOIN\\s+atom\\s+\\w+"
+    ],
+    "seed_sanity_filtered": [
+      {
+        "per_seed": [
+          {
+            "case_id": "268",
+            "result": false
+          },
+          {
+            "case_id": "277",
+            "result": false
+          },
+          {
+            "case_id": "307",
+            "result": false
+          }
+        ],
+        "reason": "signal_filtered_seed_sanity",
+        "signal": "s0_join_table_count:==2"
+      },
+      {
+        "per_seed": [
+          {
+            "case_id": "268",
+            "result": true
+          },
+          {
+            "case_id": "277",
+            "result": true
+          },
+          {
+            "case_id": "307",
+            "result": false
+          }
+        ],
+        "reason": "signal_filtered_seed_sanity",
+        "signal": "s0_regex_match:\\bFROM\\s+connected\\s+\\w+\\s+INNER\\s+JOIN\\s+atom\\s+\\w+"
+      }
+    ]
+  }
+}
+```
+
+### Seed Sanity After Filter
+
+| Group | Seed | Gate Enabled | Actual | Per-signal results | Status |
+|---|---|---:|---:|---|---|
+| thrombosis_distinct_count_subject | q1172 | True | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1257 | True | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| studentclub_event_type_lookup | q1418 | True | True | s0_not_contains_token:JOIN => pass; s0_select_column_count:==1 => pass; s0_join_table_count:==0 => pass | ok |
+| toxicology_drop_extra_role_side | q268 | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| toxicology_drop_extra_role_side | q277 | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| toxicology_drop_extra_role_side | q307 | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+
+### Cross-Check Matrix After Filter
+
+| Group | Target | Expected | Actual | Gate Enabled | Per-signal results | Status |
+|---|---|---:|---:|---:|---|---|
+| thrombosis_distinct_count_subject | q1267 | False | False | True | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1278 | False | False | True | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1280 | False | False | True | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1308 | False | False | True | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_select_column_count:==1 => pass | ok |
+| studentclub_event_type_lookup | q1422 | True | True | True | s0_not_contains_token:JOIN => pass; s0_select_column_count:==1 => pass; s0_join_table_count:==0 => pass | ok |
+| toxicology_drop_extra_role_side | q268 | True | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| toxicology_drop_extra_role_side | q277 | True | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+| toxicology_drop_extra_role_side | q307 | True | True | True | s0_contains_token:DISTINCT => pass; s0_select_column_count:==1 => pass | ok |
+
+### Quality Metrics
+
+```json
+{
+  "avg_final_signals_per_group": 2.6666666666666665,
+  "case_specific_filtered_count": 1,
+  "case_specific_filtered_reason_distribution": {
+    "signal_filtered_case_specific:full_select_clause": 1
+  },
+  "check_type_distribution": {
+    "s0_contains_token": 2,
+    "s0_join_table_count": 1,
+    "s0_not_contains_token": 2,
+    "s0_select_column_count": 3
+  },
+  "final_signal_count": 8,
+  "format_compliance_rate": 1.0,
+  "hard_gate_disabled_groups": [],
+  "hard_gate_enabled_groups": [
+    "thrombosis_distinct_count_subject",
+    "studentclub_event_type_lookup",
+    "toxicology_drop_extra_role_side"
+  ],
+  "raw_signal_count": 12,
+  "seed_sanity_filtered_by_group": {
+    "studentclub_event_type_lookup": 0,
+    "thrombosis_distinct_count_subject": 1,
+    "toxicology_drop_extra_role_side": 2
+  },
+  "seed_sanity_filtered_count": 3
+}
+```
+
+### Flags
+
+```json
+{
+  "thrombosis_block_rate_1267_1278_1280": "3/3"
+}
+```
+
+Conclusion: v3 filter probe passed the requested P0b entry checks: thrombosis blocks 3/3, student_club q1422 passes, and toxicology strong siblings are not unexpectedly blocked.
