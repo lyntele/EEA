@@ -2661,6 +2661,17 @@ def _group_source_state_facts(group: GroupSummary) -> Set[str]:
     return set(_dedupe_texts(_signal_pred_current(group).get("source_state_facts") or []))
 
 
+def _seed_case_count(groups: Sequence[GroupSummary]) -> int:
+    return len(
+        {
+            str(case_id).strip()
+            for group in groups
+            for case_id in (group.case_ids or [])
+            if str(case_id).strip()
+        }
+    )
+
+
 def _filter_selected_source_facts(
     selected: Iterable[Any],
     *,
@@ -2672,12 +2683,14 @@ def _filter_selected_source_facts(
         str(group.group_id): _group_source_state_facts(group)
         for group in admitted_groups
     }
+    seed_case_count = _seed_case_count(admitted_groups)
     if not group_fact_sets:
         return [], {
             "requested": requested,
             "kept": [],
             "dropped": requested,
             "missing_by_fact": {},
+            "seed_case_count": seed_case_count,
             "seed_group_count": 0,
             "seed_groups_without_source_facts": [],
         }
@@ -2698,6 +2711,7 @@ def _filter_selected_source_facts(
         "kept": kept,
         "dropped": [fact for fact in requested if fact not in kept],
         "missing_by_fact": missing_by_fact,
+        "seed_case_count": seed_case_count,
         "seed_group_count": len(group_fact_sets),
         "seed_groups_without_source_facts": [
             group_id for group_id, facts in group_fact_sets.items() if not facts
@@ -2876,7 +2890,11 @@ def _validate_pattern_contract_payload(
         admitted_groups=admitted_groups,
     )
     source_fact_gate_status = (
-        "enabled" if selected_source_facts else "disabled_empty_facts"
+        "disabled_single_seed"
+        if int(source_fact_audit.get("seed_case_count") or 0) < 2
+        else "enabled"
+        if selected_source_facts
+        else "disabled_empty_facts"
     )
 
     allowed_operations = [

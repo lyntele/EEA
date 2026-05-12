@@ -1382,7 +1382,7 @@ def _selected_source_facts_for_group(group: GroupSummary) -> List[str]:
     applicability = _payload(
         contract.get("applicability") or contract.get("applicability_contract")
     )
-    if str(applicability.get("gate_status") or "") == "disabled_empty_facts":
+    if str(applicability.get("gate_status") or "").startswith("disabled_"):
         return []
     seen: Set[str] = set()
     facts: List[str] = []

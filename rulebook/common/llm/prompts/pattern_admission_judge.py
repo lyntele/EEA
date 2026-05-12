@@ -138,7 +138,8 @@ Runtime-use requirement:
   case_cards_sql_view.source_state_facts. Do not invent fact types, rewrite
   fact strings, copy SQL snippets, or include case-specific literals. If no
   shared source facts are safe, return an empty list and gate_status
-  "disabled_empty_facts". Code will re-check and filter your selection.
+  "disabled_empty_facts". Code will re-check and filter your selection, and
+  will disable the gate for single-seed patterns.
 - Do not write executable predicates, extra signals, fact kinds, or negative
   guards beyond selected_source_facts; regression guards are learned later only
   from real regression feedback.
@@ -203,7 +204,7 @@ Return strict JSON only:
   "applicability": {{
     "intent_description": "audit-only sentence describing when this repair seems applicable; no executable predicates",
     "selected_source_facts": ["exact fact string copied from every admitted seed member's source_state_facts"],
-    "gate_status": "enabled | disabled_empty_facts",
+    "gate_status": "enabled | disabled_empty_facts | disabled_single_seed",
     "regression_negative_guards": [],
     "evidence": {{"why_applicable": "short audit text"}}
   }},

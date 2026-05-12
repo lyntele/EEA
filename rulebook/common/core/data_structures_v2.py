@@ -61,7 +61,11 @@ class ApplicabilityContract(BaseModel):
 
     intent_description: str = ""
     selected_source_facts: List[str] = Field(default_factory=list)
-    gate_status: Literal["enabled", "disabled_empty_facts"] = "disabled_empty_facts"
+    gate_status: Literal[
+        "enabled",
+        "disabled_empty_facts",
+        "disabled_single_seed",
+    ] = "disabled_empty_facts"
     regression_negative_guards: List[HistoricalRegressGuard] = Field(default_factory=list)
     evidence: Dict[str, Any] = Field(default_factory=dict)
 
