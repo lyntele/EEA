@@ -132,9 +132,16 @@ Runtime-use requirement:
   anchors observed in admitted members. Anchors are generic roles/path facts,
   not exact table names, exact columns, aliases, or case ids.
 - applicability is audit-only during admission. Write only a concise
-  intent_description explaining when the repair seems applicable. Do not write
-  executable predicates, signals, fact kinds, or negative guards; those are
-  learned later only from real regression feedback.
+  intent_description explaining when the repair seems applicable.
+- applicability.selected_source_facts is the only admission-time runtime gate
+  field. Choose exact fact strings only from every admitted seed member's
+  case_cards_sql_view.source_state_facts. Do not invent fact types, rewrite
+  fact strings, copy SQL snippets, or include case-specific literals. If no
+  shared source facts are safe, return an empty list and gate_status
+  "disabled_empty_facts". Code will re-check and filter your selection.
+- Do not write executable predicates, extra signals, fact kinds, or negative
+  guards beyond selected_source_facts; regression guards are learned later only
+  from real regression feedback.
 - binding.source_slots and binding.target_slots must be literal-free. Use
   role_family/path_role/relation_role/answer_unit_role only. Never write table,
   column, expression, alias, SQL text, or seed case target names in binding.
@@ -195,6 +202,8 @@ Return strict JSON only:
   }},
   "applicability": {{
     "intent_description": "audit-only sentence describing when this repair seems applicable; no executable predicates",
+    "selected_source_facts": ["exact fact string copied from every admitted seed member's source_state_facts"],
+    "gate_status": "enabled | disabled_empty_facts",
     "regression_negative_guards": [],
     "evidence": {{"why_applicable": "short audit text"}}
   }},
@@ -272,6 +281,8 @@ If not admitting, return the same object shape with:
   }},
   "applicability": {{
     "intent_description": "",
+    "selected_source_facts": [],
+    "gate_status": "disabled_empty_facts",
     "regression_negative_guards": [],
     "evidence": {{}}
   }},
@@ -296,7 +307,7 @@ Data:
 case_cards_question_view (USE ONLY THIS WHEN WRITING pre_question_signature):
 {case_cards_question_view_json}
 
-case_cards_sql_view (USE ONLY THIS WHEN WRITING pre_sql_signature):
+case_cards_sql_view (USE ONLY THIS WHEN WRITING pre_sql_signature AND selected_source_facts):
 {case_cards_sql_view_json}
 
 case_cards_shared_view (USE FOR observed_failure_summary AND repair_direction):
@@ -323,9 +334,13 @@ Pattern recognition contract:
   something runtime can check.
 - recognition.repair_direction must be actionable enough for branch + binder to
   instantiate; if it cannot be actionable, reject admission.
-- applicability is audit-only at admission time. Do not invent pre-rewrite
-  predicates or negative guards. Runtime negative guards are learned only from
-  real regressions.
+- applicability.intent_description is audit-only at admission time.
+- applicability.selected_source_facts is a strict source-state gate: select
+  exact shared strings from the admitted members' source_state_facts only.
+  Never invent, paraphrase, or specialize fact strings. If a fact is not present
+  in every admitted seed member, omit it.
+- Do not invent other pre-rewrite predicates or negative guards. Runtime
+  negative guards are learned only from real regressions.
 - binding slots must be literal-free. Use role_family/path_role/relation_role
   language from the case cards. Do not copy exact table names, column names, SQL
   aliases, expressions, database-specific labels, or case ids.

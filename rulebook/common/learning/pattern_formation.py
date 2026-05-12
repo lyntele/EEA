@@ -1856,6 +1856,7 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
     return {
         "case_ids": [str(case_id) for case_id in group.case_ids],
         "group_id": group.group_id,
+        "source_state_facts": list(_signal_pred_current(group).get("source_state_facts") or []),
         "stable_bias_frame": _stable_bias_frame(group),
         "delta_axes": sorted(_signal_axes(group)),
         "shape_delta": _shape_delta(group),
@@ -1921,6 +1922,7 @@ def _extract_sql_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
+        "source_state_facts": list(card.get("source_state_facts") or []),
         "source_misread": _short_text(insight.get("source_misread"), limit=180),
         "delta_axes": list(card.get("delta_axes") or [])[:8],
         "shape_delta": _model_dump(card.get("shape_delta")),
