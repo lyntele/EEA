@@ -14810,3 +14810,379 @@
 现有工具的稳定区分主要不在 answer-blind/runtime-visible 字段上；仅靠 runtime source hard match 看不到足够安全的区分维度。 当前自动筛出的全部候选字段数为 185，runtime-visible 候选字段数为 0，其中 q1418/q1422 同型的 runtime-visible 候选字段数为 0。
 
 若走 A 路径，优先审查的 hard match 字段候选是：无。若这些字段经人工确认不可作为 source hard match，则 P0b 应转到上游，即 hint 合成或 admission 入组阶段，而不是继续在 runtime 追加规则。
+
+## §P0b-llm-signal-probe
+
+Dry-run probe for whether admission-time LLM output can provide machine-verifiable `source_signals`. The probe only writes this script, workspace trace JSON, and this report section.
+
+### Source Signals
+
+```json
+{
+  "student_club q1418": [
+    "s0_contains_token:SELECT type FROM event WHERE location = 'MU 215'",
+    "s0_not_contains_token:JOIN",
+    "s0_not_contains_token:category",
+    "s0_join_table_count:==0",
+    "s0_select_column_count:==1"
+  ],
+  "thrombosis_prediction q1172": [
+    "s0_contains_token:COUNT(*)",
+    "s0_not_contains_token:COUNT(DISTINCT",
+    "s0_join_table_count:==1",
+    "s0_select_column_count:==1"
+  ],
+  "thrombosis_prediction q1257": [
+    "s0_contains_token:COUNT(*)",
+    "s0_not_contains_token:DISTINCT",
+    "s0_join_table_count:==1",
+    "s0_select_column_count:==1"
+  ],
+  "toxicology q268": [
+    "s0_select_column_count:==2",
+    "s0_join_table_count:==2",
+    "s0_contains_token:connected",
+    "s0_contains_token:atom",
+    "s0_not_contains_token:AS"
+  ],
+  "toxicology q277": [
+    "s0_select_column_count:==2",
+    "s0_join_table_count:==2",
+    "s0_contains_token:FROM connected",
+    "s0_contains_token:INNER JOIN atom a1",
+    "s0_contains_token:INNER JOIN atom a2"
+  ],
+  "toxicology q307": [
+    "s0_contains_token:JOIN atom a1",
+    "s0_contains_token:JOIN atom a2",
+    "s0_not_contains_token:AS T",
+    "s0_select_column_count:==2",
+    "s0_join_table_count:==2"
+  ]
+}
+```
+
+### Sanity Check
+
+| Seed | Signal | Result |
+|---|---|---|
+| thrombosis_prediction q1172 | `s0_contains_token:COUNT(*)` | pass |
+| thrombosis_prediction q1172 | `s0_not_contains_token:COUNT(DISTINCT` | pass |
+| thrombosis_prediction q1172 | `s0_join_table_count:==1` | pass |
+| thrombosis_prediction q1172 | `s0_select_column_count:==1` | pass |
+| thrombosis_prediction q1257 | `s0_contains_token:COUNT(*)` | pass |
+| thrombosis_prediction q1257 | `s0_not_contains_token:DISTINCT` | pass |
+| thrombosis_prediction q1257 | `s0_join_table_count:==1` | pass |
+| thrombosis_prediction q1257 | `s0_select_column_count:==1` | pass |
+| student_club q1418 | `s0_contains_token:SELECT type FROM event WHERE location = 'MU 215'` | pass |
+| student_club q1418 | `s0_not_contains_token:JOIN` | pass |
+| student_club q1418 | `s0_not_contains_token:category` | pass |
+| student_club q1418 | `s0_join_table_count:==0` | pass |
+| student_club q1418 | `s0_select_column_count:==1` | pass |
+| toxicology q268 | `s0_select_column_count:==2` | pass |
+| toxicology q268 | `s0_join_table_count:==2` | pass |
+| toxicology q268 | `s0_contains_token:connected` | pass |
+| toxicology q268 | `s0_contains_token:atom` | pass |
+| toxicology q268 | `s0_not_contains_token:AS` | pass |
+| toxicology q277 | `s0_select_column_count:==2` | pass |
+| toxicology q277 | `s0_join_table_count:==2` | pass |
+| toxicology q277 | `s0_contains_token:FROM connected` | pass |
+| toxicology q277 | `s0_contains_token:INNER JOIN atom a1` | pass |
+| toxicology q277 | `s0_contains_token:INNER JOIN atom a2` | pass |
+| toxicology q307 | `s0_contains_token:JOIN atom a1` | pass |
+| toxicology q307 | `s0_contains_token:JOIN atom a2` | pass |
+| toxicology q307 | `s0_not_contains_token:AS T` | pass |
+| toxicology q307 | `s0_select_column_count:==2` | pass |
+| toxicology q307 | `s0_join_table_count:==2` | pass |
+
+### Cross-Check Matrix
+
+| Seed | Target | Expected | Actual | Per-signal results | Status |
+|---|---|---:|---:|---|---|
+| q1172 | q1267 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:COUNT(DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1172 | q1278 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:COUNT(DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1172 | q1280 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:COUNT(DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1257 | q1267 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1257 | q1278 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1257 | q1280 | False | True | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_join_table_count:==1 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q1418 | q1422 | True | False | s0_contains_token:SELECT type FROM event WHERE location = 'MU 215' => fail; s0_not_contains_token:JOIN => pass; s0_not_contains_token:category => pass; s0_join_table_count:==0 => pass; s0_select_column_count:==1 => pass | mismatch |
+| q268 | q277 | True | True | s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass; s0_contains_token:connected => pass; s0_contains_token:atom => pass; s0_not_contains_token:AS => pass | ok |
+| q268 | q307 | True | True | s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass; s0_contains_token:connected => pass; s0_contains_token:atom => pass; s0_not_contains_token:AS => pass | ok |
+| q277 | q268 | True | True | s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass; s0_contains_token:FROM connected => pass; s0_contains_token:INNER JOIN atom a1 => pass; s0_contains_token:INNER JOIN atom a2 => pass | ok |
+| q277 | q307 | True | False | s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass; s0_contains_token:FROM connected => pass; s0_contains_token:INNER JOIN atom a1 => fail; s0_contains_token:INNER JOIN atom a2 => fail | mismatch |
+| q307 | q268 | True | True | s0_contains_token:JOIN atom a1 => pass; s0_contains_token:JOIN atom a2 => pass; s0_not_contains_token:AS T => pass; s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass | ok |
+| q307 | q277 | True | True | s0_contains_token:JOIN atom a1 => pass; s0_contains_token:JOIN atom a2 => pass; s0_not_contains_token:AS T => pass; s0_select_column_count:==2 => pass; s0_join_table_count:==2 => pass | ok |
+
+### Quality Metrics
+
+```json
+{
+  "avg_signals_per_seed": 4.666666666666667,
+  "check_type_distribution": {
+    "s0_contains_token": 10,
+    "s0_join_table_count": 6,
+    "s0_not_contains_token": 6,
+    "s0_select_column_count": 6
+  },
+  "format_compliance_rate": 1.0,
+  "format_compliant_signals": 28,
+  "signals_per_seed": {
+    "1172": 4,
+    "1257": 4,
+    "1418": 5,
+    "268": 5,
+    "277": 5,
+    "307": 5
+  },
+  "supported_signal_rate": 1.0,
+  "supported_signals": 28,
+  "thrombosis_seed_overlap": 0.6,
+  "total_signals": 28,
+  "unsupported_check_type_distribution": {}
+}
+```
+
+### Flags
+
+```json
+{
+  "student_club_q1418_blocks_q1422": true,
+  "thrombosis_both_seed_sets_fail_to_block_all_regressions": true
+}
+```
+
+Conclusion: LLM-written signals are machine-parseable but not safe evidence for P0b. They failed the negative-selectivity check on thrombosis regressions and overfit the student_club seed SQL enough to block the intended q1418 -> q1422 transfer.
+
+## §P0b-llm-signal-probe-v2
+
+Dry-run v2 probe for group-level LLM-authored `source_signals`. This run uses r1 `selection.rewrite_only_selected_sql` as S0 and filters case-specific signals before verification.
+
+### Group Source Signals
+
+```json
+{
+  "studentclub_event_type_lookup": {
+    "filtered_signals": [
+      {
+        "reason": "signal_filtered_case_specific:full_select_clause",
+        "signal": "s0_contains_token:SELECT type FROM event"
+      }
+    ],
+    "kept_source_signals": [
+      "s0_not_contains_token:JOIN",
+      "s0_select_column_count:==1",
+      "s0_join_table_count:==0"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:SELECT type FROM event",
+      "s0_not_contains_token:JOIN",
+      "s0_select_column_count:==1",
+      "s0_join_table_count:==0"
+    ]
+  },
+  "thrombosis_distinct_count_subject": {
+    "filtered_signals": [],
+    "kept_source_signals": [
+      "s0_contains_token:COUNT(*)",
+      "s0_not_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:COUNT(*)",
+      "s0_not_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1"
+    ]
+  },
+  "toxicology_drop_extra_role_side": {
+    "filtered_signals": [],
+    "kept_source_signals": [
+      "s0_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1",
+      "s0_regex_match:\\bFROM\\s+connected\\s+\\w+\\s+INNER\\s+JOIN\\s+atom\\s+\\w+"
+    ],
+    "raw_source_signals": [
+      "s0_contains_token:DISTINCT",
+      "s0_join_table_count:==2",
+      "s0_select_column_count:==1",
+      "s0_regex_match:\\bFROM\\s+connected\\s+\\w+\\s+INNER\\s+JOIN\\s+atom\\s+\\w+"
+    ]
+  }
+}
+```
+
+### Seed Sanity
+
+| Group | Seed | Expected | Actual | Per-signal results | Status |
+|---|---|---:|---:|---|---|
+| thrombosis_distinct_count_subject | q1172 | True | False | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass | mismatch |
+| thrombosis_distinct_count_subject | q1257 | True | False | s0_contains_token:COUNT(*) => pass; s0_not_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass | mismatch |
+| studentclub_event_type_lookup | q1418 | True | True | s0_not_contains_token:JOIN => pass; s0_select_column_count:==1 => pass; s0_join_table_count:==0 => pass | ok |
+| toxicology_drop_extra_role_side | q268 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => pass | mismatch |
+| toxicology_drop_extra_role_side | q277 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => pass | mismatch |
+| toxicology_drop_extra_role_side | q307 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => fail | mismatch |
+
+### Cross-Check Matrix
+
+| Group | Target | Expected | Actual | Per-signal results | Status |
+|---|---|---:|---:|---|---|
+| thrombosis_distinct_count_subject | q1267 | False | False | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_join_table_count:==2 => pass; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1278 | False | False | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1280 | False | False | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass | ok |
+| thrombosis_distinct_count_subject | q1308 | False | False | s0_contains_token:COUNT(*) => fail; s0_not_contains_token:DISTINCT => fail; s0_join_table_count:==2 => pass; s0_select_column_count:==1 => pass | ok |
+| studentclub_event_type_lookup | q1422 | True | True | s0_not_contains_token:JOIN => pass; s0_select_column_count:==1 => pass; s0_join_table_count:==0 => pass | ok |
+| toxicology_drop_extra_role_side | q268 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => pass | mismatch |
+| toxicology_drop_extra_role_side | q277 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => pass | mismatch |
+| toxicology_drop_extra_role_side | q307 | True | False | s0_contains_token:DISTINCT => pass; s0_join_table_count:==2 => fail; s0_select_column_count:==1 => pass; s0_regex_match:\bFROM\s+connected\s+\w+\s+INNER\s+JOIN\s+atom\s+\w+ => fail | mismatch |
+
+### Quality Metrics
+
+```json
+{
+  "avg_kept_signals_per_group": 3.6666666666666665,
+  "check_type_distribution": {
+    "s0_contains_token": 2,
+    "s0_join_table_count": 3,
+    "s0_not_contains_token": 2,
+    "s0_regex_match": 1,
+    "s0_select_column_count": 3
+  },
+  "filtered_reason_distribution": {
+    "signal_filtered_case_specific:full_select_clause": 1
+  },
+  "filtered_signal_count": 1,
+  "format_compliance_rate": 1.0,
+  "format_compliant_signals": 12,
+  "kept_signal_count": 11,
+  "raw_signal_count": 12,
+  "supported_kept_signal_rate": 1.0,
+  "supported_kept_signals": 11
+}
+```
+
+### Flags
+
+```json
+{
+  "halt": "seed_self_sanity_failed",
+  "seed_self_sanity_mismatch_cases": [
+    "thrombosis_distinct_count_subject:q1172",
+    "thrombosis_distinct_count_subject:q1257",
+    "toxicology_drop_extra_role_side:q268",
+    "toxicology_drop_extra_role_side:q277",
+    "toxicology_drop_extra_role_side:q307"
+  ],
+  "seed_self_sanity_mismatch_count": 5,
+  "thrombosis_block_rate_1267_1278_1280": "3/3"
+}
+```
+
+### Case Data Appendix
+
+```json
+{
+  "student_club q1418": {
+    "baseline_correct": false,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT T2.category FROM event AS T1 INNER JOIN budget AS T2 ON T1.event_id = T2.link_to_event WHERE T1.location = 'MU 215'",
+    "pred_sql": "SELECT type FROM event WHERE location = 'MU 215';",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Mention the category of events which were held at MU 215.",
+    "role": "student_club"
+  },
+  "student_club q1422": {
+    "baseline_correct": false,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT DISTINCT T2.category FROM event AS T1 INNER JOIN budget AS T2 ON T1.event_id = T2.link_to_event WHERE T1.location = 'MU 215'",
+    "pred_sql": "SELECT DISTINCT type FROM event WHERE location = 'MU 215'",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "State the category of events were held at MU 215.",
+    "role": "student_club"
+  },
+  "thrombosis_prediction q1172": {
+    "baseline_correct": false,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(DISTINCT T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.`T-BIL` >= 2.0 AND T1.SEX = 'M'",
+    "pred_sql": "SELECT COUNT(*) \nFROM Patient p \nINNER JOIN Laboratory l ON p.ID = l.ID \nWHERE p.SEX = 'M' \nAND l.\"T-BIL\" >= 2.0 \nAND l.\"T-BIL\" IS NOT NULL",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "How many male patients have elevated total bilirubin count?",
+    "role": "thrombosis_prediction"
+  },
+  "thrombosis_prediction q1257": {
+    "baseline_correct": false,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(DISTINCT T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.CRE >= 1.5 AND STRFTIME('%Y', Date('now')) - STRFTIME('%Y', T1.Birthday) < 70",
+    "pred_sql": "SELECT COUNT(*) \nFROM Laboratory l\nINNER JOIN Patient p ON l.ID = p.ID\nWHERE l.CRE >= 1.5 \nAND (CAST(STRFTIME('%Y', 'now') AS INTEGER) - CAST(STRFTIME('%Y', p.Birthday) AS INTEGER)) < 70",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Among the patients whose creatinine level is abnormal, how many of them aren't 70 yet?",
+    "role": "thrombosis_prediction"
+  },
+  "thrombosis_prediction q1267": {
+    "baseline_correct": true,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(T1.ID) FROM Examination AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.SM IN ('negative','0') AND T1.Thrombosis = 0",
+    "pred_sql": "SELECT COUNT(DISTINCT Patient.ID) \nFROM Laboratory l \nINNER JOIN Examination e ON l.ID = e.ID \nINNER JOIN Patient ON l.ID = Patient.ID \nWHERE (l.SM IN ('-', '+-', 'negative', '0')) \nAND e.Thrombosis = 0",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Among the patients with normal anti-SM, how many of them does not have thrombosis?",
+    "role": "thrombosis_prediction"
+  },
+  "thrombosis_prediction q1278": {
+    "baseline_correct": true,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.IGG > 900 AND T2.IGG <2000 AND  T1.Admission = '+'",
+    "pred_sql": "SELECT COUNT(DISTINCT Patient.ID) \nFROM Laboratory \nINNER JOIN Patient ON Laboratory.ID = Patient.ID \nWHERE Laboratory.IGG > 900 \nAND Laboratory.IGG < 2000 \nAND Patient.Admission = '+'",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Of the patients with an normal level of IGG, how many of them admitted to the hospital?",
+    "role": "thrombosis_prediction"
+  },
+  "thrombosis_prediction q1280": {
+    "baseline_correct": true,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.GOT < 60 AND T1.SEX = 'M'",
+    "pred_sql": "SELECT COUNT(DISTINCT p.ID) \nFROM Patient p\nINNER JOIN Laboratory l ON p.ID = l.ID\nWHERE p.SEX = 'M' AND l.GOT < 60",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "How many male patients have their glutamic oxaloacetic transaminase in the normal range?",
+    "role": "thrombosis_prediction"
+  },
+  "thrombosis_prediction q1308": {
+    "baseline_correct": false,
+    "enhanced_correct": false,
+    "gold_sql": "SELECT COUNT(T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID WHERE T2.PLT > 100 AND T2.PLT < 400 AND T1.Diagnosis IS NOT NULL",
+    "pred_sql": "SELECT COUNT(DISTINCT Patient.ID) \nFROM Laboratory l\nINNER JOIN Examination e ON l.ID = e.ID\nINNER JOIN Patient ON l.ID = Patient.ID\nWHERE l.PLT > 100 AND l.PLT < 400 AND e.Diagnosis IS NOT NULL",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Among the patients who have a normal platelet level, how many of them have other symptoms observed?",
+    "role": "thrombosis_prediction"
+  },
+  "toxicology q268": {
+    "baseline_correct": false,
+    "enhanced_correct": true,
+    "gold_sql": "SELECT T2.element FROM connected AS T1 INNER JOIN atom AS T2 ON T1.atom_id = T2.atom_id WHERE T1.bond_id = 'TR001_10_11'",
+    "pred_sql": "SELECT DISTINCT a1.element\nFROM connected c\nINNER JOIN atom a1 ON c.atom_id = a1.atom_id\nWHERE c.bond_id = 'TR001_10_11'",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "What are the elements for bond id TR001_10_11?",
+    "role": "toxicology"
+  },
+  "toxicology q277": {
+    "baseline_correct": false,
+    "enhanced_correct": true,
+    "gold_sql": "SELECT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T2.bond_id = 'TR000_1_2'",
+    "pred_sql": "SELECT DISTINCT a1.element\nFROM connected c\nINNER JOIN atom a1 ON c.atom_id = a1.atom_id\nWHERE c.bond_id = 'TR000_1_2'",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "What are the toxicology elements associated with bond ID TR000_1_2?",
+    "role": "toxicology"
+  },
+  "toxicology q307": {
+    "baseline_correct": false,
+    "enhanced_correct": true,
+    "gold_sql": "SELECT T2.element FROM connected AS T1 INNER JOIN atom AS T2 ON T1.atom_id = T2.atom_id WHERE T1.bond_id = 'TR000_2_3'",
+    "pred_sql": "SELECT DISTINCT a1.element\nFROM connected c\nJOIN atom a1 ON c.atom_id = a1.atom_id\nWHERE c.bond_id = 'TR000_2_3'",
+    "pred_sql_source": "selection.rewrite_only_selected_sql",
+    "question": "Name the atoms' elements that form bond TR000_2_3.",
+    "role": "toxicology"
+  }
+}
+```
+
+Conclusion: group-level LLM source_signals improved over v1 on the explicit cross checks, but are still not sufficient for P0b because some emitted signals fail on their own seed S0. thrombosis block rate=3/3; student_club transfer blocked=False.
