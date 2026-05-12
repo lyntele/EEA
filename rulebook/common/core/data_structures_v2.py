@@ -8,7 +8,7 @@ how the compiler may derive slots without seed-case literals.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -60,6 +60,8 @@ class ApplicabilityContract(BaseModel):
     """
 
     intent_description: str = ""
+    selected_source_facts: List[str] = Field(default_factory=list)
+    gate_status: Literal["enabled", "disabled_empty_facts"] = "disabled_empty_facts"
     regression_negative_guards: List[HistoricalRegressGuard] = Field(default_factory=list)
     evidence: Dict[str, Any] = Field(default_factory=dict)
 
