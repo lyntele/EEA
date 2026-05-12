@@ -2611,9 +2611,20 @@ def attach_binding_contract_to_program(
     changed = False
     for op in program.ops or []:
         args = _payload(op.arguments)
-        if args.get("binding_contract") != payload or args.get("runtime_binding_contract") != payload:
-            args["binding_contract"] = payload
-            args["runtime_binding_contract"] = payload
+        canonical_meta = {
+            "op_id": op.op_id,
+            "op_type": op.op_type,
+            "locus": op.locus,
+        }
+        desired_updates = {
+            "binding_contract": payload,
+            "runtime_binding_contract": payload,
+            "canonical_op_id": op.op_id,
+            "canonical_op_type": op.op_type,
+            "canonical_op": canonical_meta,
+        }
+        if any(args.get(key) != value for key, value in desired_updates.items()):
+            args.update(desired_updates)
             changed = True
         updated_ops.append(op.model_copy(update={"arguments": args}) if hasattr(op, "model_copy") else op)
     if not changed:
