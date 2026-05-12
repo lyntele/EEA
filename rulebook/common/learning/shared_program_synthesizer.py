@@ -60,6 +60,11 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _clean_payload(value: Any) -> Dict[str, Any]:
+    payload = _payload(value)
+    return {str(key): item for key, item in payload.items() if item not in (None, "", [], {})}
+
+
 def _normalize_op_type(op_type: Any) -> str:
     return str(op_type or "").strip().upper()
 
@@ -2585,6 +2590,43 @@ def synthesize_shared_program(
     return SharedProgramSynthesizer().synthesize(
         groups,
         require_effect_program=require_effect_program,
+    )
+
+
+def attach_binding_contract_to_program(
+    program: Optional[CanonicalRepairProgram],
+    binding_contract: Any,
+) -> Optional[CanonicalRepairProgram]:
+    """Attach admission-learned binding metadata to every canonical op.
+
+    WUv2-2 disables seed literal target binding unless runtime binding metadata
+    is present on the op.  This helper carries the literal-free binding contract
+    learned by pattern admission into the canonical program consumed by the
+    action compiler.
+    """
+    payload = _clean_payload(binding_contract)
+    if program is None or not payload:
+        return program
+    updated_ops: List[CanonicalRepairOp] = []
+    changed = False
+    for op in program.ops or []:
+        args = _payload(op.arguments)
+        if args.get("binding_contract") != payload or args.get("runtime_binding_contract") != payload:
+            args["binding_contract"] = payload
+            args["runtime_binding_contract"] = payload
+            changed = True
+        updated_ops.append(op.model_copy(update={"arguments": args}) if hasattr(op, "model_copy") else op)
+    if not changed:
+        return program
+    return program.model_copy(
+        update={
+            "ops": updated_ops,
+            "program_envelope": _program_envelope_from_ops(
+                ops=updated_ops,
+                target_invariants=list(program.target_invariants or []),
+                unresolved_axes=list(program.unresolved_variation_axes or []),
+            ),
+        }
     )
 
 

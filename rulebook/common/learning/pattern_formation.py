@@ -42,6 +42,7 @@ from method.EEA.rulebook.common.analysis.repair_card_normalizer import (
     repair_card_from_group_summary,
 )
 from method.EEA.rulebook.common.learning.shared_program_synthesizer import (
+    attach_binding_contract_to_program,
     canonical_op_lowering_family,
     repair_program_steps_from_canonical_program,
     synthesize_shared_program,
@@ -2623,6 +2624,44 @@ def _binding_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
     return _model_dump(raw.get("binding") or raw.get("binding_contract") or {})
 
 
+def _runtime_binding_contract_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the literal-free admission binding contract for runtime ops."""
+    binding = _binding_payload(raw)
+    if not binding:
+        return {}
+    allowed = {}
+    for key in (
+        "source_slots",
+        "target_slots",
+        "allowed_operations",
+        "preserve_invariants",
+        "evidence",
+    ):
+        value = binding.get(key)
+        if value not in (None, "", [], {}):
+            allowed[key] = value
+    return allowed
+
+
+def _attach_runtime_binding_contract(
+    group: GroupSummary,
+    binding_contract: Mapping[str, Any],
+) -> GroupSummary:
+    if not binding_contract:
+        return group
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    updated_program = attach_binding_contract_to_program(program, binding_contract)
+    if updated_program is program:
+        return group
+    return group.model_copy(
+        update={
+            "instantiation_program": group.instantiation_program.model_copy(
+                update={"synthesized_program": updated_program}
+            )
+        }
+    )
+
+
 def _self_check_payload(raw: Mapping[str, Any], key: str) -> Dict[str, Any]:
     payload = _model_dump(raw.get(key) or {})
     if payload:
@@ -3858,11 +3897,14 @@ def _build_pattern_candidate(
         if pattern.instantiation_program.synthesized_program is None
         else pattern.instantiation_program.shared_status
     )
-    pattern = _materialize_admission_branches(pattern, groups)
     recognition_payload = _pattern_recognition_contract_payload(
         admission_response,
         admitted_groups=groups,
     )
+    binding_contract = _runtime_binding_contract_payload(recognition_payload)
+    if binding_contract:
+        pattern = _attach_runtime_binding_contract(pattern, binding_contract)
+    pattern = _materialize_admission_branches(pattern, groups)
     recognition_contract = (
         PatternRecognitionContract.model_validate(recognition_payload)
         if recognition_payload
