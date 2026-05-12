@@ -1,0 +1,208 @@
+{
+  "schema_version": "manual-pattern-ground-truth-v1",
+  "source_document": "/data/liuyining/ace4sql/method/EEA/doc/db_pattern_discussion.md",
+  "notes": [
+    "Manual transcription of formal patterns only.",
+    "Experience families and negative/guard-only groups are intentionally excluded.",
+    "The current source document contains 35 formal patterns across 11 databases."
+  ],
+  "databases": {
+    "california_schools": [
+      {
+        "pattern_id": "cal_low_grade_frpm_low_grade",
+        "case_ids": ["74", "81"],
+        "label": "low/lowest grade wording maps to frpm.Low Grade"
+      },
+      {
+        "pattern_id": "cal_canonical_school_side_slot",
+        "case_ids": ["23", "51", "87"],
+        "label": "school name/address/admin contact maps to canonical school-side slot"
+      }
+    ],
+    "financial": [
+      {
+        "pattern_id": "fin_id_output_contract",
+        "case_ids": ["141", "180", "193"],
+        "label": "ID output contract missing slot or representation switch"
+      },
+      {
+        "pattern_id": "fin_static_config_vs_executed_flow",
+        "case_ids": ["142", "173"],
+        "label": "static configuration versus executed transaction subject routing"
+      },
+      {
+        "pattern_id": "fin_count_grain_not_early_distinct",
+        "case_ids": ["135", "150", "182"],
+        "label": "account/customer wording should not over-collapse to distinct entity grain"
+      }
+    ],
+    "superhero": [
+      {
+        "pattern_id": "sup_rank_output_format",
+        "case_ids": ["726", "728"],
+        "label": "ranking questions require explicit ranking metric/output"
+      }
+    ],
+    "formula_1": [
+      {
+        "pattern_id": "f1_circuit_info_url",
+        "case_ids": ["849", "855", "921"],
+        "label": "information page questions use circuits.url"
+      },
+      {
+        "pattern_id": "f1_driver_standings_path",
+        "case_ids": ["891", "893", "896", "902", "903", "905", "995"],
+        "label": "standings/points/wins questions route through driverStandings"
+      },
+      {
+        "pattern_id": "f1_ranked_k_results_rank",
+        "case_ids": ["928", "937", "952", "956"],
+        "label": "ranked k wording maps to results.rank"
+      },
+      {
+        "pattern_id": "f1_pitstops_raw_detail_grain",
+        "case_ids": ["970", "973"],
+        "label": "pitStops statistics use raw detail grain rather than unique driver summary"
+      },
+      {
+        "pattern_id": "f1_time_text_parse_numeric",
+        "case_ids": ["1001", "1006"],
+        "label": "time text fields require numeric comparable parsing"
+      },
+      {
+        "pattern_id": "f1_multi_question_attached_output_slot",
+        "case_ids": ["866", "894"],
+        "label": "multi-question prompt requires attached output slot"
+      },
+      {
+        "pattern_id": "f1_display_semantics_direct_field_slot",
+        "case_ids": ["873", "889", "936"],
+        "label": "answer display semantics should use question-directed field slot"
+      }
+    ],
+    "european_football_2": [
+      {
+        "pattern_id": "ef2_restore_order_metric_to_select",
+        "case_ids": ["1038", "1085"],
+        "label": "subject ranking is correct but comparison metric is omitted from SELECT"
+      },
+      {
+        "pattern_id": "ef2_player_attributes_unique_player_grain",
+        "case_ids": ["1040", "1052", "1064", "1087"],
+        "label": "Player_Attributes questions must return to unique Player grain"
+      },
+      {
+        "pattern_id": "ef2_avg_attribute_sum_count_row_grain",
+        "case_ids": ["1068", "1093"],
+        "label": "average attribute uses SUM/COUNT over filtered join rows rather than AVG"
+      }
+    ],
+    "thrombosis_prediction": [
+      {
+        "pattern_id": "thr_abnormal_fg_unparenthesized_precedence",
+        "case_ids": ["1247", "1248"],
+        "label": "bilateral abnormal fibrinogen follows unparenthesized precedence"
+      },
+      {
+        "pattern_id": "thr_text_lab_raw_threshold_compare",
+        "case_ids": ["1249", "1250", "1261", "1276"],
+        "label": "text laboratory columns compare raw text thresholds directly"
+      },
+      {
+        "pattern_id": "thr_laboratory_record_level_status",
+        "case_ids": ["1205", "1213", "1217"],
+        "label": "status questions expand laboratory records instead of patient-level conclusion"
+      }
+    ],
+    "student_club": [
+      {
+        "pattern_id": "stu_event_category_to_budget_category",
+        "case_ids": ["1418", "1422"],
+        "label": "event category wording maps to budget.category"
+      },
+      {
+        "pattern_id": "stu_entity_question_output_primary_key",
+        "case_ids": ["1366", "1407", "1451"],
+        "label": "who/which entity questions often output target entity primary key"
+      }
+    ],
+    "debit_card_specializing": [
+      {
+        "pattern_id": "deb_customer_year_consumption_grain",
+        "case_ids": ["1472", "1475"],
+        "label": "year consumption questions aggregate to customer-year consumption"
+      },
+      {
+        "pattern_id": "deb_price_as_aggregatable_amount",
+        "case_ids": ["1511", "1527"],
+        "label": "amount/revenue questions aggregate Price directly"
+      }
+    ],
+    "toxicology": [
+      {
+        "pattern_id": "tox_bond_condition_to_molecule_scope",
+        "case_ids": ["198", "201", "207", "263", "269", "306", "326", "328", "335", "338"],
+        "label": "local bond/element condition lowers to molecule-level co-occurrence then expands"
+      },
+      {
+        "pattern_id": "tox_bond_pair_to_connected_atom_single_column",
+        "case_ids": ["206", "249", "253", "268", "277", "285", "302", "307"],
+        "label": "bond local element pair output should be single connected.atom_id expansion"
+      },
+      {
+        "pattern_id": "tox_connected_bidirectional_count_over_atom_id_only",
+        "case_ids": ["239", "308"],
+        "label": "bidirectional connected table should count atom_id side only"
+      },
+      {
+        "pattern_id": "tox_carcinogenic_label_numerator_only",
+        "case_ids": ["298", "317"],
+        "label": "carcinogenic label belongs to numerator CASE rather than WHERE denominator"
+      }
+    ],
+    "card_games": [
+      {
+        "pattern_id": "card_legalities_uuid_to_card_grain",
+        "case_ids": ["344", "361", "363", "514"],
+        "label": "format/status legality facts join via legalities.uuid then return to card grain"
+      },
+      {
+        "pattern_id": "card_named_card_anchor_to_set_layer",
+        "case_ids": ["463", "465", "469", "473", "500"],
+        "label": "named card anchors parent set; answer follows setCode to set layer"
+      },
+      {
+        "pattern_id": "card_set_translation_setcode_bridge",
+        "case_ids": ["400", "430", "431", "432", "499"],
+        "label": "set language/translation facts use set_translations.setCode while set attributes stay in sets"
+      },
+      {
+        "pattern_id": "card_rulings_uuid_then_answer_grain",
+        "case_ids": ["389", "392", "408", "413", "494"],
+        "label": "ruling facts join through rulings.uuid then choose card or ruling grain"
+      }
+    ],
+    "codebase_community": [
+      {
+        "pattern_id": "code_editor_to_owner_user",
+        "case_ids": ["581", "582"],
+        "label": "editor/edited wording maps back to posts.OwnerUserId"
+      },
+      {
+        "pattern_id": "code_user_post_relation_via_posthistory",
+        "case_ids": ["602", "631", "632", "635", "639", "640", "652"],
+        "label": "user-post/vote/tag relation routes through postHistory activity track"
+      },
+      {
+        "pattern_id": "code_comment_created_on_comments_creationdate",
+        "case_ids": ["616", "617"],
+        "label": "precise comment created-on timestamp belongs to comments.CreationDate"
+      },
+      {
+        "pattern_id": "code_comment_score_filter_on_posts_score",
+        "case_ids": ["709", "710"],
+        "label": "comment score wording projects score condition to posts.Score"
+      }
+    ]
+  }
+}
