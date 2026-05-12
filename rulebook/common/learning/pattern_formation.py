@@ -2645,6 +2645,66 @@ def _runtime_binding_contract_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
     return allowed
 
 
+def _dedupe_texts(values: Iterable[Any]) -> List[str]:
+    seen: Set[str] = set()
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _group_source_state_facts(group: GroupSummary) -> Set[str]:
+    return set(_dedupe_texts(_signal_pred_current(group).get("source_state_facts") or []))
+
+
+def _filter_selected_source_facts(
+    selected: Iterable[Any],
+    *,
+    admitted_groups: Sequence[GroupSummary],
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Keep only selected source facts that every admitted seed actually has."""
+    requested = _dedupe_texts(selected)
+    group_fact_sets = {
+        str(group.group_id): _group_source_state_facts(group)
+        for group in admitted_groups
+    }
+    if not group_fact_sets:
+        return [], {
+            "requested": requested,
+            "kept": [],
+            "dropped": requested,
+            "missing_by_fact": {},
+            "seed_group_count": 0,
+            "seed_groups_without_source_facts": [],
+        }
+    missing_by_fact: Dict[str, List[str]] = {}
+    kept: List[str] = []
+    for fact in requested:
+        missing_groups = [
+            group_id
+            for group_id, facts in group_fact_sets.items()
+            if fact not in facts
+        ]
+        if missing_groups:
+            missing_by_fact[fact] = missing_groups
+            continue
+        kept.append(fact)
+    return kept, {
+        "requested": requested,
+        "kept": kept,
+        "dropped": [fact for fact in requested if fact not in kept],
+        "missing_by_fact": missing_by_fact,
+        "seed_group_count": len(group_fact_sets),
+        "seed_groups_without_source_facts": [
+            group_id for group_id, facts in group_fact_sets.items() if not facts
+        ],
+    }
+
+
 def _attach_runtime_binding_contract(
     group: GroupSummary,
     binding_contract: Mapping[str, Any],
@@ -2811,6 +2871,13 @@ def _validate_pattern_contract_payload(
     intent_description = _contract_text(applicability.get("intent_description"), limit=240)
     if applicability and not intent_description:
         errors.append("applicability_intent_description_empty")
+    selected_source_facts, source_fact_audit = _filter_selected_source_facts(
+        applicability.get("selected_source_facts") or [],
+        admitted_groups=admitted_groups,
+    )
+    source_fact_gate_status = (
+        "enabled" if selected_source_facts else "disabled_empty_facts"
+    )
 
     allowed_operations = [
         str(item).strip()
@@ -2847,11 +2914,16 @@ def _validate_pattern_contract_payload(
         },
         "applicability": {
             "intent_description": intent_description,
+            "selected_source_facts": selected_source_facts,
+            "gate_status": source_fact_gate_status,
             "regression_negative_guards": [
                 _model_dump(item)
                 for item in (applicability.get("regression_negative_guards") or [])
             ],
-            "evidence": _model_dump(applicability.get("evidence") or {}),
+            "evidence": {
+                **_model_dump(applicability.get("evidence") or {}),
+                "source_fact_seed_sanity_filter": source_fact_audit,
+            },
         },
         "binding": {
             "source_slots": [
