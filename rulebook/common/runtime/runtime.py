@@ -2208,6 +2208,77 @@ def _singleton_canonical_exact_check(
     return not reasons, reasons, dry_success
 
 
+def _primary_runtime_op(group: GroupSummary) -> Dict[str, Any]:
+    program = getattr(getattr(group, "instantiation_program", None), "synthesized_program", None)
+    ops = getattr(program, "ops", None)
+    if ops is None and isinstance(program, dict):
+        ops = program.get("ops")
+    for op in ops or []:
+        payload = _payload(op)
+        if not _op_is_dependency(payload):
+            return payload
+    return _payload((ops or [None])[0]) if ops else {}
+
+
+def _canonical_op_direction_signature(op: Mapping[str, Any]) -> Dict[str, Any]:
+    args = _payload(op.get("arguments"))
+    signature = _payload(args.get("operation_signature") or args.get("shared_signature"))
+    grain_delta = (
+        _payload(signature.get("grain_delta"))
+        or _payload(args.get("grain_delta"))
+        or _payload(_payload(args.get("shared_arguments")).get("grain_delta"))
+        or _payload(_payload(args.get("shared_signature")).get("grain_delta"))
+    )
+    output_shape = (
+        _payload(args.get("output_shape_delta"))
+        or _payload(_payload(args.get("shared_arguments")).get("output_shape_delta"))
+        or _payload(_payload(args.get("shared_signature")).get("output_shape_delta"))
+    )
+    out: Dict[str, Any] = {}
+    for key in ("source_has_distinct", "source_has_aggregate"):
+        if key in grain_delta:
+            out[key] = bool(grain_delta.get(key))
+    current_arity = output_shape.get("current_arity")
+    if current_arity is None:
+        current_arity = grain_delta.get("current_arity")
+    if current_arity not in (None, ""):
+        out["current_arity"] = current_arity
+    return out
+
+
+def _singleton_direction_isomorphic(
+    group: GroupSummary,
+    current_signals: Set[str],
+) -> Tuple[bool, List[str]]:
+    op = _primary_runtime_op(group)
+    direction = _canonical_op_direction_signature(op)
+    if not direction:
+        return True, ["singleton_direction_no_required_facts"]
+    misses: List[str] = []
+    op_type = str(op.get("op_type") or "").upper()
+    distinct_is_core_direction = (
+        "source_has_distinct" in direction
+        and "target_has_distinct" in direction
+        and bool(direction.get("source_has_distinct")) != bool(direction.get("target_has_distinct"))
+        and "DROP" not in op_type
+    )
+    if distinct_is_core_direction:
+        signal = f"pred.has_distinct={bool(direction.get('source_has_distinct'))}"
+        if signal not in current_signals:
+            misses.append(signal)
+    if "source_has_aggregate" in direction:
+        signal = f"pred.has_aggregate={bool(direction.get('source_has_aggregate'))}"
+        if signal not in current_signals:
+            misses.append(signal)
+    if direction.get("current_arity") not in (None, ""):
+        signal = f"pred.select_arity={direction.get('current_arity')}"
+        if signal not in current_signals:
+            misses.append(signal)
+    if misses:
+        return False, misses
+    return True, ["singleton_direction_isomorphic"]
+
+
 def _is_substantive_hard_signal(signal: str) -> bool:
     signal = str(signal or "")
     if not signal:
@@ -2292,6 +2363,10 @@ def _gate_group(
     pre_condition_matched = False
     singleton_canonical_exact_passed = False
     diagnostic_only = False
+    recognition_contract = _pattern_recognition_contract(group)
+    singleton_contract_deferred_to_pre_condition = bool(
+        group.group_type == GroupType.SINGLETON and recognition_contract
+    )
 
     reasons: List[str] = []
     passed = True
@@ -2305,6 +2380,8 @@ def _gate_group(
     elif not is_contract_runtime_executable(contract, group_type=group.group_type):
         if defer_pattern_contract_to_branch:
             reasons.append("pattern_top_contract_deferred_to_branch")
+        elif singleton_contract_deferred_to_pre_condition:
+            reasons.append("singleton_top_contract_deferred_to_pre_condition")
         else:
             passed = False
             reasons.append("invalid_or_empty_trigger_contract")
@@ -2325,7 +2402,6 @@ def _gate_group(
         passed = False
         reasons.append("negative_contract_signal_hit")
 
-    recognition_contract = _pattern_recognition_contract(group)
     if passed and recognition_contract:
         pre_condition_match, pre_condition_matched, pre_condition_blockers = _evaluate_pattern_pre_condition(
             group=group,
@@ -2336,18 +2412,12 @@ def _gate_group(
             reasons.extend(pre_condition_blockers)
         else:
             reasons.append("pre_condition_matched")
-            if group.group_type == GroupType.PATTERN:
-                # Pattern remains the generalization unit: its stage-1
-                # pre-condition can open the runtime path, then branch/binder
-                # checks instantiate the concrete repair.
-                variant_required_match = True
-                generalized_canonical_gate_passed = True
-                required_misses = []
-            else:
-                # WUv2-3, plan v2 §1.0/§3: singleton is not the
-                # generalization unit. Its pre-condition match is audit-only;
-                # runtime must still pass the exact singleton structural check.
-                reasons.append("singleton_pre_condition_audit_only_wuv2_3")
+            # P0c: pre-condition can reopen the runtime path for both pattern
+            # and singleton memories.  Singletons are still constrained by a
+            # direction-isomorphism gate below before compiler binding.
+            variant_required_match = True
+            generalized_canonical_gate_passed = True
+            required_misses = []
 
     if raw_variant_required_signal_sets and not variant_required_signal_sets:
         if defer_pattern_contract_to_branch:
@@ -2445,6 +2515,15 @@ def _gate_group(
         singleton_canonical_exact_passed = bool(exact_ok)
         binder_dry_run_success = binder_dry_run_success or exact_dry_success
         if not exact_ok:
+            direction_ok, direction_notes = _singleton_direction_isomorphic(
+                group,
+                current_signals,
+            )
+            reasons.extend(direction_notes[:4])
+            if pre_condition_matched and not direction_ok:
+                passed = False
+                reasons.append("singleton_direction_mismatch")
+                reasons.extend(f"singleton_direction_miss:{item}" for item in direction_notes[:6])
             preliminary_source_trigger_passed = bool(
                 variant_required_match
                 or generalized_canonical_gate_passed
@@ -2455,6 +2534,13 @@ def _gate_group(
                 exact_reasons,
                 source_trigger_passed=preliminary_source_trigger_passed,
             )
+            if (
+                pre_condition_matched
+                and direction_ok
+                and "singleton_direction_isomorphic" in direction_notes
+            ):
+                deferred_exact.extend(hard_exact)
+                hard_exact = []
             if hard_exact:
                 passed = False
                 reasons.append("singleton_canonical_exact_failed")

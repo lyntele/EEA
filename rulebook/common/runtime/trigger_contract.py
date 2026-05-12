@@ -94,6 +94,28 @@ def _has_program(contract: Dict[str, Any]) -> bool:
     return bool(synthesized.get("ops"))
 
 
+def _has_pre_condition_program(memory_object: GroupSummary) -> bool:
+    instantiation = _payload(getattr(memory_object, "instantiation_program", None))
+    recognition_contract = _payload(instantiation.get("pattern_recognition_contract"))
+    if not recognition_contract:
+        return False
+    recognition = _payload(recognition_contract.get("recognition"))
+    binding = _payload(recognition_contract.get("binding"))
+    synthesized = _payload(instantiation.get("synthesized_program"))
+    has_pre_condition = bool(
+        recognition_contract.get("pre_question_signature")
+        or recognition_contract.get("pre_sql_signature")
+        or recognition.get("question_precondition")
+        or recognition.get("sql_precondition")
+    )
+    has_repair_direction = bool(
+        recognition_contract.get("repair_direction")
+        or recognition.get("repair_direction")
+        or binding
+    )
+    return bool(has_pre_condition and (has_repair_direction or synthesized.get("ops")))
+
+
 def _is_non_broad(signal: str) -> bool:
     text = str(signal or "")
     return bool(text and text not in BROAD_RUNTIME_SIGNALS and not text.startswith("program."))
@@ -253,6 +275,7 @@ def ensure_materialized_trigger_contract(
 ) -> Tuple[GroupSummary, Dict[str, Any]]:
     """Ensure runtime-visible objects expose a non-empty executable contract."""
     contract = sanitize_trigger_contract(memory_object.trigger_contract)
+    has_pre_condition_program = _has_pre_condition_program(memory_object)
     if memory_object.group_type == GroupType.PATTERN:
         contract["audit_only"] = True
         contract["required_signal_policy"] = "audit_only"
@@ -272,6 +295,21 @@ def ensure_materialized_trigger_contract(
         memory_object.trigger_contract = TriggerContract.model_validate(contract)
         memory_object.runtime_contract_status = status
         return memory_object, {"status": status, "runtime_executable": True}
+
+    if memory_object.group_type == GroupType.SINGLETON and has_pre_condition_program:
+        memory_object.trigger_contract = TriggerContract.model_validate(contract or {})
+        memory_object.runtime_usable = True
+        memory_object.runtime_contract_status = "pre_condition_contract_runtime_entry"
+        memory_object.runtime_blockers = [
+            blocker
+            for blocker in (memory_object.runtime_blockers or [])
+            if blocker != "empty_or_unmaterializable_trigger_contract"
+        ]
+        return memory_object, {
+            "status": "pre_condition_contract_runtime_entry",
+            "runtime_executable": True,
+            "contract_deferred_to_pre_condition": True,
+        }
 
     memory_object.trigger_contract = TriggerContract.model_validate(contract or {})
     memory_object.runtime_usable = False
