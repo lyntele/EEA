@@ -173,6 +173,7 @@ class PredSqlSignalView(BaseModel):
     predicate_profile: Dict[str, Any] = Field(default_factory=dict)
     aggregate_profile: Dict[str, Any] = Field(default_factory=dict)
     group_order_profile: Dict[str, Any] = Field(default_factory=dict)
+    source_state_facts: List[str] = Field(default_factory=list)
     runtime_structure_flags: Dict[str, bool] = Field(default_factory=dict)
 
 

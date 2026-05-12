@@ -492,6 +492,7 @@ def _case_pred_current_summary(case_view: RuntimeCaseView) -> Dict[str, Any]:
         "table_count": _bucket_count(len(pred_sql_view.get("tables_used") or [])),
         "predicate_count": _bucket_count(predicate_profile.get("predicate_count")),
         "predicate_literal_count": _bucket_count(predicate_profile.get("literal_count")),
+        "source_state_facts": list(pred_sql_view.get("source_state_facts") or []),
         "has_or_predicate": bool(predicate_profile.get("has_or")),
         "has_negation_predicate": bool(predicate_profile.get("has_negation")),
         "has_aggregate": bool(aggregate_profile.get("has_aggregate")),

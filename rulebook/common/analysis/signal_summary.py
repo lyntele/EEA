@@ -361,6 +361,7 @@ def _pred_current_summary(case_signal_view: Optional[CaseSignalView]) -> Dict[st
         "table_count": _bucket_count(len(tables_used)),
         "predicate_count": _bucket_count(predicate_profile.get("predicate_count")),
         "predicate_literal_count": _bucket_count(predicate_profile.get("literal_count")),
+        "source_state_facts": _as_list(pred.get("source_state_facts")),
         "has_or_predicate": _bool(predicate_profile.get("has_or")),
         "has_negation_predicate": _bool(predicate_profile.get("has_negation")),
         "has_aggregate": _bool(aggregate_profile.get("has_aggregate")),

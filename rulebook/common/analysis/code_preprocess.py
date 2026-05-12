@@ -451,6 +451,7 @@ def _predicate_profile(ast: Dict[str, Any]) -> Dict[str, Any]:
 
 def _aggregate_profile(ast: Dict[str, Any]) -> Dict[str, Any]:
     select_text = " ".join(_select_items(ast)).lower()
+    primary_match = re.search(r"\b(count|sum|avg|min|max)\s*\(", select_text)
     return {
         "has_aggregate": bool((ast.get("select_shape") or {}).get("has_aggregate")),
         "has_count": "count(" in select_text,
@@ -458,7 +459,10 @@ def _aggregate_profile(ast: Dict[str, Any]) -> Dict[str, Any]:
         "has_count_distinct": "count(distinct" in select_text,
         "has_sum": "sum(" in select_text,
         "has_avg": "avg(" in select_text,
+        "has_min": bool(re.search(r"\bmin\s*\(", select_text)),
+        "has_max": bool(re.search(r"\bmax\s*\(", select_text)),
         "has_minmax": bool(re.search(r"\b(min|max)\s*\(", select_text)),
+        "primary_aggregate": primary_match.group(1).upper() if primary_match else "none",
         "has_case_when": "case when" in select_text,
         "has_arithmetic_formula": any(op in select_text for op in ("/", "*", "+", "-")),
     }
@@ -475,6 +479,70 @@ def _group_order_profile(ast: Dict[str, Any]) -> Dict[str, Any]:
         "limit": ast.get("limit"),
         "has_window": bool(ast.get("window_functions")),
     }
+
+
+def _primary_aggregate_function(aggregate_profile: Dict[str, Any]) -> str:
+    primary = str(aggregate_profile.get("primary_aggregate") or "").strip().upper()
+    if primary and primary != "NONE":
+        return primary
+    if aggregate_profile.get("has_count"):
+        return "COUNT"
+    if aggregate_profile.get("has_sum"):
+        return "SUM"
+    if aggregate_profile.get("has_avg"):
+        return "AVG"
+    if aggregate_profile.get("has_min"):
+        return "MIN"
+    if aggregate_profile.get("has_max"):
+        return "MAX"
+    return "none"
+
+
+def _bool_fact(value: Any) -> str:
+    return "true" if bool(value) else "false"
+
+
+def _source_state_facts_from_pred_view(
+    *,
+    select_arity: Optional[int],
+    output_shape_current: Dict[str, Any],
+    tables_used: List[str],
+    join_graph: List[Dict[str, Any]],
+    predicate_profile: Dict[str, Any],
+    aggregate_profile: Dict[str, Any],
+    group_order_profile: Dict[str, Any],
+) -> List[str]:
+    """Project current pred-SQL shape into flat, runtime-checkable facts.
+
+    These facts are deterministic projections of existing CaseSignalView fields.
+    They intentionally avoid alias names and SQL snippets. Table names are kept
+    only as lower-cased sorted audit/runtime facts because this layer has no
+    role-graph abstraction available yet.
+    """
+    facts: List[str] = []
+    if select_arity is not None:
+        facts.append(f"select_arity={select_arity}")
+    select_distinct = bool(output_shape_current.get("has_distinct")) or bool(
+        aggregate_profile.get("has_count_distinct")
+    )
+    facts.append(f"select_distinct={_bool_fact(select_distinct)}")
+    facts.append(f"select_has_count_star={_bool_fact(aggregate_profile.get('has_count_star'))}")
+    facts.append(f"select_aggregate_function={_primary_aggregate_function(aggregate_profile)}")
+    facts.append(f"join_count={len(join_graph)}")
+    normalized_tables = sorted({str(table).strip().lower() for table in tables_used if str(table).strip()})
+    if normalized_tables:
+        facts.append(f"join_tables={','.join(normalized_tables)}")
+    facts.append(f"where_predicate_count={_safe_int(predicate_profile.get('predicate_count')) or 0}")
+    facts.append(
+        f"where_has_literal={_bool_fact((_safe_int(predicate_profile.get('literal_count')) or 0) > 0)}"
+    )
+    facts.append(
+        f"group_by_present={_bool_fact((_safe_int(group_order_profile.get('group_by_count')) or 0) > 0)}"
+    )
+    facts.append(
+        f"order_by_present={_bool_fact((_safe_int(group_order_profile.get('order_by_count')) or 0) > 0)}"
+    )
+    return _dedup_keep_order(facts)
 
 
 def _grain_from_ast(ast: Dict[str, Any]) -> Optional[str]:
@@ -706,22 +774,37 @@ def _pred_sql_signal_view(
     select_items = _select_items(pred_ast)
     roles = _select_role_profile(pred_ast)
     arity = _select_arity(pred_ast)
+    output_shape_current = {
+        "arity": arity,
+        "roles": roles,
+        "grain": _grain_from_ast(pred_ast),
+        "has_distinct": bool((pred_ast.get("select_shape") or {}).get("has_distinct")),
+        "has_aggregate": bool((pred_ast.get("select_shape") or {}).get("has_aggregate")),
+    }
+    tables_used = _tables_from_ast(pred_ast)
+    join_graph = _join_graph(pred_ast)
+    predicate_profile = _predicate_profile(pred_ast)
+    aggregate_profile = _aggregate_profile(pred_ast)
+    group_order_profile = _group_order_profile(pred_ast)
     return PredSqlSignalView(
         select_arity=arity,
         select_items=select_items,
         select_role_profile=roles,
-        output_shape_current={
-            "arity": arity,
-            "roles": roles,
-            "grain": _grain_from_ast(pred_ast),
-            "has_distinct": bool((pred_ast.get("select_shape") or {}).get("has_distinct")),
-            "has_aggregate": bool((pred_ast.get("select_shape") or {}).get("has_aggregate")),
-        },
-        tables_used=_tables_from_ast(pred_ast),
-        join_graph=_join_graph(pred_ast),
-        predicate_profile=_predicate_profile(pred_ast),
-        aggregate_profile=_aggregate_profile(pred_ast),
-        group_order_profile=_group_order_profile(pred_ast),
+        output_shape_current=output_shape_current,
+        tables_used=tables_used,
+        join_graph=join_graph,
+        predicate_profile=predicate_profile,
+        aggregate_profile=aggregate_profile,
+        group_order_profile=group_order_profile,
+        source_state_facts=_source_state_facts_from_pred_view(
+            select_arity=arity,
+            output_shape_current=output_shape_current,
+            tables_used=tables_used,
+            join_graph=join_graph,
+            predicate_profile=predicate_profile,
+            aggregate_profile=aggregate_profile,
+            group_order_profile=group_order_profile,
+        ),
         runtime_structure_flags={k: bool(v) for k, v in (structure_flags or {}).items() if bool(v)},
     )
 
@@ -739,6 +822,7 @@ def _runtime_signature(
         "schema_tags": list(schema_view.schema_tags),
         "output_shape_current": dict(pred_sql_view.output_shape_current),
         "tables_used": list(pred_sql_view.tables_used),
+        "source_state_facts": list(pred_sql_view.source_state_facts),
         "slot_resolvability": {
             "local_table_count": len(schema_view.local_tables),
             "local_column_count": sum(len(cols) for cols in schema_view.columns_by_table.values()),
