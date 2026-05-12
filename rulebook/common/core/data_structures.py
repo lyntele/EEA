@@ -1333,6 +1333,8 @@ class TriggerCandidateAudit(BaseModel):
     contract_version: Optional[str] = None
     required_signal_hits: List[str] = Field(default_factory=list)
     required_signal_misses: List[str] = Field(default_factory=list)
+    source_fact_hits: List[str] = Field(default_factory=list)
+    source_fact_misses: List[str] = Field(default_factory=list)
     negative_signal_hits: List[str] = Field(default_factory=list)
     optional_signal_hits: List[str] = Field(default_factory=list)
     variant_required_match: bool = False

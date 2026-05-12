@@ -504,6 +504,16 @@ def _case_pred_current_summary(case_view: RuntimeCaseView) -> Dict[str, Any]:
     }
 
 
+def _current_source_state_facts(case_view: RuntimeCaseView) -> Set[str]:
+    pred_sql_view, _, runtime_signature = _case_signal_parts(case_view)
+    facts = (
+        pred_sql_view.get("source_state_facts")
+        or runtime_signature.get("source_state_facts")
+        or []
+    )
+    return {str(fact).strip() for fact in facts if str(fact).strip()}
+
+
 def _output_arity_signal(arity: Any) -> Optional[str]:
     try:
         value = int(arity)
@@ -1365,6 +1375,24 @@ def _pattern_recognition_contract(group: GroupSummary) -> Dict[str, Any]:
         or pre_condition.get("repair_direction_local")
         or "",
     }
+
+
+def _selected_source_facts_for_group(group: GroupSummary) -> List[str]:
+    contract = _pattern_recognition_contract(group)
+    applicability = _payload(
+        contract.get("applicability") or contract.get("applicability_contract")
+    )
+    if str(applicability.get("gate_status") or "") == "disabled_empty_facts":
+        return []
+    seen: Set[str] = set()
+    facts: List[str] = []
+    for value in applicability.get("selected_source_facts") or []:
+        fact = str(value or "").strip()
+        if not fact or fact in seen:
+            continue
+        seen.add(fact)
+        facts.append(fact)
+    return facts
 
 
 def _pre_condition_cache_path() -> Path:
@@ -2307,6 +2335,8 @@ def _gate_group(
     action_contract = _payload(contract.get("action_contract"))
     has_synthesized_program = _group_has_synthesized_program(group, contract)
     current_signals = _current_contract_signals(case_view)
+    current_source_facts = _current_source_state_facts(case_view)
+    selected_source_facts = set(_selected_source_facts_for_group(group))
     current_summary = _case_pred_current_summary(case_view)
     required_signals = {
         str(sig)
@@ -2339,6 +2369,8 @@ def _gate_group(
     optional_hits = sorted(optional_signals & current_signals)
     negative_hits = sorted(negative_signals & current_signals)
     canonical_discriminant_hits = sorted(canonical_discriminants & current_signals)
+    source_fact_hits = sorted(selected_source_facts & current_source_facts)
+    source_fact_misses = sorted(selected_source_facts - current_source_facts)
     variant_required_match = bool(variant_required_signal_sets) and any(
         signal_set <= current_signals for signal_set in variant_required_signal_sets
     )
@@ -2402,6 +2434,9 @@ def _gate_group(
     if negative_hits:
         passed = False
         reasons.append("negative_contract_signal_hit")
+    if passed and source_fact_misses:
+        passed = False
+        reasons.extend(f"source_fact_unmet:{fact}" for fact in source_fact_misses[:8])
 
     if passed and recognition_contract:
         pre_condition_match, pre_condition_matched, pre_condition_blockers = _evaluate_pattern_pre_condition(
@@ -2776,6 +2811,8 @@ def _gate_group(
         contract_version=str(contract.get("schema_version") or ""),
         required_signal_hits=required_hits,
         required_signal_misses=required_misses,
+        source_fact_hits=source_fact_hits,
+        source_fact_misses=source_fact_misses,
         negative_signal_hits=negative_hits,
         optional_signal_hits=optional_hits,
         variant_required_match=variant_required_match,
@@ -3967,6 +4004,12 @@ def _compact_trigger_candidate(audit: Any) -> Dict[str, Any]:
         "compiler_candidate_reasons": compiler_reasons[:8],
         "required_hit_count": len(payload.get("required_signal_hits") or []),
         "required_miss_count": len(payload.get("required_signal_misses") or []),
+        "source_fact_hits": [
+            str(item) for item in (payload.get("source_fact_hits") or [])[:8]
+        ],
+        "source_fact_misses": [
+            str(item) for item in (payload.get("source_fact_misses") or [])[:8]
+        ],
         "optional_hit_count": len(payload.get("optional_signal_hits") or []),
         "variant_required_match": bool(payload.get("variant_required_match", False)),
         "binder_dry_run_success": bool(payload.get("binder_dry_run_success", False)),
