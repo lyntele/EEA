@@ -1,0 +1,532 @@
+{
+  "summary": [
+    {
+      "db": "card_games",
+      "cases": 191,
+      "actual_patterns": 6,
+      "pure": 2,
+      "mixed": 2,
+      "unmapped": 2,
+      "manual_patterns": 4,
+      "rows": [
+        {
+          "group_id": "grp-pat-card_games-341-437-d7ac0fb1",
+          "case_ids": [
+            "341",
+            "343",
+            "344",
+            "387",
+            "388",
+            "389",
+            "425",
+            "437"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "card_legalities_uuid_to_card_grain",
+            "card_rulings_uuid_then_answer_grain"
+          ]
+        },
+        {
+          "group_id": "grp-pat-card_games-354-458-efd6561e",
+          "case_ids": [
+            "354",
+            "458"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-card_games-355-358-de6de35c",
+          "case_ids": [
+            "355",
+            "358",
+            "364",
+            "453",
+            "456"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-card_games-355-508-d8b5f3a0",
+          "case_ids": [
+            "355",
+            "358",
+            "364",
+            "373",
+            "391",
+            "392",
+            "411",
+            "418",
+            "440",
+            "442",
+            "444",
+            "453",
+            "455",
+            "456",
+            "470",
+            "482",
+            "483",
+            "508"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "card_rulings_uuid_then_answer_grain"
+          ]
+        },
+        {
+          "group_id": "grp-pat-card_games-387-443-68f1cfac",
+          "case_ids": [
+            "387",
+            "388",
+            "428",
+            "430",
+            "431",
+            "432",
+            "433",
+            "441",
+            "442",
+            "443",
+            "447"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "card_set_translation_setcode_bridge"
+          ]
+        },
+        {
+          "group_id": "grp-pat-card_games-473-530-12dc2a80",
+          "case_ids": [
+            "473",
+            "494",
+            "530"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "card_named_card_anchor_to_set_layer",
+            "card_rulings_uuid_then_answer_grain"
+          ]
+        }
+      ]
+    },
+    {
+      "db": "codebase_community",
+      "cases": 186,
+      "actual_patterns": 3,
+      "pure": 1,
+      "mixed": 1,
+      "unmapped": 1,
+      "manual_patterns": 4,
+      "rows": [
+        {
+          "group_id": "grp-pat-codebase_community-603-696-e36d11a9",
+          "case_ids": [
+            "603",
+            "631",
+            "642",
+            "696"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "code_user_post_relation_via_posthistory"
+          ]
+        },
+        {
+          "group_id": "grp-pat-codebase_community-616-681-de894bbe",
+          "case_ids": [
+            "616",
+            "617",
+            "646",
+            "681",
+            "709",
+            "710"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        },
+        {
+          "group_id": "grp-pat-codebase_community-672-700-ca1b2f87",
+          "case_ids": [
+            "672",
+            "700"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "formula_1",
+      "cases": 174,
+      "actual_patterns": 9,
+      "pure": 2,
+      "mixed": 3,
+      "unmapped": 4,
+      "manual_patterns": 7,
+      "rows": [
+        {
+          "group_id": "grp-pat-formula_1-855-903-1f153d0c",
+          "case_ids": [
+            "849",
+            "855",
+            "891",
+            "893",
+            "896",
+            "902",
+            "903",
+            "905",
+            "921",
+            "948",
+            "949",
+            "950"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "f1_circuit_info_url",
+            "f1_driver_standings_path"
+          ]
+        },
+        {
+          "group_id": "grp-pat-formula_1-850-854-a1adfe9f",
+          "case_ids": [
+            "850",
+            "851",
+            "853",
+            "854",
+            "856",
+            "857",
+            "868"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-formula_1-850-860-fbbff538",
+          "case_ids": [
+            "850",
+            "851",
+            "853",
+            "856",
+            "857",
+            "860",
+            "868"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-formula_1-888-989-6d67f555",
+          "case_ids": [
+            "888",
+            "989",
+            "993"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-formula_1-889-1006-bcd11d9c",
+          "case_ids": [
+            "889",
+            "1006"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "f1_display_semantics_direct_field_slot",
+            "f1_time_text_parse_numeric"
+          ]
+        },
+        {
+          "group_id": "grp-pat-formula_1-891-952-815dc6e1",
+          "case_ids": [
+            "891",
+            "893",
+            "902",
+            "929",
+            "950",
+            "952"
+          ],
+          "kind": "MIXED",
+          "manual_patterns": [
+            "f1_driver_standings_path",
+            "f1_ranked_k_results_rank"
+          ]
+        },
+        {
+          "group_id": "grp-pat-formula_1-893-966-72525060",
+          "case_ids": [
+            "893",
+            "896",
+            "905",
+            "948",
+            "966",
+            "995"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "f1_driver_standings_path"
+          ]
+        },
+        {
+          "group_id": "grp-pat-formula_1-949-984-1a9e7997",
+          "case_ids": [
+            "949",
+            "984"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-formula_1-970-973-489d09c5",
+          "case_ids": [
+            "970",
+            "973",
+            "985"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "f1_pitstops_raw_detail_grain"
+          ]
+        }
+      ]
+    },
+    {
+      "db": "thrombosis_prediction",
+      "cases": 163,
+      "actual_patterns": 3,
+      "pure": 0,
+      "mixed": 0,
+      "unmapped": 3,
+      "manual_patterns": 3,
+      "rows": [
+        {
+          "group_id": "grp-pat-thrombosis_prediction-1155-1159-6c2af783",
+          "case_ids": [
+            "1155",
+            "1159",
+            "1172",
+            "1214",
+            "1220",
+            "1225"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-thrombosis_prediction-1159-1209-923d0173",
+          "case_ids": [
+            "1159",
+            "1209",
+            "1232"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-thrombosis_prediction-1186-1187-ed2e45a3",
+          "case_ids": [
+            "1186",
+            "1187"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "student_club",
+      "cases": 158,
+      "actual_patterns": 2,
+      "pure": 1,
+      "mixed": 0,
+      "unmapped": 1,
+      "manual_patterns": 2,
+      "rows": [
+        {
+          "group_id": "grp-pat-student_club-1366-1451-b9092129",
+          "case_ids": [
+            "1366",
+            "1451"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "stu_entity_question_output_primary_key"
+          ]
+        },
+        {
+          "group_id": "grp-pat-student_club-1447-1465-24ae0337",
+          "case_ids": [
+            "1447",
+            "1465"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "toxicology",
+      "cases": 145,
+      "actual_patterns": 2,
+      "pure": 1,
+      "mixed": 0,
+      "unmapped": 1,
+      "manual_patterns": 4,
+      "rows": [
+        {
+          "group_id": "grp-pat-toxicology-206-249-b5991530",
+          "case_ids": [
+            "206",
+            "249",
+            "253",
+            "268",
+            "277",
+            "302",
+            "307"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "tox_bond_pair_to_connected_atom_single_column"
+          ]
+        },
+        {
+          "group_id": "grp-pat-toxicology-264-296-8a350c0b",
+          "case_ids": [
+            "264",
+            "267",
+            "296"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "european_football_2",
+      "cases": 129,
+      "actual_patterns": 1,
+      "pure": 0,
+      "mixed": 0,
+      "unmapped": 1,
+      "manual_patterns": 3,
+      "rows": [
+        {
+          "group_id": "grp-pat-european_football_2-1035-1045-32928125",
+          "case_ids": [
+            "1035",
+            "1045",
+            "1053",
+            "1065",
+            "1066",
+            "1067",
+            "1071",
+            "1099",
+            "1129",
+            "1130",
+            "1141"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "superhero",
+      "cases": 129,
+      "actual_patterns": 2,
+      "pure": 1,
+      "mixed": 0,
+      "unmapped": 1,
+      "manual_patterns": 1,
+      "rows": [
+        {
+          "group_id": "grp-pat-superhero-726-728-fa8a0823",
+          "case_ids": [
+            "726",
+            "728"
+          ],
+          "kind": "PURE",
+          "manual_patterns": [
+            "sup_rank_output_format"
+          ]
+        },
+        {
+          "group_id": "grp-pat-superhero-771-797-335fe2c0",
+          "case_ids": [
+            "771",
+            "797"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "financial",
+      "cases": 106,
+      "actual_patterns": 0,
+      "pure": 0,
+      "mixed": 0,
+      "unmapped": 0,
+      "manual_patterns": 3,
+      "rows": []
+    },
+    {
+      "db": "california_schools",
+      "cases": 89,
+      "actual_patterns": 2,
+      "pure": 0,
+      "mixed": 0,
+      "unmapped": 2,
+      "manual_patterns": 2,
+      "rows": [
+        {
+          "group_id": "grp-pat-california_schools-31-85-8226bf83",
+          "case_ids": [
+            "31",
+            "85"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        },
+        {
+          "group_id": "grp-pat-california_schools-53-72-50504ba8",
+          "case_ids": [
+            "53",
+            "72"
+          ],
+          "kind": "UNMAPPED",
+          "manual_patterns": []
+        }
+      ]
+    },
+    {
+      "db": "debit_card_specializing",
+      "cases": 64,
+      "actual_patterns": 0,
+      "pure": 0,
+      "mixed": 0,
+      "unmapped": 0,
+      "manual_patterns": 2,
+      "rows": []
+    }
+  ],
+  "manual_total": 35,
+  "manual_full_by_actual_pure": 2,
+  "manual_touched_by_actual_pure": 8,
+  "manual_touched_by_actual_mixed": 10,
+  "coverage_totals": {
+    "databases": 11,
+    "candidate_count": 285,
+    "complete_candidate_count": 28,
+    "mixed_candidate_count": 53,
+    "patterns_total": 35,
+    "patterns_fully_co_candidate": 13,
+    "no_full_co_candidate": 22,
+    "no_pair_co_candidate": 7
+  }
+}
