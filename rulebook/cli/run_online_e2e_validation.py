@@ -19,6 +19,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 
@@ -89,6 +90,36 @@ def _sql_text(value: Any) -> str:
     if sql is not None:
         return str(sql)
     return str(value)
+
+
+def _load_deepeye_json_item(case_dir: Path) -> Optional[Any]:
+    """Load a case from DeepEye post-selection work dirs without rewrite_input.pkl."""
+    request_path = case_dir / "eea_update_request.json"
+    if not request_path.exists():
+        request_path = case_dir / "eea_runtime_request.json"
+    if not request_path.exists():
+        return None
+    payload = _load_json(request_path)
+    if not isinstance(payload, dict):
+        return None
+    candidates: List[str] = []
+    for value in [payload.get("selected_sql")]:
+        sql = str(value or "").strip()
+        if sql:
+            candidates.append(sql)
+    for candidate in payload.get("pre_eea_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        sql = str(candidate.get("sql") or "").strip()
+        if sql and sql not in candidates:
+            candidates.append(sql)
+    return SimpleNamespace(
+        database_id=str(payload.get("db_id") or ""),
+        question=str(payload.get("question") or ""),
+        evidence=str(payload.get("evidence") or ""),
+        sql_candidates=candidates,
+        gold_sql=str(payload.get("gold_sql") or ""),
+    )
 
 
 def _comparison_status(cmp_payload: Optional[Dict[str, Any]]) -> str:
@@ -733,12 +764,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         }
         case_started = time.time()
         try:
-            if not input_pkl.exists():
-                raise RuntimeError("missing_rewrite_input")
-            dataset = load_dataset(str(input_pkl))
-            if not dataset:
-                raise RuntimeError("empty_dataset")
-            item = dataset[0]
+            if input_pkl.exists():
+                dataset = load_dataset(str(input_pkl))
+                if not dataset:
+                    raise RuntimeError("empty_dataset")
+                item = dataset[0]
+                row["input_source"] = "rewrite_input_pkl"
+            else:
+                item = _load_deepeye_json_item(case_dir)
+                if item is None:
+                    raise RuntimeError("missing_rewrite_input")
+                row["input_source"] = "deepeye_json_request"
             db_id = str(item.database_id)
             if db_id != args.db_id:
                 raise RuntimeError(f"db_id_mismatch: expected={args.db_id} actual={db_id}")
