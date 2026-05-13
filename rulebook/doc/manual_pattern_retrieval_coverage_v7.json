@@ -1,0 +1,1814 @@
+{
+  "schema_version": "manual-pattern-retrieval-coverage-v6",
+  "run_root": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v7",
+  "manual_patterns": "/data/liuyining/ace4sql/method/EEA/rulebook/scripts/probes/manual_pattern_ground_truth.json",
+  "totals": {
+    "databases": 2,
+    "candidate_count": 47,
+    "complete_candidate_count": 11,
+    "mixed_candidate_count": 7,
+    "patterns_total": 8,
+    "patterns_fully_co_candidate": 5,
+    "no_full_co_candidate": 3,
+    "no_pair_co_candidate": 1
+  },
+  "phase1_gates": [
+    {
+      "check": "complete candidates",
+      "expected": ">= 5",
+      "actual": 11,
+      "status": "PASS"
+    },
+    {
+      "check": "mixed candidates",
+      "expected": "<= 1",
+      "actual": 7,
+      "status": "FAIL"
+    },
+    {
+      "check": "no pair co-candidate",
+      "expected": "<= 1",
+      "actual": 1,
+      "status": "PASS"
+    },
+    {
+      "check": "toxicology bond_pair complete",
+      "expected": "complete",
+      "actual": "no (6/8)",
+      "status": "FAIL"
+    },
+    {
+      "check": "codebase posthistory complete",
+      "expected": "complete",
+      "actual": "yes",
+      "status": "PASS"
+    },
+    {
+      "check": "admission_judge calls",
+      "expected": ">= 5",
+      "actual": 47,
+      "status": "PASS"
+    }
+  ],
+  "databases": [
+    {
+      "db_id": "toxicology",
+      "trace_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v7/toxicology/eea_llm_trace.jsonl",
+      "summary_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v7/toxicology/summary.json",
+      "run_case_count": 43,
+      "candidate_count": 24,
+      "complete_candidate_count": 3,
+      "mixed_candidate_count": 4,
+      "patterns_total": 4,
+      "patterns_fully_co_candidate": 2,
+      "no_full_co_candidate": 2,
+      "no_pair_co_candidate": 0,
+      "candidates": [
+        {
+          "trace_index": 31,
+          "case_ids": [
+            "201",
+            "207"
+          ],
+          "status": "ok",
+          "prompt_chars": 35374,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "201",
+            "207"
+          ]
+        },
+        {
+          "trace_index": 68,
+          "case_ids": [
+            "215",
+            "217"
+          ],
+          "status": "ok",
+          "prompt_chars": 36137,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "215",
+            "217"
+          ]
+        },
+        {
+          "trace_index": 105,
+          "case_ids": [
+            "198",
+            "218",
+            "219"
+          ],
+          "status": "ok",
+          "prompt_chars": 46575,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "198",
+            "219",
+            "218"
+          ]
+        },
+        {
+          "trace_index": 151,
+          "case_ids": [
+            "207",
+            "225"
+          ],
+          "status": "ok",
+          "prompt_chars": 36225,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "207",
+            "225"
+          ]
+        },
+        {
+          "trace_index": 172,
+          "case_ids": [
+            "201",
+            "239"
+          ],
+          "status": "ok",
+          "prompt_chars": 34677,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "201",
+            "239"
+          ]
+        },
+        {
+          "trace_index": 190,
+          "case_ids": [
+            "206",
+            "249"
+          ],
+          "status": "ok",
+          "prompt_chars": 34812,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "206",
+            "249"
+          ]
+        },
+        {
+          "trace_index": 210,
+          "case_ids": [
+            "218",
+            "219",
+            "251"
+          ],
+          "status": "ok",
+          "prompt_chars": 45178,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "219",
+            "251",
+            "218"
+          ]
+        },
+        {
+          "trace_index": 229,
+          "case_ids": [
+            "217",
+            "252"
+          ],
+          "status": "ok",
+          "prompt_chars": 34255,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "217",
+            "252"
+          ]
+        },
+        {
+          "trace_index": 302,
+          "case_ids": [
+            "220",
+            "253",
+            "257"
+          ],
+          "status": "ok",
+          "prompt_chars": 38902,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "220",
+            "257",
+            "253"
+          ]
+        },
+        {
+          "trace_index": 344,
+          "case_ids": [
+            "198",
+            "201",
+            "207",
+            "218",
+            "219",
+            "263"
+          ],
+          "status": "ok",
+          "prompt_chars": 56939,
+          "group_count": 6,
+          "pair_count": 15,
+          "sampled_case_ids": [
+            "219",
+            "263",
+            "218",
+            "207"
+          ]
+        },
+        {
+          "trace_index": 388,
+          "case_ids": [
+            "264",
+            "267"
+          ],
+          "status": "ok",
+          "prompt_chars": 32501,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "264",
+            "267"
+          ]
+        },
+        {
+          "trace_index": 445,
+          "case_ids": [
+            "218",
+            "251",
+            "263",
+            "269"
+          ],
+          "status": "ok",
+          "prompt_chars": 53450,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "263",
+            "269",
+            "251",
+            "218"
+          ]
+        },
+        {
+          "trace_index": 512,
+          "case_ids": [
+            "206",
+            "220",
+            "249",
+            "253",
+            "257",
+            "268",
+            "277",
+            "285"
+          ],
+          "status": "ok",
+          "prompt_chars": 54211,
+          "group_count": 8,
+          "pair_count": 28,
+          "sampled_case_ids": [
+            "206",
+            "249",
+            "268",
+            "285"
+          ]
+        },
+        {
+          "trace_index": 540,
+          "case_ids": [
+            "239",
+            "286"
+          ],
+          "status": "ok",
+          "prompt_chars": 35654,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "239",
+            "286"
+          ]
+        },
+        {
+          "trace_index": 568,
+          "case_ids": [
+            "218",
+            "298"
+          ],
+          "status": "ok",
+          "prompt_chars": 35761,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "218",
+            "298"
+          ]
+        },
+        {
+          "trace_index": 635,
+          "case_ids": [
+            "207",
+            "306"
+          ],
+          "status": "ok",
+          "prompt_chars": 38405,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "207",
+            "306"
+          ]
+        },
+        {
+          "trace_index": 710,
+          "case_ids": [
+            "239",
+            "257",
+            "285",
+            "286",
+            "308"
+          ],
+          "status": "ok",
+          "prompt_chars": 52112,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "257",
+            "285"
+          ]
+        },
+        {
+          "trace_index": 738,
+          "case_ids": [
+            "215",
+            "267",
+            "310"
+          ],
+          "status": "ok",
+          "prompt_chars": 43076,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "215",
+            "310",
+            "267"
+          ]
+        },
+        {
+          "trace_index": 822,
+          "case_ids": [
+            "220",
+            "251",
+            "253",
+            "257",
+            "285",
+            "302",
+            "315"
+          ],
+          "status": "ok",
+          "prompt_chars": 46483,
+          "group_count": 7,
+          "pair_count": 21,
+          "sampled_case_ids": [
+            "257",
+            "315",
+            "220",
+            "253"
+          ]
+        },
+        {
+          "trace_index": 850,
+          "case_ids": [
+            "201",
+            "239",
+            "298",
+            "317"
+          ],
+          "status": "ok",
+          "prompt_chars": 51145,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "298",
+            "317",
+            "239",
+            "201"
+          ]
+        },
+        {
+          "trace_index": 891,
+          "case_ids": [
+            "207",
+            "225",
+            "306",
+            "326"
+          ],
+          "status": "ok",
+          "prompt_chars": 55731,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "207",
+            "326",
+            "306",
+            "225"
+          ]
+        },
+        {
+          "trace_index": 986,
+          "case_ids": [
+            "201",
+            "218",
+            "219",
+            "239",
+            "251",
+            "263",
+            "286",
+            "308",
+            "315",
+            "317",
+            "330"
+          ],
+          "status": "ok",
+          "prompt_chars": 57234,
+          "group_count": 11,
+          "pair_count": 55,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "219",
+            "330"
+          ]
+        },
+        {
+          "trace_index": 1033,
+          "case_ids": [
+            "219",
+            "263",
+            "269",
+            "311",
+            "332"
+          ],
+          "status": "ok",
+          "prompt_chars": 54516,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "263",
+            "269",
+            "311",
+            "332"
+          ]
+        },
+        {
+          "trace_index": 1087,
+          "case_ids": [
+            "207",
+            "219",
+            "263",
+            "269",
+            "306",
+            "326",
+            "328",
+            "332",
+            "335"
+          ],
+          "status": "ok",
+          "prompt_chars": 59079,
+          "group_count": 9,
+          "pair_count": 36,
+          "sampled_case_ids": [
+            "207",
+            "328",
+            "306",
+            "219"
+          ]
+        }
+      ],
+      "complete_candidates": [
+        {
+          "trace_index": 710,
+          "case_ids": [
+            "239",
+            "257",
+            "285",
+            "286",
+            "308"
+          ],
+          "status": "ok",
+          "prompt_chars": 52112,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "257",
+            "285"
+          ],
+          "complete_patterns": [
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        },
+        {
+          "trace_index": 850,
+          "case_ids": [
+            "201",
+            "239",
+            "298",
+            "317"
+          ],
+          "status": "ok",
+          "prompt_chars": 51145,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "298",
+            "317",
+            "239",
+            "201"
+          ],
+          "complete_patterns": [
+            "tox_carcinogenic_label_numerator_only"
+          ]
+        },
+        {
+          "trace_index": 986,
+          "case_ids": [
+            "201",
+            "218",
+            "219",
+            "239",
+            "251",
+            "263",
+            "286",
+            "308",
+            "315",
+            "317",
+            "330"
+          ],
+          "status": "ok",
+          "prompt_chars": 57234,
+          "group_count": 11,
+          "pair_count": 55,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "219",
+            "330"
+          ],
+          "complete_patterns": [
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        }
+      ],
+      "mixed_candidates": [
+        {
+          "trace_index": 172,
+          "case_ids": [
+            "201",
+            "239"
+          ],
+          "status": "ok",
+          "prompt_chars": 34677,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "201",
+            "239"
+          ],
+          "touched_patterns": [
+            "tox_bond_condition_to_molecule_scope",
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        },
+        {
+          "trace_index": 710,
+          "case_ids": [
+            "239",
+            "257",
+            "285",
+            "286",
+            "308"
+          ],
+          "status": "ok",
+          "prompt_chars": 52112,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "257",
+            "285"
+          ],
+          "touched_patterns": [
+            "tox_bond_pair_to_connected_atom_single_column",
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        },
+        {
+          "trace_index": 850,
+          "case_ids": [
+            "201",
+            "239",
+            "298",
+            "317"
+          ],
+          "status": "ok",
+          "prompt_chars": 51145,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "298",
+            "317",
+            "239",
+            "201"
+          ],
+          "touched_patterns": [
+            "tox_bond_condition_to_molecule_scope",
+            "tox_carcinogenic_label_numerator_only",
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        },
+        {
+          "trace_index": 986,
+          "case_ids": [
+            "201",
+            "218",
+            "219",
+            "239",
+            "251",
+            "263",
+            "286",
+            "308",
+            "315",
+            "317",
+            "330"
+          ],
+          "status": "ok",
+          "prompt_chars": 57234,
+          "group_count": 11,
+          "pair_count": 55,
+          "sampled_case_ids": [
+            "239",
+            "308",
+            "219",
+            "330"
+          ],
+          "touched_patterns": [
+            "tox_bond_condition_to_molecule_scope",
+            "tox_carcinogenic_label_numerator_only",
+            "tox_connected_bidirectional_count_over_atom_id_only"
+          ]
+        }
+      ],
+      "per_pattern": [
+        {
+          "pattern_id": "tox_bond_condition_to_molecule_scope",
+          "label": "local bond/element condition lowers to molecule-level co-occurrence then expands",
+          "case_ids": [
+            "198",
+            "201",
+            "207",
+            "263",
+            "269",
+            "306",
+            "326",
+            "328",
+            "335",
+            "338"
+          ],
+          "full": false,
+          "max_co_cases": 7,
+          "max_co_case_ids": [
+            "207",
+            "263",
+            "269",
+            "306",
+            "326",
+            "328",
+            "335"
+          ],
+          "best_candidate_case_ids": [
+            "207",
+            "219",
+            "263",
+            "269",
+            "306",
+            "326",
+            "328",
+            "332",
+            "335"
+          ],
+          "fragments": [
+            [
+              "201",
+              "207"
+            ],
+            [
+              "198",
+              "201",
+              "207",
+              "263"
+            ],
+            [
+              "263",
+              "269"
+            ],
+            [
+              "207",
+              "306"
+            ],
+            [
+              "207",
+              "306",
+              "326"
+            ],
+            [
+              "201",
+              "263"
+            ],
+            [
+              "263",
+              "269"
+            ],
+            [
+              "207",
+              "263",
+              "269",
+              "306",
+              "326",
+              "328",
+              "335"
+            ]
+          ],
+          "fragment_count": 8,
+          "pair_covered": 26,
+          "pair_total": 45,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "tox_bond_pair_to_connected_atom_single_column",
+          "label": "bond local element pair output should be single connected.atom_id expansion",
+          "case_ids": [
+            "206",
+            "249",
+            "253",
+            "268",
+            "277",
+            "285",
+            "302",
+            "307"
+          ],
+          "full": false,
+          "max_co_cases": 6,
+          "max_co_case_ids": [
+            "206",
+            "249",
+            "253",
+            "268",
+            "277",
+            "285"
+          ],
+          "best_candidate_case_ids": [
+            "206",
+            "220",
+            "249",
+            "253",
+            "257",
+            "268",
+            "277",
+            "285"
+          ],
+          "fragments": [
+            [
+              "206",
+              "249"
+            ],
+            [
+              "206",
+              "249",
+              "253",
+              "268",
+              "277",
+              "285"
+            ],
+            [
+              "253",
+              "285",
+              "302"
+            ]
+          ],
+          "fragment_count": 3,
+          "pair_covered": 17,
+          "pair_total": 28,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "tox_connected_bidirectional_count_over_atom_id_only",
+          "label": "bidirectional connected table should count atom_id side only",
+          "case_ids": [
+            "239",
+            "308"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "239",
+            "308"
+          ],
+          "best_candidate_case_ids": [
+            "239",
+            "257",
+            "285",
+            "286",
+            "308"
+          ],
+          "fragments": [
+            [
+              "239",
+              "308"
+            ],
+            [
+              "239",
+              "308"
+            ]
+          ],
+          "fragment_count": 2,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "tox_carcinogenic_label_numerator_only",
+          "label": "carcinogenic label belongs to numerator CASE rather than WHERE denominator",
+          "case_ids": [
+            "298",
+            "317"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "298",
+            "317"
+          ],
+          "best_candidate_case_ids": [
+            "201",
+            "239",
+            "298",
+            "317"
+          ],
+          "fragments": [
+            [
+              "298",
+              "317"
+            ]
+          ],
+          "fragment_count": 1,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        }
+      ]
+    },
+    {
+      "db_id": "codebase_community",
+      "trace_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v7/codebase_community/eea_llm_trace.jsonl",
+      "summary_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v7/codebase_community/summary.json",
+      "run_case_count": 36,
+      "candidate_count": 23,
+      "complete_candidate_count": 8,
+      "mixed_candidate_count": 3,
+      "patterns_total": 4,
+      "patterns_fully_co_candidate": 3,
+      "no_full_co_candidate": 1,
+      "no_pair_co_candidate": 1,
+      "candidates": [
+        {
+          "trace_index": 61,
+          "case_ids": [
+            "571",
+            "593"
+          ],
+          "status": "ok",
+          "prompt_chars": 35738,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "571",
+            "593"
+          ]
+        },
+        {
+          "trace_index": 85,
+          "case_ids": [
+            "581",
+            "582",
+            "594"
+          ],
+          "status": "ok",
+          "prompt_chars": 41737,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "581",
+            "594",
+            "582"
+          ]
+        },
+        {
+          "trace_index": 103,
+          "case_ids": [
+            "584",
+            "595"
+          ],
+          "status": "ok",
+          "prompt_chars": 36785,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "584",
+            "595"
+          ]
+        },
+        {
+          "trace_index": 157,
+          "case_ids": [
+            "594",
+            "610"
+          ],
+          "status": "ok",
+          "prompt_chars": 36394,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "594",
+            "610"
+          ]
+        },
+        {
+          "trace_index": 233,
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "status": "ok",
+          "prompt_chars": 32167,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "616",
+            "617"
+          ]
+        },
+        {
+          "trace_index": 268,
+          "case_ids": [
+            "594",
+            "595",
+            "602",
+            "610",
+            "630"
+          ],
+          "status": "ok",
+          "prompt_chars": 56124,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "602",
+            "630",
+            "610",
+            "595"
+          ]
+        },
+        {
+          "trace_index": 298,
+          "case_ids": [
+            "594",
+            "595",
+            "603",
+            "630",
+            "631"
+          ],
+          "status": "ok",
+          "prompt_chars": 56967,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "594",
+            "631",
+            "630",
+            "603"
+          ]
+        },
+        {
+          "trace_index": 334,
+          "case_ids": [
+            "594",
+            "595",
+            "602",
+            "603",
+            "630",
+            "631",
+            "632"
+          ],
+          "status": "ok",
+          "prompt_chars": 56137,
+          "group_count": 7,
+          "pair_count": 21,
+          "sampled_case_ids": [
+            "602",
+            "630",
+            "631",
+            "632"
+          ]
+        },
+        {
+          "trace_index": 365,
+          "case_ids": [
+            "584",
+            "594",
+            "595",
+            "602",
+            "630",
+            "631",
+            "632",
+            "635"
+          ],
+          "status": "ok",
+          "prompt_chars": 57296,
+          "group_count": 8,
+          "pair_count": 28,
+          "sampled_case_ids": [
+            "632",
+            "635",
+            "631",
+            "584"
+          ]
+        },
+        {
+          "trace_index": 408,
+          "case_ids": [
+            "584",
+            "594",
+            "595",
+            "602",
+            "610",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637"
+          ],
+          "status": "ok",
+          "prompt_chars": 57439,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "584",
+            "602"
+          ]
+        },
+        {
+          "trace_index": 448,
+          "case_ids": [
+            "546",
+            "638"
+          ],
+          "status": "ok",
+          "prompt_chars": 36222,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "546",
+            "638"
+          ]
+        },
+        {
+          "trace_index": 486,
+          "case_ids": [
+            "595",
+            "602",
+            "603",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637",
+            "639"
+          ],
+          "status": "ok",
+          "prompt_chars": 55774,
+          "group_count": 9,
+          "pair_count": 36,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "631",
+            "632"
+          ]
+        },
+        {
+          "trace_index": 532,
+          "case_ids": [
+            "595",
+            "602",
+            "603",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637",
+            "639",
+            "640"
+          ],
+          "status": "ok",
+          "prompt_chars": 54753,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "637",
+            "640",
+            "631",
+            "632"
+          ]
+        },
+        {
+          "trace_index": 573,
+          "case_ids": [
+            "571",
+            "631",
+            "642"
+          ],
+          "status": "ok",
+          "prompt_chars": 45276,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "631",
+            "642",
+            "571"
+          ]
+        },
+        {
+          "trace_index": 611,
+          "case_ids": [
+            "616",
+            "617",
+            "646"
+          ],
+          "status": "ok",
+          "prompt_chars": 40828,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "646"
+          ]
+        },
+        {
+          "trace_index": 672,
+          "case_ids": [
+            "594",
+            "602",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637",
+            "639",
+            "640",
+            "652"
+          ],
+          "status": "ok",
+          "prompt_chars": 54103,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "637",
+            "640",
+            "631",
+            "632"
+          ]
+        },
+        {
+          "trace_index": 710,
+          "case_ids": [
+            "614",
+            "662"
+          ],
+          "status": "ok",
+          "prompt_chars": 33278,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "614",
+            "662"
+          ]
+        },
+        {
+          "trace_index": 807,
+          "case_ids": [
+            "581",
+            "582",
+            "594",
+            "610",
+            "630",
+            "632",
+            "635",
+            "637",
+            "652",
+            "679"
+          ],
+          "status": "ok",
+          "prompt_chars": 54963,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "610",
+            "679"
+          ]
+        },
+        {
+          "trace_index": 898,
+          "case_ids": [
+            "581",
+            "582",
+            "594",
+            "610",
+            "630",
+            "637",
+            "679",
+            "694"
+          ],
+          "status": "ok",
+          "prompt_chars": 54400,
+          "group_count": 8,
+          "pair_count": 28,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "610",
+            "679"
+          ]
+        },
+        {
+          "trace_index": 940,
+          "case_ids": [
+            "603",
+            "639",
+            "642",
+            "696"
+          ],
+          "status": "ok",
+          "prompt_chars": 54902,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "642",
+            "696",
+            "603",
+            "639"
+          ]
+        },
+        {
+          "trace_index": 984,
+          "case_ids": [
+            "593",
+            "642",
+            "672",
+            "700"
+          ],
+          "status": "ok",
+          "prompt_chars": 49896,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "672",
+            "700",
+            "642",
+            "593"
+          ]
+        },
+        {
+          "trace_index": 1042,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "683",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 49337,
+          "group_count": 6,
+          "pair_count": 15,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "683"
+          ]
+        },
+        {
+          "trace_index": 1100,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48386,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "710"
+          ]
+        }
+      ],
+      "complete_candidates": [
+        {
+          "trace_index": 85,
+          "case_ids": [
+            "581",
+            "582",
+            "594"
+          ],
+          "status": "ok",
+          "prompt_chars": 41737,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "581",
+            "594",
+            "582"
+          ],
+          "complete_patterns": [
+            "code_editor_to_owner_user"
+          ]
+        },
+        {
+          "trace_index": 233,
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "status": "ok",
+          "prompt_chars": 32167,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "616",
+            "617"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        },
+        {
+          "trace_index": 611,
+          "case_ids": [
+            "616",
+            "617",
+            "646"
+          ],
+          "status": "ok",
+          "prompt_chars": 40828,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "646"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        },
+        {
+          "trace_index": 672,
+          "case_ids": [
+            "594",
+            "602",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637",
+            "639",
+            "640",
+            "652"
+          ],
+          "status": "ok",
+          "prompt_chars": 54103,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "637",
+            "640",
+            "631",
+            "632"
+          ],
+          "complete_patterns": [
+            "code_user_post_relation_via_posthistory"
+          ]
+        },
+        {
+          "trace_index": 807,
+          "case_ids": [
+            "581",
+            "582",
+            "594",
+            "610",
+            "630",
+            "632",
+            "635",
+            "637",
+            "652",
+            "679"
+          ],
+          "status": "ok",
+          "prompt_chars": 54963,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "610",
+            "679"
+          ],
+          "complete_patterns": [
+            "code_editor_to_owner_user"
+          ]
+        },
+        {
+          "trace_index": 898,
+          "case_ids": [
+            "581",
+            "582",
+            "594",
+            "610",
+            "630",
+            "637",
+            "679",
+            "694"
+          ],
+          "status": "ok",
+          "prompt_chars": 54400,
+          "group_count": 8,
+          "pair_count": 28,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "610",
+            "679"
+          ],
+          "complete_patterns": [
+            "code_editor_to_owner_user"
+          ]
+        },
+        {
+          "trace_index": 1042,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "683",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 49337,
+          "group_count": 6,
+          "pair_count": 15,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "683"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        },
+        {
+          "trace_index": 1100,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48386,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "710"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        }
+      ],
+      "mixed_candidates": [
+        {
+          "trace_index": 807,
+          "case_ids": [
+            "581",
+            "582",
+            "594",
+            "610",
+            "630",
+            "632",
+            "635",
+            "637",
+            "652",
+            "679"
+          ],
+          "status": "ok",
+          "prompt_chars": 54963,
+          "group_count": 10,
+          "pair_count": 45,
+          "sampled_case_ids": [
+            "630",
+            "637",
+            "610",
+            "679"
+          ],
+          "touched_patterns": [
+            "code_editor_to_owner_user",
+            "code_user_post_relation_via_posthistory"
+          ]
+        },
+        {
+          "trace_index": 1042,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "683",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 49337,
+          "group_count": 6,
+          "pair_count": 15,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "683"
+          ],
+          "touched_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        },
+        {
+          "trace_index": 1100,
+          "case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48386,
+          "group_count": 5,
+          "pair_count": 10,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "614",
+            "710"
+          ],
+          "touched_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        }
+      ],
+      "per_pattern": [
+        {
+          "pattern_id": "code_editor_to_owner_user",
+          "label": "editor/edited wording maps back to posts.OwnerUserId",
+          "case_ids": [
+            "581",
+            "582"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "581",
+            "582"
+          ],
+          "best_candidate_case_ids": [
+            "581",
+            "582",
+            "594"
+          ],
+          "fragments": [
+            [
+              "581",
+              "582"
+            ],
+            [
+              "581",
+              "582"
+            ],
+            [
+              "581",
+              "582"
+            ]
+          ],
+          "fragment_count": 3,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "code_user_post_relation_via_posthistory",
+          "label": "user-post/vote/tag relation routes through postHistory activity track",
+          "case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640",
+            "652"
+          ],
+          "full": true,
+          "max_co_cases": 7,
+          "max_co_case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640",
+            "652"
+          ],
+          "best_candidate_case_ids": [
+            "594",
+            "602",
+            "630",
+            "631",
+            "632",
+            "635",
+            "637",
+            "639",
+            "640",
+            "652"
+          ],
+          "fragments": [
+            [
+              "602",
+              "631",
+              "632"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635",
+              "639"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635",
+              "639",
+              "640"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635",
+              "639",
+              "640",
+              "652"
+            ],
+            [
+              "632",
+              "635",
+              "652"
+            ]
+          ],
+          "fragment_count": 7,
+          "pair_covered": 21,
+          "pair_total": 21,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "code_comment_created_on_comments_creationdate",
+          "label": "precise comment created-on timestamp belongs to comments.CreationDate",
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "616",
+            "617"
+          ],
+          "best_candidate_case_ids": [
+            "616",
+            "617"
+          ],
+          "fragments": [
+            [
+              "616",
+              "617"
+            ],
+            [
+              "616",
+              "617"
+            ],
+            [
+              "616",
+              "617"
+            ],
+            [
+              "616",
+              "617"
+            ]
+          ],
+          "fragment_count": 4,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "code_comment_score_filter_on_posts_score",
+          "label": "comment score wording projects score condition to posts.Score",
+          "case_ids": [
+            "709",
+            "710"
+          ],
+          "full": false,
+          "max_co_cases": 1,
+          "max_co_case_ids": [
+            "709"
+          ],
+          "best_candidate_case_ids": [
+            "614",
+            "616",
+            "617",
+            "662",
+            "683",
+            "709"
+          ],
+          "fragments": [],
+          "fragment_count": 0,
+          "pair_covered": 0,
+          "pair_total": 1,
+          "no_pair_co_candidate": true
+        }
+      ]
+    }
+  ]
+}
