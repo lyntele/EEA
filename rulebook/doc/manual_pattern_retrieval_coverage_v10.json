@@ -1,0 +1,488 @@
+{
+  "schema_version": "manual-pattern-retrieval-coverage-v6",
+  "run_root": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v10",
+  "manual_patterns": "/data/liuyining/ace4sql/method/EEA/rulebook/scripts/probes/manual_pattern_ground_truth.json",
+  "totals": {
+    "databases": 1,
+    "candidate_count": 9,
+    "complete_candidate_count": 3,
+    "mixed_candidate_count": 2,
+    "patterns_total": 4,
+    "patterns_fully_co_candidate": 2,
+    "no_full_co_candidate": 2,
+    "no_pair_co_candidate": 1
+  },
+  "phase1_gates": [
+    {
+      "check": "complete candidates",
+      "expected": ">= 5",
+      "actual": 3,
+      "status": "FAIL"
+    },
+    {
+      "check": "mixed candidates",
+      "expected": "<= 1",
+      "actual": 2,
+      "status": "FAIL"
+    },
+    {
+      "check": "no pair co-candidate",
+      "expected": "<= 1",
+      "actual": 1,
+      "status": "PASS"
+    },
+    {
+      "check": "toxicology bond_pair complete",
+      "expected": "complete",
+      "actual": "missing",
+      "status": "FAIL"
+    },
+    {
+      "check": "codebase posthistory complete",
+      "expected": "complete",
+      "actual": "no (6/7)",
+      "status": "FAIL"
+    },
+    {
+      "check": "admission_judge calls",
+      "expected": ">= 5",
+      "actual": 9,
+      "status": "PASS"
+    }
+  ],
+  "databases": [
+    {
+      "db_id": "codebase_community",
+      "trace_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v10/codebase_community/eea_llm_trace.jsonl",
+      "summary_path": "/data/liuyining/ace4sql/method/EEA/rulebook/outputs/retrieval_root_evidence_v10/codebase_community/summary.json",
+      "run_case_count": 13,
+      "candidate_count": 9,
+      "complete_candidate_count": 3,
+      "mixed_candidate_count": 2,
+      "patterns_total": 4,
+      "patterns_fully_co_candidate": 2,
+      "no_full_co_candidate": 2,
+      "no_pair_co_candidate": 1,
+      "candidates": [
+        {
+          "trace_index": 43,
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "status": "ok",
+          "prompt_chars": 32155,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "616",
+            "617"
+          ]
+        },
+        {
+          "trace_index": 57,
+          "case_ids": [
+            "602",
+            "631"
+          ],
+          "status": "ok",
+          "prompt_chars": 37084,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "602",
+            "631"
+          ]
+        },
+        {
+          "trace_index": 75,
+          "case_ids": [
+            "602",
+            "631",
+            "632"
+          ],
+          "status": "ok",
+          "prompt_chars": 46120,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "631",
+            "632",
+            "602"
+          ]
+        },
+        {
+          "trace_index": 98,
+          "case_ids": [
+            "632",
+            "635"
+          ],
+          "status": "ok",
+          "prompt_chars": 37248,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "632",
+            "635"
+          ]
+        },
+        {
+          "trace_index": 125,
+          "case_ids": [
+            "631",
+            "632",
+            "635",
+            "639"
+          ],
+          "status": "ok",
+          "prompt_chars": 57022,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "631",
+            "632",
+            "639",
+            "635"
+          ]
+        },
+        {
+          "trace_index": 151,
+          "case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640"
+          ],
+          "status": "ok",
+          "prompt_chars": 57563,
+          "group_count": 6,
+          "pair_count": 15,
+          "sampled_case_ids": [
+            "631",
+            "632",
+            "639",
+            "635"
+          ]
+        },
+        {
+          "trace_index": 189,
+          "case_ids": [
+            "602",
+            "631",
+            "652"
+          ],
+          "status": "ok",
+          "prompt_chars": 49187,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "631",
+            "652",
+            "602"
+          ]
+        },
+        {
+          "trace_index": 221,
+          "case_ids": [
+            "616",
+            "617",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 39706,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709"
+          ]
+        },
+        {
+          "trace_index": 250,
+          "case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48342,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ]
+        }
+      ],
+      "complete_candidates": [
+        {
+          "trace_index": 43,
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "status": "ok",
+          "prompt_chars": 32155,
+          "group_count": 2,
+          "pair_count": 1,
+          "sampled_case_ids": [
+            "616",
+            "617"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        },
+        {
+          "trace_index": 221,
+          "case_ids": [
+            "616",
+            "617",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 39706,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate"
+          ]
+        },
+        {
+          "trace_index": 250,
+          "case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48342,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "complete_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        }
+      ],
+      "mixed_candidates": [
+        {
+          "trace_index": 221,
+          "case_ids": [
+            "616",
+            "617",
+            "709"
+          ],
+          "status": "ok",
+          "prompt_chars": 39706,
+          "group_count": 3,
+          "pair_count": 3,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709"
+          ],
+          "touched_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        },
+        {
+          "trace_index": 250,
+          "case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "status": "ok",
+          "prompt_chars": 48342,
+          "group_count": 4,
+          "pair_count": 6,
+          "sampled_case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "touched_patterns": [
+            "code_comment_created_on_comments_creationdate",
+            "code_comment_score_filter_on_posts_score"
+          ]
+        }
+      ],
+      "per_pattern": [
+        {
+          "pattern_id": "code_editor_to_owner_user",
+          "label": "editor/edited wording maps back to posts.OwnerUserId",
+          "case_ids": [
+            "581",
+            "582"
+          ],
+          "full": false,
+          "max_co_cases": 0,
+          "max_co_case_ids": [],
+          "best_candidate_case_ids": [],
+          "fragments": [],
+          "fragment_count": 0,
+          "pair_covered": 0,
+          "pair_total": 1,
+          "no_pair_co_candidate": true
+        },
+        {
+          "pattern_id": "code_user_post_relation_via_posthistory",
+          "label": "user-post/vote/tag relation routes through postHistory activity track",
+          "case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640",
+            "652"
+          ],
+          "full": false,
+          "max_co_cases": 6,
+          "max_co_case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640"
+          ],
+          "best_candidate_case_ids": [
+            "602",
+            "631",
+            "632",
+            "635",
+            "639",
+            "640"
+          ],
+          "fragments": [
+            [
+              "602",
+              "631"
+            ],
+            [
+              "602",
+              "631",
+              "632"
+            ],
+            [
+              "632",
+              "635"
+            ],
+            [
+              "631",
+              "632",
+              "635",
+              "639"
+            ],
+            [
+              "602",
+              "631",
+              "632",
+              "635",
+              "639",
+              "640"
+            ],
+            [
+              "602",
+              "631",
+              "652"
+            ]
+          ],
+          "fragment_count": 6,
+          "pair_covered": 17,
+          "pair_total": 21,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "code_comment_created_on_comments_creationdate",
+          "label": "precise comment created-on timestamp belongs to comments.CreationDate",
+          "case_ids": [
+            "616",
+            "617"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "616",
+            "617"
+          ],
+          "best_candidate_case_ids": [
+            "616",
+            "617"
+          ],
+          "fragments": [
+            [
+              "616",
+              "617"
+            ],
+            [
+              "616",
+              "617"
+            ],
+            [
+              "616",
+              "617"
+            ]
+          ],
+          "fragment_count": 3,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        },
+        {
+          "pattern_id": "code_comment_score_filter_on_posts_score",
+          "label": "comment score wording projects score condition to posts.Score",
+          "case_ids": [
+            "709",
+            "710"
+          ],
+          "full": true,
+          "max_co_cases": 2,
+          "max_co_case_ids": [
+            "709",
+            "710"
+          ],
+          "best_candidate_case_ids": [
+            "616",
+            "617",
+            "709",
+            "710"
+          ],
+          "fragments": [
+            [
+              "709",
+              "710"
+            ]
+          ],
+          "fragment_count": 1,
+          "pair_covered": 1,
+          "pair_total": 1,
+          "no_pair_co_candidate": false
+        }
+      ]
+    }
+  ]
+}
