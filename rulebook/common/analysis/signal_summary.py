@@ -219,6 +219,235 @@ def compact_canonical_repair_ir_for_memory(value: Any) -> Dict[str, Any]:
     }
 
 
+_DIRTY_TOKEN_CHARS = ("(", ")", "=", " ")
+
+
+def _is_clean_table_name(value: str) -> bool:
+    if not value:
+        return False
+    if "unknown" in value.lower():
+        return False
+    return not any(ch in value for ch in _DIRTY_TOKEN_CHARS)
+
+
+def _normalize_join_edge(raw: str) -> Optional[str]:
+    """Normalize role-graph join path evidence for retrieval use."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text.startswith("join_path:"):
+        return None
+    payload = text[len("join_path:") :]
+    if ":output:" in payload or "=" not in payload:
+        return None
+    left, right = payload.split("=", 1)
+    left = left.strip().lower()
+    right = right.strip().lower()
+    if not left or not right:
+        return None
+    return f"{left}={right}" if left < right else f"{right}={left}"
+
+
+def _split_join_ref(value: str) -> Optional[tuple[str, str]]:
+    text = re.sub(r'["`\[\]]', "", str(value or "").strip().lower())
+    if "." not in text:
+        return None
+    table_or_alias, column = text.split(".", 1)
+    table_or_alias = table_or_alias.strip()
+    column = column.strip()
+    if not table_or_alias or not column:
+        return None
+    return table_or_alias, column
+
+
+def _normalize_join_on_edge(
+    on_clause: str,
+    *,
+    alias_map: Dict[str, str],
+    from_table: str,
+    join_table: str,
+) -> Optional[str]:
+    if "=" not in str(on_clause or ""):
+        return None
+    left_raw, right_raw = str(on_clause).split("=", 1)
+    left = _split_join_ref(left_raw)
+    right = _split_join_ref(right_raw)
+    if left is None or right is None:
+        return None
+
+    def resolve(ref: tuple[str, str], other: tuple[str, str]) -> str:
+        alias, column = ref
+        table = alias_map.get(alias)
+        if not table:
+            # Some quoted SQLs lose aliases in role_graph.aliases while join_edges
+            # still preserve `FROM <table>` and joined table.  For a binary FK
+            # equality, the side whose column is `id` usually belongs to the
+            # joined entity; the other side belongs to the FROM table.
+            other_alias, _ = other
+            if column == "id" and join_table:
+                table = join_table
+            elif other_alias in alias_map and from_table:
+                table = from_table
+            elif from_table and join_table:
+                table = from_table
+        return f"{str(table or alias).lower()}.{column}"
+
+    left_ref = resolve(left, right)
+    right_ref = resolve(right, left)
+    if not left_ref or not right_ref:
+        return None
+    return f"{left_ref}={right_ref}" if left_ref < right_ref else f"{right_ref}={left_ref}"
+
+
+def _norm_join_edges(role_graph: Dict[str, Any]) -> List[str]:
+    alias_path_roles = _payload(role_graph.get("alias_path_roles"))
+    edges: set[str] = set()
+    for values in alias_path_roles.values():
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            edge = _normalize_join_edge(str(item))
+            if edge:
+                edges.add(edge)
+    alias_map = {
+        str(alias).strip().lower(): str(table).strip().lower()
+        for alias, table in _payload(role_graph.get("aliases")).items()
+        if str(alias).strip() and str(table).strip()
+    }
+    from_table = str(role_graph.get("from_table") or "").strip().lower()
+    for join_edge in role_graph.get("join_edges") or []:
+        payload = _payload(join_edge)
+        edge = _normalize_join_on_edge(
+            str(payload.get("on") or ""),
+            alias_map=alias_map,
+            from_table=from_table,
+            join_table=str(payload.get("table") or "").strip().lower(),
+        )
+        if edge:
+            edges.add(edge)
+    return sorted(edges)
+
+
+def _table_diff(have_rg: Dict[str, Any], other_rg: Dict[str, Any]) -> List[str]:
+    have_roles = _payload(have_rg.get("table_relation_roles"))
+    other_roles = _payload(other_rg.get("table_relation_roles"))
+    have_keys = {
+        key.strip().lower()
+        for key in have_roles.keys()
+        if isinstance(key, str) and _is_clean_table_name(key.strip())
+    }
+    other_keys = {
+        key.strip().lower()
+        for key in other_roles.keys()
+        if isinstance(key, str) and _is_clean_table_name(key.strip())
+    }
+    return sorted(have_keys - other_keys)
+
+
+def _normalized_output_role(role_graph: Dict[str, Any]) -> str:
+    refs = role_graph.get("output_refs") or []
+    if not refs:
+        return ""
+    first = _payload(refs[0])
+    role = str(first.get("column_role") or "").strip().lower()
+    if not role or role == "unknown":
+        return ""
+    return role
+
+
+def _canonical_equality(value: str) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if "=" not in text:
+        return None
+    left, right = text.split("=", 1)
+    left = left.strip()
+    right = right.strip()
+    if not left or not right:
+        return None
+    return f"{left}={right}" if left < right else f"{right}={left}"
+
+
+def _target_relation_equalities(
+    target_rg: Dict[str, Any],
+    target_invariants: List[Any],
+) -> List[str]:
+    out: set[str] = set()
+    for relation in target_rg.get("equality_relations") or []:
+        key = str(_payload(relation).get("canonical_key") or "").strip()
+        equality = _canonical_equality(key)
+        if equality:
+            out.add(equality)
+    for inv in target_invariants or []:
+        text = str(inv or "").strip()
+        for prefix in ("target_relation_equality=", "target_added_relation_equality="):
+            if text.startswith(prefix):
+                equality = _canonical_equality(text[len(prefix) :])
+                if equality:
+                    out.add(equality)
+                break
+    return sorted(out)
+
+
+def _predicate_roles(source_rg: Dict[str, Any], target_rg: Dict[str, Any]) -> List[str]:
+    roles: set[str] = set()
+    for role_graph in (source_rg, target_rg):
+        for ref in role_graph.get("predicate_refs") or []:
+            role = str(_payload(ref).get("column_role") or "").strip().lower()
+            if role and role != "unknown":
+                roles.add(role)
+    return sorted(roles)
+
+
+def _primary_repair_locus(error_instance: Optional[ErrorInstanceV2]) -> str:
+    if error_instance is None:
+        return ""
+    skeleton = _payload(getattr(error_instance, "repair_skeleton", None))
+    structural = _payload(skeleton.get("structural"))
+    locus = structural.get("locus")
+    if isinstance(locus, dict):
+        locus = locus.get("value") or locus.get("name") or ""
+    locus_value = getattr(locus, "value", locus) if locus is not None else ""
+    return str(locus_value or "").strip().lower()
+
+
+def _compact_retrieval_evidence(
+    error_instance: Optional[ErrorInstanceV2],
+) -> Dict[str, Any]:
+    """Project full role-graph evidence into compact retrieval-side fields."""
+    base = {
+        "schema_version": "retrieval-evidence-v0",
+        "gold_join_edges": [],
+        "pred_join_edges": [],
+        "gold_only_tables": [],
+        "pred_only_tables": [],
+        "target_output_role": "",
+        "source_output_role": "",
+        "target_relation_equalities": [],
+        "predicate_column_roles": [],
+        "primary_repair_locus": "",
+    }
+    if error_instance is None:
+        return base
+    ir = _payload(getattr(error_instance, "canonical_repair_ir", None))
+    if not ir:
+        return base
+    source_rg = _payload(ir.get("source_role_graph"))
+    target_rg = _payload(ir.get("target_role_graph"))
+    target_invariants = list(ir.get("target_invariants") or [])
+    return {
+        **base,
+        "gold_join_edges": _norm_join_edges(target_rg),
+        "pred_join_edges": _norm_join_edges(source_rg),
+        "gold_only_tables": _table_diff(target_rg, source_rg),
+        "pred_only_tables": _table_diff(source_rg, target_rg),
+        "target_output_role": _normalized_output_role(target_rg),
+        "source_output_role": _normalized_output_role(source_rg),
+        "target_relation_equalities": _target_relation_equalities(target_rg, target_invariants),
+        "predicate_column_roles": _predicate_roles(source_rg, target_rg),
+        "primary_repair_locus": _primary_repair_locus(error_instance),
+    }
+
+
 def compact_synthesized_program_for_contract(value: Any) -> Dict[str, Any]:
     payload = _payload(value)
     if not payload:
@@ -359,7 +588,9 @@ def _pred_current_summary(case_signal_view: Optional[CaseSignalView]) -> Dict[st
         },
         "join_count": _bucket_count(join_count),
         "table_count": _bucket_count(len(tables_used)),
+        "table_count_bucket": str(_bucket_count(len(tables_used))),
         "predicate_count": _bucket_count(predicate_profile.get("predicate_count")),
+        "predicate_count_bucket": str(_bucket_count(predicate_profile.get("predicate_count"))),
         "predicate_literal_count": _bucket_count(predicate_profile.get("literal_count")),
         "source_state_facts": _as_list(pred.get("source_state_facts")),
         "has_or_predicate": _bool(predicate_profile.get("has_or")),
@@ -439,6 +670,7 @@ def build_formation_signals(
         "canonical_repair_ir": compact_canonical_repair_ir_for_memory(
             error_payload.get("canonical_repair_ir")
         ),
+        "retrieval_evidence": _compact_retrieval_evidence(error_instance),
     }
 
 

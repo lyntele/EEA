@@ -96,6 +96,7 @@ from method.EEA.rulebook.common.runtime.runtime import (
 from method.EEA.rulebook.common.analysis.repair_program_normalizer import RepairProgramNormalizer
 from method.EEA.rulebook.common.analysis.role_graph_normalizer import RoleGraphNormalizer
 from method.EEA.rulebook.common.analysis.signal_summary import (
+    _compact_retrieval_evidence,
     build_formation_signals,
     build_trigger_contract,
 )
@@ -961,6 +962,58 @@ def test_pipeline_runtime_view_keeps_pred_only_source_signals() -> None:
     assert pred_current["output_shape_current"]["arity"] == 2
     assert pred_current["table_count_bucket"] != "0"
     assert pred_current["predicate_count_bucket"] == "1"
+
+
+def test_retrieval_evidence_projects_full_role_graph_fields() -> None:
+    error = SimpleNamespace(
+        canonical_repair_ir={
+            "source_role_graph": {
+                "alias_path_roles": {
+                    "p": ["join_path:posts.owneruserid=users.id"],
+                },
+                "table_relation_roles": {"posts": "fact", "users": "entity"},
+                "output_refs": [{"column_role": "resource url"}],
+                "predicate_refs": [{"column_role": "primary name"}],
+            },
+            "target_role_graph": {
+                "alias_path_roles": {
+                    "ph": ["join_path:posthistory.postid=posts.id"],
+                },
+                "table_relation_roles": {
+                    "posts": "fact",
+                    "postHistory": "activity",
+                    "users": "entity",
+                },
+                "output_refs": [{"column_role": "owner user"}],
+                "predicate_refs": [{"column_role": "activity type"}],
+                "equality_relations": [
+                    {"canonical_key": "postHistory.PostId=posts.Id"},
+                ],
+            },
+            "target_invariants": [
+                "target_added_relation_equality=postHistory.UserId=users.Id",
+            ],
+        },
+        repair_skeleton=SimpleNamespace(
+            structural=SimpleNamespace(locus=SimpleNamespace(value="JOIN"))
+        ),
+    )
+
+    evidence = _compact_retrieval_evidence(error)
+
+    assert evidence["schema_version"] == "retrieval-evidence-v0"
+    assert evidence["gold_join_edges"] == ["posthistory.postid=posts.id"]
+    assert evidence["pred_join_edges"] == ["posts.owneruserid=users.id"]
+    assert evidence["gold_only_tables"] == ["posthistory"]
+    assert evidence["pred_only_tables"] == []
+    assert evidence["target_output_role"] == "owner user"
+    assert evidence["source_output_role"] == "resource url"
+    assert evidence["target_relation_equalities"] == [
+        "posthistory.postid=posts.id",
+        "posthistory.userid=users.id",
+    ]
+    assert evidence["predicate_column_roles"] == ["activity type", "primary name"]
+    assert evidence["primary_repair_locus"] == "join"
 
 
 def test_evolution_helper_preserves_singletons_for_offline_families_without_replay() -> None:

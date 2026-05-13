@@ -37,6 +37,7 @@ from method.EEA.rulebook.common.core.data_structures_v2 import HistoricalRegress
 from method.EEA.rulebook.common.analysis.repair_program_normalizer import attach_canonical_repair_ir
 from method.EEA.rulebook.common.analysis.repair_card_normalizer import derive_repair_card
 from method.EEA.rulebook.common.analysis.signal_summary import (
+    _compact_retrieval_evidence,
     apply_delta_structural_override,
     build_formation_signals,
     build_trigger_contract,
@@ -339,6 +340,7 @@ def error_instance_to_singleton(
         runtime_case_view.local_schema_view if runtime_case_view is not None else None,
         case_audit=case_audit,
     )
+    formation_signals["retrieval_evidence"] = _compact_retrieval_evidence(error_instance)
 
     core_interface = CoreInterface(
         question_family_tags=list(error_instance.question_features.decisive_tags),

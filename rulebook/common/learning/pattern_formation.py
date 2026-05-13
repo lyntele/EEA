@@ -348,6 +348,7 @@ def _evolution_card(group: GroupSummary) -> Dict[str, Any]:
         "shape_key": list(_shape_retrieval_key(group)),
         "lowering_families": sorted(_canonical_lowering_families(group)),
         "repair_insight_interface": _repair_insight_interface_key(group),
+        "retrieval_evidence": dict((_signal_payload(group).get("retrieval_evidence") or {})),
     }
 
 
@@ -373,6 +374,27 @@ def _retrieval_keys_for_card(card: Dict[str, Any]) -> Set[Tuple[str, str]]:
         axes = [str(axis) for axis in repair_card.get("effect_axis") or [] if str(axis)]
     for axis in axes:
         keys.add((db_id, f"axis:{axis}"))
+
+    evidence = _model_dump(card.get("retrieval_evidence") or {})
+    for edge in evidence.get("gold_join_edges") or []:
+        edge = str(edge or "").strip()
+        if edge:
+            keys.add((db_id, f"gold_edge:{edge}"))
+    role = str(evidence.get("target_output_role") or "").strip()
+    if role:
+        keys.add((db_id, f"target_role:{role}"))
+    for equality in evidence.get("target_relation_equalities") or []:
+        equality = str(equality or "").strip()
+        if equality:
+            keys.add((db_id, f"target_eq:{equality}"))
+    for table in evidence.get("gold_only_tables") or []:
+        table = str(table or "").strip()
+        if table:
+            keys.add((db_id, f"gold_only_table:{table}"))
+    for predicate_role in evidence.get("predicate_column_roles") or []:
+        predicate_role = str(predicate_role or "").strip()
+        if predicate_role:
+            keys.add((db_id, f"predicate_role:{predicate_role}"))
     return keys
 
 
@@ -600,6 +622,30 @@ def _broad_retrieval_reasons(
     right_interface = _repair_insight_interface_key(right)
     if left_interface and left_interface == right_interface:
         reasons.add("shared_repair_insight_interface")
+
+    left_ev = _signal_payload(left).get("retrieval_evidence") or {}
+    right_ev = _signal_payload(right).get("retrieval_evidence") or {}
+    left_role = str(left_ev.get("target_output_role") or "").strip()
+    right_role = str(right_ev.get("target_output_role") or "").strip()
+    if left_role and left_role == right_role:
+        reasons.add("shared_target_role")
+    if set(left_ev.get("gold_join_edges") or []) & set(right_ev.get("gold_join_edges") or []):
+        reasons.add("shared_target_route")
+    if set(left_ev.get("gold_only_tables") or []) & set(right_ev.get("gold_only_tables") or []):
+        reasons.add("shared_gold_only_table")
+    left_equalities = set(left_ev.get("target_relation_equalities") or [])
+    right_equalities = set(right_ev.get("target_relation_equalities") or [])
+    if left_equalities & right_equalities:
+        reasons.add("shared_target_invariant_family")
+    if set(left_ev.get("predicate_column_roles") or []) & set(right_ev.get("predicate_column_roles") or []):
+        reasons.add("shared_predicate_anchor")
+    left_locus = str(left_ev.get("primary_repair_locus") or "")
+    right_locus = str(right_ev.get("primary_repair_locus") or "")
+    if left_locus and left_locus == right_locus:
+        reasons.add("shared_primary_repair_locus")
+    if _signal_axes(left) & _signal_axes(right) and (left_equalities & right_equalities):
+        reasons.add("shared_root_effect_axis_with_same_target_invariant_family")
+
     # Preserve audit values in the function signature to make the retrieval
     # boundary explicit even when individual dimensions are only used for logs.
     _ = (
@@ -1008,6 +1054,8 @@ def _taxonomy_from_blockers(
         labels.add("case_local_insight_conflict")
     if "core_program_signature_conflict" in blocker_text:
         labels.add("core_program_signature_conflict")
+    if "branch_axis_pair_core_signature_differs" in blocker_text:
+        labels.add("branch_axis_pair")
     if not program_compatible and not labels:
         labels.add("compat_too_strict")
     if program_compatible and effect_signature_count <= 0:
@@ -1155,9 +1203,20 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
             program_blockers = (*program_blockers, "missing_effect_backed_shared_program")
         if program_compatible and _program_core_signature(left) != _program_core_signature(right):
             # Direct family merging still requires one executable core package,
-            # but pattern admission may treat this as a finite branch axis.
-            program_compatible = False
-            program_blockers = (*program_blockers, "core_program_signature_conflict")
+            # but root-aligned memories can still form a branched pattern.
+            root_reasons = {
+                "shared_target_role",
+                "shared_target_route",
+                "shared_gold_only_table",
+                "shared_target_invariant_family",
+                "shared_primary_repair_locus",
+                "shared_root_effect_axis_with_same_target_invariant_family",
+            }
+            if root_reasons & set(broad_retrieval_reasons):
+                program_blockers = (*program_blockers, "branch_axis_pair_core_signature_differs")
+            else:
+                program_compatible = False
+                program_blockers = (*program_blockers, "core_program_signature_conflict")
     elif veto is None:
         program_blockers = ("no_broad_retrieval_signal",)
     accepted = bool(veto is None and program_compatible)
