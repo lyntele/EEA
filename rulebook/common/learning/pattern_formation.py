@@ -4497,6 +4497,15 @@ def _build_pattern_admission_candidates(
                 "negative_guards": response.get("negative_guards") or [],
                 "required_code_checks": response.get("required_code_checks") or [],
                 "reject_reason": response.get("reject_reason"),
+                "structural_contract_validation_errors": list(
+                    response.get("structural_contract_validation_errors") or []
+                ),
+                "structural_contract_validation_passed": bool(
+                    response.get("structural_contract_validation_passed")
+                ),
+                "recognition_payload_present": bool(
+                    response.get("recognition") or response.get("recognition_contract")
+                ),
                 "formation_pair_scope": {
                     "scope": "component_root_first_all_pairs",
                     "component_pair_count": len(component_pair_scores),
