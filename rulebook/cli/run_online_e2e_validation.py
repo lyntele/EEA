@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import traceback
@@ -424,6 +425,7 @@ def _summary_payload(
             "rewrite_all_candidates": bool(args.rewrite_all_candidates),
             "accumulate_sql_source": args.accumulate_sql_source,
             "row_sample_limit": args.row_sample_limit,
+            "skip_rewrite": bool(getattr(args, "skip_rewrite", False)),
             "promotion_interval": args.promotion_interval,
             "family_runtime_policy": args.family_runtime_policy,
             "manual_groups_json": args.manual_groups_json,
@@ -636,6 +638,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--save_library_snapshots", action="store_true")
     parser.add_argument(
+        "--skip_rewrite",
+        action="store_true",
+        help=(
+            "Run trigger/compiler/admission/evolution normally but skip memory "
+            "rewrite LLM calls; final SQL remains S0."
+        ),
+    )
+    parser.add_argument(
         "--skip-final-freeze",
         action="store_true",
         help="Skip final replay/freeze promotion and write the current incremental library.",
@@ -645,6 +655,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     started_at = time.time()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("EEA_LLM_TRACE_PATH", str(output_dir / "eea_llm_trace.jsonl"))
     _add_paths(Path(args.deepeye_root), Path(args.ace_root))
 
     from method.EEA.rulebook.common.core.config import load_config  # noqa: WPS433
@@ -868,77 +879,80 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             rewrites: List[Dict[str, Any]] = []
             if plan.get("reason") == "ready" and compiler_output is not None:
-                rewrite_inputs = candidates if args.rewrite_all_candidates else [top1_sql]
-                for idx, pred_sql in enumerate(rewrite_inputs):
-                    rewrite_row: Dict[str, Any] = {
-                        "candidate_index": idx,
-                        "input_sql": pred_sql,
-                    }
-                    try:
-                        result = rewrite_one_candidate(
-                            question=str(item.question),
-                            evidence=str(item.evidence or ""),
-                            pred_sql=pred_sql,
-                            compiler_output=compiler_output,
-                            local_schema_view=plan["case_view"].local_schema_view,
-                            natural_language_hint=plan.get("repair_brief", "")
-                            or plan.get("instantiated_hint", "")
-                            or "",
-                        )
-                        rewrite_sql = result.get("rewrite_sql")
-                        rewrite_cmp = (
-                            run_execution_comparison(
-                                db_path=str(db_path),
-                                pred_sql=str(rewrite_sql or ""),
-                                gold_sql=gold_sql,
-                                row_sample_limit=args.row_sample_limit,
+                if args.skip_rewrite:
+                    row["rewrite_skipped_reason"] = "skip_rewrite_cli_flag"
+                else:
+                    rewrite_inputs = candidates if args.rewrite_all_candidates else [top1_sql]
+                    for idx, pred_sql in enumerate(rewrite_inputs):
+                        rewrite_row: Dict[str, Any] = {
+                            "candidate_index": idx,
+                            "input_sql": pred_sql,
+                        }
+                        try:
+                            result = rewrite_one_candidate(
+                                question=str(item.question),
+                                evidence=str(item.evidence or ""),
+                                pred_sql=pred_sql,
+                                compiler_output=compiler_output,
+                                local_schema_view=plan["case_view"].local_schema_view,
+                                natural_language_hint=plan.get("repair_brief", "")
+                                or plan.get("instantiated_hint", "")
+                                or "",
                             )
-                            if rewrite_sql
-                            else None
-                        )
-                        rewrite_cmp_payload = _payload(rewrite_cmp)
-                        rewrite_unknown_reason = _comparison_unknown_reason(rewrite_cmp_payload)
-                        rewrite_row.update(
-                            {
-                                "rewrite_sql": rewrite_sql,
-                                "rewrite_vs_gold": rewrite_cmp_payload,
-                                "rewrite_status": _comparison_status(rewrite_cmp_payload),
-                                "rewrite_comparison_unknown_reason": rewrite_unknown_reason,
-                                "action_realization_traces": result.get(
-                                    "action_realization_traces", []
-                                ),
-                                "dependency_repairs_applied": result.get(
-                                    "dependency_repairs_applied", []
-                                ),
-                                "contract_steps_applied": result.get(
-                                    "contract_steps_applied", []
-                                ),
-                                "rewrite_contract": result.get("rewrite_contract", {}),
-                                "prompt_payload_audit": result.get(
-                                    "prompt_payload_audit", {}
-                                ),
-                                "rewrite_realization_origin": rewrite_realization_origin_from_result(
-                                    result
-                                ),
-                            }
-                        )
-                        if result.get("rewrite_contract"):
-                            _dump_json(
-                                output_dir
-                                / "cases"
-                                / f"qid_{case_id}_rewrite_contract_{idx}.json",
-                                result.get("rewrite_contract"),
+                            rewrite_sql = result.get("rewrite_sql")
+                            rewrite_cmp = (
+                                run_execution_comparison(
+                                    db_path=str(db_path),
+                                    pred_sql=str(rewrite_sql or ""),
+                                    gold_sql=gold_sql,
+                                    row_sample_limit=args.row_sample_limit,
+                                )
+                                if rewrite_sql
+                                else None
                             )
-                    except Exception as exc:
-                        rewrite_row.update(
-                            {
-                                "rewrite_sql": None,
-                                "rewrite_status": "exception",
-                                "error": f"{type(exc).__name__}: {exc}",
-                                "traceback": traceback.format_exc(),
-                            }
-                        )
-                    rewrites.append(rewrite_row)
+                            rewrite_cmp_payload = _payload(rewrite_cmp)
+                            rewrite_unknown_reason = _comparison_unknown_reason(rewrite_cmp_payload)
+                            rewrite_row.update(
+                                {
+                                    "rewrite_sql": rewrite_sql,
+                                    "rewrite_vs_gold": rewrite_cmp_payload,
+                                    "rewrite_status": _comparison_status(rewrite_cmp_payload),
+                                    "rewrite_comparison_unknown_reason": rewrite_unknown_reason,
+                                    "action_realization_traces": result.get(
+                                        "action_realization_traces", []
+                                    ),
+                                    "dependency_repairs_applied": result.get(
+                                        "dependency_repairs_applied", []
+                                    ),
+                                    "contract_steps_applied": result.get(
+                                        "contract_steps_applied", []
+                                    ),
+                                    "rewrite_contract": result.get("rewrite_contract", {}),
+                                    "prompt_payload_audit": result.get(
+                                        "prompt_payload_audit", {}
+                                    ),
+                                    "rewrite_realization_origin": rewrite_realization_origin_from_result(
+                                        result
+                                    ),
+                                }
+                            )
+                            if result.get("rewrite_contract"):
+                                _dump_json(
+                                    output_dir
+                                    / "cases"
+                                    / f"qid_{case_id}_rewrite_contract_{idx}.json",
+                                    result.get("rewrite_contract"),
+                                )
+                        except Exception as exc:
+                            rewrite_row.update(
+                                {
+                                    "rewrite_sql": None,
+                                    "rewrite_status": "exception",
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                    "traceback": traceback.format_exc(),
+                                }
+                            )
+                        rewrites.append(rewrite_row)
             row["rewrites"] = rewrites
             row["rewritten"] = bool(rewrites)
             row["strict_contract_issues"] = _strict_contract_issues(row)
