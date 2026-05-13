@@ -1056,6 +1056,8 @@ def _taxonomy_from_blockers(
         labels.add("core_program_signature_conflict")
     if "branch_axis_pair_core_signature_differs" in blocker_text:
         labels.add("branch_axis_pair")
+    if "grain_treated_as_branch_axis" in blocker_text:
+        labels.add("grain_branch_axis_downgrade")
     if not program_compatible and not labels:
         labels.add("compat_too_strict")
     if program_compatible and effect_signature_count <= 0:
@@ -1155,6 +1157,7 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
     shape_compat = 0.0
     legacy_compat = 0.0
     broad_retrieval_reasons: Tuple[str, ...] = ()
+    grain_branch_axis_downgrade: Optional[str] = None
     required_signals_present = _has_required_pattern_signals(left) and _has_required_pattern_signals(right)
     question_overlap = jaccard(_signal_axes(left), _signal_axes(right))
     manifest_overlap = _shape_compatibility(left, right)
@@ -1189,6 +1192,23 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
             )
         else:
             program_blockers = (*program_blockers, "signal_missing")
+    if _is_direct_merge_only_veto(veto):
+        route_strong_reasons = {
+            "shared_target_route",
+            "shared_gold_only_table",
+            "shared_target_role",
+            "shared_target_invariant_family",
+            "shared_root_effect_axis_with_same_target_invariant_family",
+        }
+        if route_strong_reasons & set(broad_retrieval_reasons):
+            # B2: grain mismatch blocks direct family merge, but route-level
+            # root evidence can still make it a branch axis inside one pattern.
+            program_blockers = (
+                *program_blockers,
+                f"grain_treated_as_branch_axis:{veto}",
+            )
+            grain_branch_axis_downgrade = veto
+            veto = None
     if veto is None and broad_retrieval_reasons:
         (
             program_compatible,
@@ -1198,6 +1218,12 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
             effect_signature_count,
             shared_program_basis,
         ) = _shared_program_pair_compatibility(left, right)
+        if grain_branch_axis_downgrade:
+            program_blockers = (
+                grain_branch_axis_downgrade,
+                f"grain_treated_as_branch_axis:{grain_branch_axis_downgrade}",
+                *program_blockers,
+            )
         if program_compatible and shared_program_basis != "effect":
             program_compatible = False
             program_blockers = (*program_blockers, "missing_effect_backed_shared_program")
