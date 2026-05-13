@@ -4350,10 +4350,18 @@ def _build_pattern_admission_candidates(
             signature_self_check_blocker, signature_self_check_audit = (
                 _admission_signature_self_check_blocker(
                     response,
-                    admitted_case_ids=admitted_case_ids,
+                    admitted_case_ids=accepted_before_closure,
                 )
             )
             if signature_self_check_audit:
+                signature_self_check_audit = {
+                    **signature_self_check_audit,
+                    "self_check_basis": "llm_explicit_accepted_case_ids_only",
+                    "llm_accepted_case_ids": list(accepted_before_closure),
+                    "mechanical_closure_added_case_ids": list(
+                        closure["added_case_ids"]
+                    ),
+                }
                 response["signature_self_check_audit"] = signature_self_check_audit
                 response["admission_audit"] = {
                     **dict(_model_dump(response.get("admission_audit") or {})),
