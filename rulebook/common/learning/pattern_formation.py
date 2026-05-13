@@ -2897,29 +2897,39 @@ def _validate_grounded_anchors(
         for case_id in (group.case_ids or [])
         if str(case_id)
     }
+    well_formed_count = 0
+    per_anchor_errors: List[List[str]] = []
     for index, raw_anchor in enumerate(anchors):
         anchor = _model_dump(raw_anchor)
+        anchor_errors: List[str] = []
         if not str(anchor.get("kind") or "").strip():
-            errors.append(f"grounded_anchor_{index}_missing_kind")
+            anchor_errors.append(f"grounded_anchor_{index}_missing_kind")
         if not _anchor_terms(anchor):
-            errors.append(f"grounded_anchor_{index}_missing_descriptor")
+            anchor_errors.append(f"grounded_anchor_{index}_missing_descriptor")
         support_case_ids = {
             str(case_id)
             for case_id in (anchor.get("support_case_ids") or [])
             if str(case_id)
         }
         if not support_case_ids:
-            errors.append(f"grounded_anchor_{index}_missing_support_case_ids")
-            continue
-        if admitted_case_ids and not support_case_ids <= admitted_case_ids:
-            errors.append(f"grounded_anchor_{index}_support_outside_admitted")
-        terms = _anchor_terms(anchor)
-        if admitted_groups and terms:
-            support_blob = "\n".join(
-                blobs_by_case.get(case_id, "") for case_id in sorted(support_case_ids)
-            )
-            if support_blob and not any(term in support_blob for term in terms):
-                errors.append(f"grounded_anchor_{index}_not_observed_in_support")
+            anchor_errors.append(f"grounded_anchor_{index}_missing_support_case_ids")
+        else:
+            if admitted_case_ids and not support_case_ids <= admitted_case_ids:
+                anchor_errors.append(f"grounded_anchor_{index}_support_outside_admitted")
+            terms = _anchor_terms(anchor)
+            if admitted_groups and terms:
+                support_blob = "\n".join(
+                    blobs_by_case.get(case_id, "") for case_id in sorted(support_case_ids)
+                )
+                if support_blob and not any(term in support_blob for term in terms):
+                    anchor_errors.append(f"grounded_anchor_{index}_not_observed_in_support")
+        per_anchor_errors.append(anchor_errors)
+        if not anchor_errors:
+            well_formed_count += 1
+    if well_formed_count < 2:
+        for anchor_errors in per_anchor_errors:
+            errors.extend(anchor_errors)
+        errors.append(f"recognition_grounded_anchors_well_formed_lt_2:{well_formed_count}")
     return errors
 
 
