@@ -2511,3 +2511,13 @@ EF2 损失分解:
 - DeepEye 同步: regression case 不再写 runtime negative guard，也不进入普通 singleton accumulate 主线。
 - 搁置原因: q249 guard 的 LLM hit 判断过宽，命中同 RoleGraph pattern 多数正例；case-level gate 进一步把宽命中放大成整案阻断。
 - 后续: 先跑 r_v2_e 全量，negative guard 语义重设计另行决策。
+
+### E-20260513-RR-P0: retrieval root evidence P0
+
+- 改动文件: `common/analysis/signal_summary.py`, `common/learning/accumulate.py`, `common/learning/pattern_formation.py`, `tests/test_canonical_program.py`, `scripts/probes/retrieval_key_pair_coverage.py`, `doc/retrieval_root_evidence_plan.md`。
+- 实现: 从 full role graph / target invariants 投影 `retrieval_evidence`，将 `gold_edge / target_role / target_eq / gold_only_table / predicate_role` 纳入 retrieval key，并在 broad retrieval / pair score 中启用 root-aligned branch-axis pair。
+- 验证 gate 5.A: `scripts/probes/retrieval_key_pair_coverage.py` 通过，8/8 目标人工 pattern 达标；输出见 `workspace/probes/retrieval_key_pair_coverage/retrieval_key_pair_coverage.md`。
+- 静态与单测: `py_compile` 通过；新增 retrieval evidence 断言与 pred bucket 兼容断言通过。
+- 5.B quick trigger: toxicology 子任务正常完成；california_schools / financial 因 manifest 中旧 `library_json` 路径不存在失败，未作为 retrieval 代码回归处理。
+- 决定: P0 代码提交，Step 4/5 暂不启动；需要更新 quick manifest 或直接用当前 11 库 run 口径重跑 admission coverage 后再判断是否收紧 component。
+- 关联 commit hash: `a9c3d17`。
