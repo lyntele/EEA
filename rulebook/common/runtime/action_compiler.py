@@ -1300,16 +1300,6 @@ def _variant_matches_current_output_shape(
         if str(source_shape.get("grain")) != str(current_shape.get("grain")):
             return False
 
-    if source_shape.get("has_aggregate") is not None:
-        checks += 1
-        if bool(source_shape.get("has_aggregate")) != bool(current_shape.get("has_aggregate")):
-            return False
-
-    if source_shape.get("has_distinct") is not None:
-        checks += 1
-        if bool(source_shape.get("has_distinct")) != bool(current_shape.get("has_distinct")):
-            return False
-
     if source_shape.get("roles") and current_shape.get("roles"):
         checks += 1
         if not _output_roles_compatible(
@@ -1346,15 +1336,10 @@ def _matching_member_variants_for_current(
     if not variants:
         return []
     current_shape = _current_output_shape_for_compiler(case_view)
-    current_output_keys = _output_ref_keys_from_exprs(case_view)
     return [
         variant
         for variant in variants
         if _variant_matches_current_output_shape(variant, current_shape)
-        and _output_ref_sequence_compatible(
-            _output_ref_keys_from_refs(_payload(variant).get("source_output_refs") or []),
-            current_output_keys,
-        )
     ]
 
 
