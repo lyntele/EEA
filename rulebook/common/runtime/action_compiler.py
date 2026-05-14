@@ -3921,6 +3921,13 @@ def _enumerate_for_canonical_op(
         canonical_op=canonical_op,
         matched_variants=matched_variants,
     )
+    # Scoped runtime branches may narrow a select_replace canonical program to a
+    # drop-only executable branch. Honor that branch contract before lowering.
+    allowed = _branch_allowed_primitives(group)
+    if allowed:
+        drop_primitives = {ActionPrimitive.DROP_SIDE, ActionPrimitive.DROP_SELECT_SLOT}
+        if allowed & drop_primitives and lowering_family == "select_replace":
+            lowering_family = "select_drop"
     skeleton = _canonical_base_skeleton(
         canonical_op=canonical_op,
         lowering_family=lowering_family,
@@ -4197,6 +4204,26 @@ def _enumerate_for_canonical_op(
     ]
 
 
+def _branch_allowed_primitives(group: GroupSummary) -> Optional[set[ActionPrimitive]]:
+    """Read branch allowed_primitives from the scoped group's action_envelope."""
+    program = getattr(group.instantiation_program, "synthesized_program", None)
+    if program is None:
+        return None
+    envelope = _payload(getattr(program, "program_envelope", None))
+    action_envelope = _payload(envelope.get("action_envelope"))
+    raw = action_envelope.get("allowed_primitives")
+    if not raw:
+        return None
+    allowed: set[ActionPrimitive] = set()
+    for item in raw:
+        text = str(item).strip()
+        try:
+            allowed.add(ActionPrimitive(text))
+        except ValueError:
+            continue
+    return allowed if allowed else None
+
+
 def _enumerate_for_group(
     *,
     case_view: RuntimeCaseView,
@@ -4228,6 +4255,17 @@ def _enumerate_for_group(
                     merged[candidate_set.primitive],
                     candidate_set,
                 )
+        allowed = _branch_allowed_primitives(group)
+        if allowed:
+            for primitive in list(merged.keys()):
+                if primitive not in allowed and merged[primitive].candidates:
+                    merged[primitive] = ActionCandidateSet(
+                        primitive=primitive,
+                        candidates=[],
+                        empty_reason=(
+                            f"excluded_by_branch_allowed_primitives:{primitive.value}"
+                        ),
+                    )
         return list(merged.values())
 
     return [
