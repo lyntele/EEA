@@ -1527,6 +1527,37 @@ def _program_repair_goal(program: Any) -> str:
     return "; ".join(parts)
 
 
+def _aggregate_retrieval_evidence(groups: Sequence[GroupSummary]) -> Dict[str, Any]:
+    """Union member route evidence so patterns can be matched by route gaps."""
+    gold_tables: Set[str] = set()
+    pred_tables: Set[str] = set()
+    gold_edges: Set[str] = set()
+    target_roles: List[str] = []
+    target_equalities: Set[str] = set()
+    for group in groups:
+        evidence = _model_dump(_signal_payload(group).get("retrieval_evidence") or {})
+        gold_tables.update(str(item) for item in (evidence.get("gold_only_tables") or []) if str(item))
+        pred_tables.update(str(item) for item in (evidence.get("pred_only_tables") or []) if str(item))
+        gold_edges.update(str(item) for item in (evidence.get("gold_join_edges") or []) if str(item))
+        role = str(evidence.get("target_output_role") or "").strip()
+        if role:
+            target_roles.append(role)
+        target_equalities.update(
+            str(item) for item in (evidence.get("target_relation_equalities") or []) if str(item)
+        )
+    role_counts = Counter(target_roles)
+    majority_role = role_counts.most_common(1)[0][0] if role_counts else ""
+    return {
+        "schema_version": "pattern-route-evidence-v0",
+        "gold_only_tables": sorted(gold_tables),
+        "pred_only_tables": sorted(pred_tables),
+        "gold_join_edges": sorted(gold_edges),
+        "target_output_role": majority_role,
+        "target_relation_equalities": sorted(target_equalities),
+        "member_count": len(groups),
+    }
+
+
 def _build_family(
     groups: Sequence[GroupSummary],
     pair_scores: Dict[Tuple[str, str], PairScore],
@@ -1623,6 +1654,7 @@ def _build_family(
         "program_coverage": program_coverage.model_dump(mode="json"),
         "synthesis_basis": synthesis.synthesis_basis,
         "effect_first_required": bool(require_effect_program),
+        "retrieval_evidence": _aggregate_retrieval_evidence(groups),
     }
     if pattern_admission is not None:
         formation_signals["pattern_admission"] = dict(pattern_admission)
@@ -4092,6 +4124,12 @@ def _build_pattern_candidate(
     if binding_contract:
         pattern = _attach_runtime_binding_contract(pattern, binding_contract)
     pattern = _materialize_admission_branches(pattern, groups)
+    formation_signals = dict(pattern.formation_signals or {})
+    retrieval_evidence = dict(formation_signals.get("retrieval_evidence") or {})
+    if retrieval_evidence:
+        retrieval_evidence["member_count"] = len(pattern.case_ids or [])
+        formation_signals["retrieval_evidence"] = retrieval_evidence
+        pattern = pattern.model_copy(update={"formation_signals": formation_signals})
     recognition_contract = (
         PatternRecognitionContract.model_validate(recognition_payload)
         if recognition_payload
