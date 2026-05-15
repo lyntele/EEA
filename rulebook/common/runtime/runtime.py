@@ -514,6 +514,77 @@ def _current_source_state_facts(case_view: RuntimeCaseView) -> Set[str]:
     return {str(fact).strip() for fact in facts if str(fact).strip()}
 
 
+def _norm_route_token(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _pred_join_edge_signatures(pred_sql_view: Mapping[str, Any]) -> Set[str]:
+    signatures: Set[str] = set()
+    for raw_edge in pred_sql_view.get("join_graph") or []:
+        edge = _payload(raw_edge)
+        table = _norm_route_token(edge.get("table"))
+        on_clause = _norm_route_token(edge.get("on_clause") or edge.get("on"))
+        if table and on_clause:
+            signatures.add(f"{table}:{on_clause}")
+        elif on_clause:
+            signatures.add(on_clause)
+    return signatures
+
+
+def _route_evidence_match_reasons(
+    group: GroupSummary,
+    case_view: RuntimeCaseView,
+) -> List[str]:
+    """Detect answer-blind route gaps covered by a learned pattern."""
+    formation_signals = _payload(getattr(group, "formation_signals", None))
+    retrieval_evidence = _payload(formation_signals.get("retrieval_evidence"))
+    if not retrieval_evidence:
+        return []
+
+    pred_sql_view, _, _ = _case_signal_parts(case_view)
+    pred_tables = {
+        str(table).strip().lower()
+        for table in (pred_sql_view.get("tables_used") or [])
+        if str(table).strip()
+    }
+    reasons: List[str] = []
+
+    gold_tables = {
+        str(table).strip().lower()
+        for table in (retrieval_evidence.get("gold_only_tables") or [])
+        if str(table).strip()
+    }
+    missing_gold_tables = sorted(gold_tables - pred_tables)
+    if missing_gold_tables:
+        reasons.append("gold_only_tables_missing:" + ",".join(missing_gold_tables[:4]))
+
+    gold_edges = {
+        _norm_route_token(edge)
+        for edge in (retrieval_evidence.get("gold_join_edges") or [])
+        if str(edge).strip()
+    }
+    if gold_edges:
+        pred_edges = _pred_join_edge_signatures(pred_sql_view)
+        missing_edges = sorted(
+            edge for edge in gold_edges if not any(edge in pred_edge for pred_edge in pred_edges)
+        )
+        if missing_edges and pred_edges:
+            reasons.append("gold_join_edges_missing:" + ",".join(missing_edges[:3]))
+
+    target_role = str(retrieval_evidence.get("target_output_role") or "").strip().lower()
+    if target_role:
+        output_shape = _payload(pred_sql_view.get("output_shape_current"))
+        current_roles = {
+            str(role).strip().lower()
+            for role in (output_shape.get("roles") or pred_sql_view.get("select_role_profile") or [])
+            if str(role).strip()
+        }
+        if current_roles and target_role not in current_roles:
+            reasons.append(f"target_output_role_mismatch:{target_role}")
+
+    return reasons
+
+
 def _output_arity_signal(arity: Any) -> Optional[str]:
     try:
         value = int(arity)
@@ -2337,6 +2408,7 @@ def _gate_group(
     current_signals = _current_contract_signals(case_view)
     current_source_facts = _current_source_state_facts(case_view)
     selected_source_facts = set(_selected_source_facts_for_group(group))
+    route_evidence_reasons = _route_evidence_match_reasons(group, case_view)
     current_summary = _case_pred_current_summary(case_view)
     required_signals = {
         str(sig)
@@ -2434,9 +2506,19 @@ def _gate_group(
     if negative_hits:
         passed = False
         reasons.append("negative_contract_signal_hit")
+    if route_evidence_reasons:
+        reasons.extend(
+            f"route_evidence_match:{reason}" for reason in route_evidence_reasons[:4]
+        )
     if passed and source_fact_misses:
-        passed = False
-        reasons.extend(f"source_fact_unmet:{fact}" for fact in source_fact_misses[:8])
+        if route_evidence_reasons:
+            deferred_instantiation_reasons.extend(
+                f"route_evidence_source_fact_deferred:{fact}"
+                for fact in source_fact_misses[:8]
+            )
+        else:
+            passed = False
+            reasons.extend(f"source_fact_unmet:{fact}" for fact in source_fact_misses[:8])
 
     if passed and recognition_contract:
         pre_condition_match, pre_condition_matched, pre_condition_blockers = _evaluate_pattern_pre_condition(
@@ -2795,6 +2877,7 @@ def _gate_group(
             }
             and not reason.startswith("soft_required_miss:")
             and not reason.startswith("top_required_miss:")
+            and not reason.startswith("route_evidence_match:")
         ]
 
     return TriggerCandidateAudit(
