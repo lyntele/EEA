@@ -2409,6 +2409,7 @@ def _gate_group(
     current_source_facts = _current_source_state_facts(case_view)
     selected_source_facts = set(_selected_source_facts_for_group(group))
     route_evidence_reasons = _route_evidence_match_reasons(group, case_view)
+    route_evidence_fast_track = bool(route_evidence_reasons and group.group_type == GroupType.PATTERN)
     current_summary = _case_pred_current_summary(case_view)
     required_signals = {
         str(sig)
@@ -2510,6 +2511,11 @@ def _gate_group(
         reasons.extend(
             f"route_evidence_match:{reason}" for reason in route_evidence_reasons[:4]
         )
+    if passed and route_evidence_fast_track:
+        reasons.append("route_evidence_fast_track")
+        variant_required_match = True
+        generalized_canonical_gate_passed = True
+        required_misses = []
     if passed and source_fact_misses:
         if route_evidence_reasons:
             deferred_instantiation_reasons.extend(
@@ -2520,7 +2526,7 @@ def _gate_group(
             passed = False
             reasons.extend(f"source_fact_unmet:{fact}" for fact in source_fact_misses[:8])
 
-    if passed and recognition_contract:
+    if passed and recognition_contract and not route_evidence_fast_track:
         pre_condition_match, pre_condition_matched, pre_condition_blockers = _evaluate_pattern_pre_condition(
             group=group,
             case_view=case_view,
@@ -2878,6 +2884,7 @@ def _gate_group(
             and not reason.startswith("soft_required_miss:")
             and not reason.startswith("top_required_miss:")
             and not reason.startswith("route_evidence_match:")
+            and reason != "route_evidence_fast_track"
         ]
 
     return TriggerCandidateAudit(
@@ -4436,11 +4443,24 @@ def _prefilter_runtime_candidates(
     case_tables = _case_runtime_tables(case_view)
 
     def select(source: Sequence[GroupSummary]) -> Tuple[List[GroupSummary], List[Dict[str, Any]]]:
-        scored: List[Tuple[GroupSummary, Dict[str, Any]]] = [
-            (group, _group_prefilter_score(group=group, case_summary=case_summary, case_tables=case_tables))
-            for group in source
-            if str(group.db_id or "") == str(library.db_id or "")
-        ]
+        scored: List[Tuple[GroupSummary, Dict[str, Any]]] = []
+        for group in source:
+            if str(group.db_id or "") != str(library.db_id or ""):
+                continue
+            audit = _group_prefilter_score(
+                group=group,
+                case_summary=case_summary,
+                case_tables=case_tables,
+            )
+            route_reasons = (
+                _route_evidence_match_reasons(group, case_view)
+                if group.group_type == GroupType.PATTERN
+                else []
+            )
+            if route_reasons:
+                audit["route_evidence_prefilter_bypass"] = True
+                audit["route_evidence_reasons"] = route_reasons[:4]
+            scored.append((group, audit))
         ranked = sorted(
             scored,
             key=lambda item: (
@@ -4450,6 +4470,12 @@ def _prefilter_runtime_candidates(
             ),
         )
         selected = ranked[: max(1, int(max_per_kind or 5))]
+        selected_ids = {str(group.group_id) for group, _audit in selected}
+        for group, audit in ranked:
+            group_id = str(group.group_id)
+            if audit.get("route_evidence_prefilter_bypass") and group_id not in selected_ids:
+                selected.append((group, audit))
+                selected_ids.add(group_id)
         return [group for group, _audit in selected], [audit for _group, audit in scored]
 
     patterns, pattern_audits = select(library.patterns or [])
