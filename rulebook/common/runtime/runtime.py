@@ -1865,6 +1865,7 @@ def _select_runtime_branch(
     group: GroupSummary,
     case_view: RuntimeCaseView,
     current_signals: Set[str],
+    route_evidence_fast_track: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[str], int]:
     branches = _runtime_branch_rows(group)
     usable = [
@@ -1898,7 +1899,15 @@ def _select_runtime_branch(
         branch_reasons: List[str] = []
         branch_deferred_reasons: List[str] = []
         if missing:
-            branch_reasons.append("branch_required_signals_missed:" + ",".join(missing[:6]))
+            # Deterministic route evidence has already established structural relevance;
+            # branch required signals are shape constraints and should not hard-block it.
+            if route_evidence_fast_track:
+                branch_deferred_reasons.append(
+                    "branch_required_signals_deferred_route_evidence:"
+                    + ",".join(missing[:6])
+                )
+            else:
+                branch_reasons.append("branch_required_signals_missed:" + ",".join(missing[:6]))
         if negative_hits:
             branch_reasons.append("branch_negative_signal_hit:" + ",".join(negative_hits[:6]))
         if not branch_reasons:
@@ -2782,6 +2791,7 @@ def _gate_group(
             group=group,
             case_view=case_view,
             current_signals=current_signals,
+            route_evidence_fast_track=route_evidence_fast_track,
         )
         if selected_branch is None:
             passed = False

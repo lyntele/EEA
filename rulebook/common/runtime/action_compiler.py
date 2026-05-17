@@ -3936,6 +3936,7 @@ def _enumerate_for_canonical_op(
         _requires_current_variant_binding(canonical_op)
         and _canonical_member_variants(canonical_op)
         and not matched_variants
+        and lowering_family != "join_bridge"
     ):
         return [
             ActionCandidateSet(
