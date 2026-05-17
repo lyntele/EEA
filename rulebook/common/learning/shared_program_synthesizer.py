@@ -82,7 +82,7 @@ def _lowering_family(op_type: Any, locus: Any = "") -> str:
         return "select_drop"
     if op in {"SELECT_DROP_DISTINCT"}:
         return "select_drop"
-    if op in {"JOIN_REROUTE", "FACT_ROUTE_REROUTE"}:
+    if op in {"JOIN_REROUTE", "FACT_ROUTE_REROUTE", "JOIN_REPLACE_TABLE"}:
         return "join_bridge"
     if op in {"JOIN_ADD_BRIDGE", "JOIN_ADD_TABLE", "BRIDGE_ADD_TABLE"}:
         return "join_bridge"
