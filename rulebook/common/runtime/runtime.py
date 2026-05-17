@@ -917,6 +917,16 @@ def _target_invariant_failures(
     schema_tables = {str(table).lower() for table in (view.tables or [])}
     schema_columns = _schema_columns_lower(view)
     schema_roles = _schema_role_families_lower(view)
+    added_tables: Set[str] = set()
+    for row in envelope.get("target_invariants") or []:
+        payload = _payload(row)
+        if str(payload.get("kind") or "").strip() == "target_added_relation_equality":
+            for tbl, _ in re.findall(
+                r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)",
+                str(payload.get("value") or ""),
+            ):
+                if tbl.lower() not in schema_tables:
+                    added_tables.add(tbl.lower())
     for row in envelope.get("target_invariants") or []:
         payload = _payload(row)
         kind = str(payload.get("kind") or "").strip()
@@ -925,10 +935,17 @@ def _target_invariant_failures(
             continue
         if kind in {"target_added_relation_equality", "target_relation_equality"} and value:
             refs = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", value)
-            if refs and any(
+            if kind == "target_added_relation_equality":
+                continue
+            refs_outside_added = [
+                (table, column)
+                for table, column in refs
+                if table.lower() not in added_tables
+            ]
+            if refs_outside_added and any(
                 table.lower() not in schema_tables
                 or (table.lower(), column.lower()) not in schema_columns
-                for table, column in refs
+                for table, column in refs_outside_added
             ):
                 failures.append(f"target_invariant_unbindable:{kind}")
         elif kind == "target_output_roles" and value:
@@ -1017,14 +1034,19 @@ def _source_antipattern_failures(
                         "source_antipattern_missing_output_path_roles:"
                         + ",".join(missing_roles[:4])
                     )
+            lowering = str(payload.get("lowering_family") or "")
             requires_role_side_pair = bool(
                 payload.get("same_table_multi_role_output")
                 or payload.get("same_attribute_multi_role_output")
                 or payload.get("source_role_side_groups")
             )
-            if requires_role_side_pair and not (
-                {"pred.role_side_pair_output=True", "pred.same_relation_two_role_sides=True"}
-                & current_signals
+            if (
+                requires_role_side_pair
+                and lowering != "join_bridge"
+                and not (
+                    {"pred.role_side_pair_output=True", "pred.same_relation_two_role_sides=True"}
+                    & current_signals
+                )
             ):
                 failures.append("source_antipattern_missing_role_side_pair_shape")
         elif kind == "predicate_scope_delta":
