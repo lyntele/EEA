@@ -4258,8 +4258,13 @@ def _enumerate_for_group(
                 )
         allowed = _branch_allowed_primitives(group)
         if allowed:
+            join_bridge_primitives = {ActionPrimitive.REROUTE_FACT, ActionPrimitive.INSERT_BRIDGE}
             for primitive in list(merged.keys()):
-                if primitive not in allowed and merged[primitive].candidates:
+                if (
+                    primitive not in allowed
+                    and primitive not in join_bridge_primitives
+                    and merged[primitive].candidates
+                ):
                     merged[primitive] = ActionCandidateSet(
                         primitive=primitive,
                         candidates=[],
