@@ -1530,15 +1530,15 @@ def _schema_excerpt_for_pre_condition(view: LocalSchemaView) -> Dict[str, Any]:
     hints = []
     for hint in view.semantic_hints or []:
         role = str(hint.role_family or "").strip()
-        if not role:
+        note = str(getattr(hint, "note", "") or "").strip()
+        if not role and not note:
             continue
-        hints.append(
-            {
-                "table": hint.table,
-                "column": hint.column,
-                "role_family": role,
-            }
-        )
+        entry: Dict[str, str] = {"table": hint.table, "column": hint.column}
+        if role:
+            entry["role_family"] = role
+        if note:
+            entry["description"] = note
+        hints.append(entry)
     return {
         "db_id": view.db_id,
         "tables": list(view.tables or []),
