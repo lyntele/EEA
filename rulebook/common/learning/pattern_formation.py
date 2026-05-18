@@ -1069,6 +1069,17 @@ def _shared_program_pair_compatibility(
     left: GroupSummary,
     right: GroupSummary,
 ) -> Tuple[bool, Tuple[str, ...], bool, bool, int, str]:
+    left_lowering = _canonical_lowering_families(left)
+    right_lowering = _canonical_lowering_families(right)
+    if left_lowering and right_lowering and not (left_lowering & right_lowering):
+        return (
+            False,
+            ("lowering_family_incompatible",),
+            False,
+            False,
+            0,
+            "lowering_family_prefilter",
+        )
     result = synthesize_shared_program([left, right], require_effect_program=True)
     coverage = result.coverage
     blockers = tuple(str(item) for item in (coverage.blockers or []) if str(item))
