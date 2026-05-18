@@ -1816,91 +1816,6 @@ def _relation_edge_from_equality(expr: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _relation_edge_endpoints(edge: Any) -> Tuple[str, str]:
-    payload = _payload(edge)
-    source = str(payload.get("source") or "").strip()
-    target = str(payload.get("target") or "").strip()
-    if source and target:
-        return source, target
-    left = _payload(payload.get("left"))
-    right = _payload(payload.get("right"))
-    left_text = ".".join(
-        part
-        for part in (
-            str(left.get("table") or "").strip(),
-            str(left.get("column") or "").strip(),
-        )
-        if part
-    )
-    right_text = ".".join(
-        part
-        for part in (
-            str(right.get("table") or "").strip(),
-            str(right.get("column") or "").strip(),
-        )
-        if part
-    )
-    return left_text, right_text
-
-
-def _relation_endpoint_table(endpoint: str) -> str:
-    return str(endpoint or "").split(".", 1)[0].strip().lower()
-
-
-def _bridge_hint_candidates_from_target_edges(
-    *,
-    canonical_op: Optional[Dict[str, Any]],
-    case_view: RuntimeCaseView,
-    group_id: str,
-    group_type: GroupType,
-    repair_program: Sequence[Dict[str, Any]],
-) -> List[ActionCandidate]:
-    if canonical_op is None:
-        return []
-    t_pred = {table.lower() for table in case_view.pred_manifestation.tables}
-    contract_repair_program = [dict(step) for step in repair_program]
-    candidates: List[ActionCandidate] = []
-    seen: set[str] = set()
-    for relation in _target_relation_edges_for_action(canonical_op):
-        source, target = _relation_edge_endpoints(relation)
-        source_table = _relation_endpoint_table(source)
-        target_table = _relation_endpoint_table(target)
-        if not source or not target or not source_table or not target_table:
-            continue
-        if source_table in t_pred and target_table not in t_pred:
-            bridge_table = target_table
-        elif target_table in t_pred and source_table not in t_pred:
-            bridge_table = source_table
-        else:
-            continue
-        key = str(_payload(relation).get("canonical_key") or f"{source}={target}")
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(
-            ActionCandidate(
-                candidate_id=_hash_cand(f"BRIDGE_HINT|{group_id}|{key}"),
-                arguments={
-                    "bridge_table": bridge_table,
-                    "source_table_column": source,
-                    "target_table_column": target,
-                    "hops": 1,
-                    "target_relation_edges": [_payload(relation)],
-                    "bridge_hint_source": "target_relation_equality",
-                    "repair_program": contract_repair_program,
-                    "required_edit_scopes": _required_edit_scopes(
-                        "JOIN",
-                        contract_repair_program,
-                    ),
-                },
-                provenance=f"group={group_id};target_relation_hint:{key}",
-                source_group_id=group_id,
-                source_group_type=group_type,
-            )
-        )
-    return candidates
-
-
 def _program_bundles_from_group(group: GroupSummary) -> List[Dict[str, Any]]:
     program = getattr(group.instantiation_program, "synthesized_program", None)
     if program is None:
@@ -3534,8 +3449,6 @@ def _enumerate_reroute_fact(
         if not _variant_requires_relation_reroute(payload, case_view):
             continue
         target_edges = [_payload(item) for item in (payload.get("target_equality_relations") or [])]
-        if not target_edges:
-            target_edges = _target_relation_edges_for_action(canonical_op)
         target_refs = [_payload(item) for item in (payload.get("target_output_refs") or [])]
         if not target_edges:
             continue
@@ -3582,7 +3495,6 @@ def _enumerate_insert_bridge(
     slots: Sequence[InstantiationSlot],
     group_id: str,
     group_type: GroupType,
-    canonical_op: Optional[Dict[str, Any]] = None,
     repair_program: Sequence[Dict[str, Any]] = (),
 ) -> ActionCandidateSet:
     candidates: List[ActionCandidate] = []
@@ -3644,17 +3556,6 @@ def _enumerate_insert_bridge(
                 provenance=f"group={group_id};pk_fk:{edge.source}->{edge.target}",
                 source_group_id=group_id,
                 source_group_type=group_type,
-            )
-        )
-
-    if not candidates:
-        candidates.extend(
-            _bridge_hint_candidates_from_target_edges(
-                canonical_op=canonical_op,
-                case_view=case_view,
-                group_id=group_id,
-                group_type=group_type,
-                repair_program=repair_program,
             )
         )
 
@@ -4132,7 +4033,6 @@ def _enumerate_for_canonical_op(
                     slots=slots,
                     group_id=group.group_id,
                     group_type=group.group_type,
-                    canonical_op=canonical_op,
                     repair_program=repair_program,
                 ),
             ]
