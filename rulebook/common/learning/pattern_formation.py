@@ -625,11 +625,28 @@ def _broad_retrieval_reasons(
 
     left_ev = _signal_payload(left).get("retrieval_evidence") or {}
     right_ev = _signal_payload(right).get("retrieval_evidence") or {}
+    left_edges = set(left_ev.get("gold_join_edges") or [])
+    right_edges = set(right_ev.get("gold_join_edges") or [])
+    if left_edges and right_edges and not (left_edges & right_edges):
+        left_tables = {
+            part.split(".")[0].strip().lower()
+            for edge in left_edges
+            for part in str(edge).split("=")
+            if "." in part
+        }
+        right_tables = {
+            part.split(".")[0].strip().lower()
+            for edge in right_edges
+            for part in str(edge).split("=")
+            if "." in part
+        }
+        if not (left_tables & right_tables):
+            return ()
     left_role = str(left_ev.get("target_output_role") or "").strip()
     right_role = str(right_ev.get("target_output_role") or "").strip()
     if left_role and left_role == right_role:
         reasons.add("shared_target_role")
-    if set(left_ev.get("gold_join_edges") or []) & set(right_ev.get("gold_join_edges") or []):
+    if left_edges & right_edges:
         reasons.add("shared_target_route")
     if set(left_ev.get("gold_only_tables") or []) & set(right_ev.get("gold_only_tables") or []):
         reasons.add("shared_gold_only_table")
@@ -1182,11 +1199,21 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
         _repair_insight_interface_key(left)
         and _repair_insight_interface_key(left) == _repair_insight_interface_key(right)
     ) else 0.0
+    left_ev = _signal_payload(left).get("retrieval_evidence") or {}
+    right_ev = _signal_payload(right).get("retrieval_evidence") or {}
+    left_edges = set(left_ev.get("gold_join_edges") or []) if isinstance(left_ev, dict) else set()
+    right_edges = set(right_ev.get("gold_join_edges") or []) if isinstance(right_ev, dict) else set()
+    left_gold_tables = set(left_ev.get("gold_only_tables") or []) if isinstance(left_ev, dict) else set()
+    right_gold_tables = set(right_ev.get("gold_only_tables") or []) if isinstance(right_ev, dict) else set()
+    route_overlap = jaccard(left_edges, right_edges)
+    gold_table_overlap = jaccard(left_gold_tables, right_gold_tables)
     score = (
-        0.40 * signal_axes_overlap
-        + 0.25 * shape_compat
-        + 0.20 * lowering_overlap
-        + 0.15 * interface_overlap
+        0.30 * route_overlap
+        + 0.15 * gold_table_overlap
+        + 0.20 * signal_axes_overlap
+        + 0.15 * shape_compat
+        + 0.10 * lowering_overlap
+        + 0.10 * interface_overlap
     )
     if not _is_absolute_conflict(veto):
         if required_signals_present:
