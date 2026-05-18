@@ -949,6 +949,8 @@ def _target_invariant_failures(
             ):
                 failures.append(f"target_invariant_unbindable:{kind}")
         elif kind == "target_output_roles" and value:
+            if added_tables:
+                continue
             roles = {
                 role.strip().lower()
                 for role in value.split(",")
