@@ -3119,11 +3119,6 @@ def _validate_pattern_contract_payload(
                 raw,
                 "pre_sql_signature_self_check",
             ),
-            "negative_question_markers": [
-                str(m).strip()
-                for m in (recognition.get("negative_question_markers") or [])
-                if str(m).strip()
-            ][:10],
             "grounded_anchors": anchors,
             "observed_failure_summary": observed_failure,
             "repair_direction": repair_direction,
