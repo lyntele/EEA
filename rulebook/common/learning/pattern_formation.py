@@ -1959,10 +1959,10 @@ def _column_descriptions_for_card(group: GroupSummary) -> Optional[List[Dict[str
                 for t in str(fact).split("=", 1)[1].split(","):
                     tables.add(t.strip())
         descs: List[Dict[str, str]] = []
+        real_tables = {t.lower(): t for t in access.list_tables()}
         for table in sorted(tables):
             if not table:
                 continue
-            real_tables = {t.lower(): t for t in access.list_tables()}
             real_name = real_tables.get(table.lower())
             if not real_name:
                 continue
@@ -3119,6 +3119,11 @@ def _validate_pattern_contract_payload(
                 raw,
                 "pre_sql_signature_self_check",
             ),
+            "negative_question_markers": [
+                str(m).strip()
+                for m in (recognition.get("negative_question_markers") or [])
+                if str(m).strip()
+            ][:10],
             "grounded_anchors": anchors,
             "observed_failure_summary": observed_failure,
             "repair_direction": repair_direction,

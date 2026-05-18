@@ -31,6 +31,7 @@ class RecognitionContract(BaseModel):
 
     question_precondition: str = ""
     sql_precondition: str = ""
+    negative_question_markers: List[str] = Field(default_factory=list)
     grounded_anchors: List[GroundedAnchor] = Field(default_factory=list)
     question_self_check: Dict[str, Any] = Field(default_factory=dict)
     sql_self_check: Dict[str, Any] = Field(default_factory=dict)
