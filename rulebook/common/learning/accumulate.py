@@ -341,6 +341,9 @@ def error_instance_to_singleton(
         case_audit=case_audit,
     )
     formation_signals["retrieval_evidence"] = _compact_retrieval_evidence(error_instance)
+    if runtime_case_view is not None:
+        formation_signals["question"] = str(runtime_case_view.question or "")[:300]
+        formation_signals["evidence"] = str(runtime_case_view.evidence or "")[:300]
 
     core_interface = CoreInterface(
         question_family_tags=list(error_instance.question_features.decisive_tags),

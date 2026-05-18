@@ -153,6 +153,18 @@ Runtime-use requirement:
   then rewrite it if estimated_recall is below 0.8.
 - Phrase signatures around abstract roles and failure context. Avoid exact
   entity names, aliases, case ids, and database-specific labels.
+- When column_descriptions are provided, use specific column-level semantics
+  to sharpen the signature. For example, if the repair replaces
+  results.position (finishing position) with driverStandings.position
+  (championship standing), the question precondition should reference
+  "standings/points/wins" rather than generic "performance metrics", and the
+  sql precondition should reference the specific column semantic difference.
+- Include negative_question_markers in the recognition block: a short list of
+  question-side keywords or intents that should NOT trigger this pattern even
+  though they share surface-level table overlap. For example, a driverStandings
+  pattern should list "ranked", "fastest lap", "grid position" as negative
+  markers because those map to results.rank or qualifying columns, not
+  standings.
 
 Signature calibration examples:
 - GOOD: "question asks for one side or one role of an entity relationship while
@@ -186,6 +198,7 @@ Return strict JSON only:
       "rewrite_needed": true
     }},
     "sql_precondition": "abstract pred_sql shape shared by accepted members; prefer role_family language",
+    "negative_question_markers": ["keyword or intent that must NOT trigger this pattern despite surface overlap"],
     "observed_failure_summary": "common observed pred-vs-target difference; audit only, not runtime trigger",
     "repair_direction": "actionable common repair direction for branch/binder instantiation",
     "grounded_anchors": [

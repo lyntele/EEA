@@ -1935,6 +1935,46 @@ def _stable_bias_frame(group: GroupSummary) -> Dict[str, Any]:
     }
 
 
+def _column_descriptions_for_card(group: GroupSummary) -> Optional[List[Dict[str, str]]]:
+    try:
+        import os
+        from method.EEA.rulebook.common.io.db_schema_access import SqliteDBSchemaAccess
+
+        bird_db_root = os.environ.get(
+            "BIRD_DB_ROOT",
+            "/data/liuyining/ace4sql/bench/bird/dev/dev_databases",
+        )
+        db_id = group.db_id
+        db_file = os.path.join(bird_db_root, db_id, f"{db_id}.sqlite")
+        if not os.path.isfile(db_file):
+            return None
+        access = SqliteDBSchemaAccess(db_id=db_id, db_path=db_file)
+        signals = _signal_payload(group)
+        re_payload = _model_dump(signals.get("retrieval_evidence") or {})
+        tables: set = set()
+        for t in re_payload.get("gold_only_tables") or []:
+            tables.add(str(t).strip())
+        for fact in signals.get("pred_current", {}).get("source_state_facts", []):
+            if str(fact).startswith("join_tables="):
+                for t in str(fact).split("=", 1)[1].split(","):
+                    tables.add(t.strip())
+        descs: List[Dict[str, str]] = []
+        for table in sorted(tables):
+            if not table:
+                continue
+            real_tables = {t.lower(): t for t in access.list_tables()}
+            real_name = real_tables.get(table.lower())
+            if not real_name:
+                continue
+            for col in access.get_columns(real_name):
+                hint = access.get_column_note(real_name, col)
+                if hint and getattr(hint, "note", None):
+                    descs.append({"table": real_name, "column": col, "description": hint.note[:120]})
+        return descs[:40] if descs else None
+    except Exception:
+        return None
+
+
 def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
     signals = _signal_payload(group)
     ir = dict((signals.get("canonical_repair_ir") or {}) or {})
@@ -2023,6 +2063,9 @@ def _pattern_case_card(group: GroupSummary) -> Dict[str, Any]:
         },
         "program_core": program_core,
         "effects": effects[:8],
+        "question": str(signals.get("question") or "").strip()[:200] or None,
+        "evidence": str(signals.get("evidence") or "").strip()[:200] or None,
+        "column_descriptions": _column_descriptions_for_card(group),
     }
 
 
@@ -2031,9 +2074,10 @@ def _extract_question_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
 
     Keep this physically question-only. SQL-side mechanism fields are routed to
     the SQL/shared views so admission cannot leak them into pre_question_signature.
+    Include original question/evidence so admission can extract precise keywords.
     """
     pre_condition = _model_dump(card.get("pre_condition_local") or {})
-    return {
+    out: Dict[str, Any] = {
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
         "pre_question_signature_local": _short_text(
@@ -2041,13 +2085,20 @@ def _extract_question_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
             limit=180,
         ),
     }
+    question = str(card.get("question") or "").strip()
+    evidence = str(card.get("evidence") or "").strip()
+    if question:
+        out["question"] = _short_text(question, limit=200)
+    if evidence:
+        out["evidence"] = _short_text(evidence, limit=200)
+    return out
 
 
 def _extract_sql_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
     """Evidence slice for SQL-side pre-condition writing only."""
     insight = _model_dump(card.get("repair_insight") or {})
     pre_condition = _model_dump(card.get("pre_condition_local") or {})
-    return {
+    out: Dict[str, Any] = {
         "case_ids": list(card.get("case_ids") or []),
         "group_id": card.get("group_id"),
         "source_state_facts": list(card.get("source_state_facts") or []),
@@ -2064,6 +2115,10 @@ def _extract_sql_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
             limit=180,
         ),
     }
+    column_descriptions = card.get("column_descriptions")
+    if column_descriptions:
+        out["column_descriptions"] = column_descriptions
+    return out
 
 
 def _extract_shared_evidence(card: Mapping[str, Any]) -> Dict[str, Any]:
