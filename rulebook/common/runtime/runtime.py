@@ -4036,6 +4036,46 @@ def _guard_predicate_preserve_set(
     return list(dict.fromkeys(predicates[:20]))
 
 
+def _guard_required_schema_tables(
+    *,
+    actions: Sequence[Any],
+    case_view: Optional[RuntimeCaseView],
+) -> List[str]:
+    pred_tables = set()
+    if case_view is not None:
+        pred_tables = {
+            str(t).strip().lower()
+            for t in (getattr(case_view.pred_manifestation, "tables", []) or [])
+            if str(t).strip()
+        }
+    extra: List[str] = []
+    seen: set = set()
+    for action in actions or []:
+        primitive = str(
+            getattr(
+                getattr(action, "primitive", ""), "value",
+                getattr(action, "primitive", ""),
+            )
+            or ""
+        )
+        if primitive not in ("REROUTE_FACT", "INSERT_BRIDGE"):
+            continue
+        args = _payload(getattr(action, "arguments", None))
+        for edge in args.get("target_relation_edges") or []:
+            edge_payload = _payload(edge)
+            for side in ("left", "right"):
+                endpoint = _payload(edge_payload.get(side))
+                table = str(endpoint.get("table") or "").strip().lower()
+                if table and table not in pred_tables and table not in seen:
+                    seen.add(table)
+                    extra.append(table)
+        bridge = str(args.get("bridge_table") or "").strip().lower()
+        if bridge and bridge not in pred_tables and bridge not in seen:
+            seen.add(bridge)
+            extra.append(bridge)
+    return extra
+
+
 def build_runtime_rewrite_guard(
     *,
     case_view: Optional[RuntimeCaseView],
@@ -4098,6 +4138,10 @@ def build_runtime_rewrite_guard(
         "anchor_sql_hash": hashlib.sha1(anchor_sql.encode("utf-8")).hexdigest()[:16]
         if anchor_sql
         else "",
+        "required_schema_tables": _guard_required_schema_tables(
+            actions=action_list,
+            case_view=case_view,
+        ),
     }
 
 
