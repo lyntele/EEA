@@ -180,6 +180,24 @@ def _mark_local_evolve_runtime_visible(
             elif payload.get("runtime_usable"):
                 lightweight_count += 1
             updated_branches.append(payload)
+        has_named_runtime_branch = any(
+            bool(branch.get("runtime_usable"))
+            and not str(branch.get("branch_id") or "").startswith("mechanical_branch_")
+            for branch in updated_branches
+        )
+        if has_named_runtime_branch:
+            lightweight_count = 0
+            for payload in updated_branches:
+                branch_id = str(payload.get("branch_id") or "")
+                if branch_id.startswith("mechanical_branch_"):
+                    payload["runtime_usable"] = False
+                    blockers = list(payload.get("runtime_blockers") or [])
+                    if "mechanical_branch_disabled_named_branch_available" not in blockers:
+                        blockers.append("mechanical_branch_disabled_named_branch_available")
+                    payload["runtime_blockers"] = blockers
+                    payload["runtime_validation_policy"] = "disabled_mechanical_branch_when_named_branch_available"
+                elif payload.get("runtime_usable"):
+                    lightweight_count += 1
         if updated_branches:
             envelope_payload["runtime_branches"] = updated_branches
             envelope_payload["branch_selection_contract"] = {
