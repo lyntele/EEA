@@ -126,3 +126,16 @@ ready=52, 触发精度=12/52=23%。
 | **改动 1** | card_games 聚类纯度 | 减少 card_games regression | 中（需要理解 AST 解析） |
 
 建议顺序：3 → 2 → 1。改动 3 最小代价最大收益（7 个库从 0 到有可能产出收益）。
+
+## 四、实施与验证结果
+
+| 改动 | commit | offline 验证 | 结果 |
+|---|---|---|---|
+| 3: lowering branch axis | 7b87ccd | superhero 728×726, ef2 1087×1064 pair accepted | PASS |
+| 2: role-based signals | 090c475 | singleton-206 生成 pred.contains_column_role=atomic element; q249 命中 q216 不命中 | PASS |
+| 1: subquery edge | 11e3497 | q360 得到 cards.id=set_translations.id; q365 保持; q438 单表 SQL 未伪造 | PASS |
+
+联合 trigger replay（frozen library）：toxicology/formula_1 各 4 case 全部仍 ready。
+改动 2 的 required_signals 精度效果需重跑 e2e 才能体现（旧 library 的 branch 没有新信号）。
+
+下一步：跑三库 e2e（toxicology + formula_1 + codebase_community）验证端到端效果。
