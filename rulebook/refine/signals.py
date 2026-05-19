@@ -40,6 +40,57 @@ from method.EEA.rulebook.refine.utils import SQLResultSummary, execute_and_summa
 # ---------------------------------------------------------------------------
 
 
+def _column_table(column: exp.Expression, *, default_table: str = "") -> str:
+    if not isinstance(column, exp.Column):
+        return ""
+    table = str(column.table or "").strip()
+    return table or str(default_table or "").strip()
+
+
+def _column_name(column: exp.Expression) -> str:
+    if not isinstance(column, exp.Column):
+        return ""
+    return str(column.name or "").strip()
+
+
+def _implicit_in_subquery_join_edges(
+    parsed: exp.Expression,
+    *,
+    outer_from_table: str,
+) -> List[Dict[str, Any]]:
+    """Represent `outer_col IN (SELECT inner_col FROM table ...)` as an edge."""
+    edges: List[Dict[str, Any]] = []
+    for node in parsed.find_all(exp.In):
+        outer_col = node.this
+        query = node.args.get("query")
+        if not isinstance(outer_col, exp.Column) or not isinstance(query, exp.Subquery):
+            continue
+        subquery = query.this
+        if not isinstance(subquery, exp.Select):
+            continue
+        inner_col = next(
+            (expr for expr in subquery.expressions if isinstance(expr, exp.Column)),
+            None,
+        )
+        inner_table_expr = next(subquery.find_all(exp.Table), None)
+        if inner_col is None or inner_table_expr is None:
+            continue
+        outer_table = _column_table(outer_col, default_table=outer_from_table)
+        outer_name = _column_name(outer_col)
+        inner_table = str(inner_table_expr.name or "").strip()
+        inner_name = _column_name(inner_col)
+        if not outer_table or not outer_name or not inner_table or not inner_name:
+            continue
+        edges.append(
+            {
+                "table": inner_table,
+                "join_type": "implicit_subquery",
+                "on": f"{outer_table}.{outer_name} = {inner_table}.{inner_name}",
+            }
+        )
+    return edges
+
+
 def _sqlresult_to_execution(result: SQLResultSummary) -> ExecutionResult:
     """Convert teacher-style SQLResultSummary to Rulebook ExecutionResult."""
     # Decide high-level result_type
@@ -201,6 +252,12 @@ def parse_ast_signature(sql: str, dialect: str = "sqlite") -> ASTSignature:
     join_edges: List[Dict[str, Any]] = []
     for j in struct.joins:
         join_edges.append({"table": j.table, "join_type": j.join_type, "on": j.on_condition})
+    join_edges.extend(
+        _implicit_in_subquery_join_edges(
+            parsed,
+            outer_from_table=struct.from_table or "",
+        )
+    )
 
     predicates = list(struct.where_conditions)
 
