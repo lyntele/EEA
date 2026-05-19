@@ -1348,6 +1348,19 @@ def build_trigger_contract(
         # The canonical program is the executable contract. Keep noisy
         # representative-case skeleton signals as optional audit evidence.
         required = sorted(set(program_required + core_question_signals))
+    repair_ir = _payload(error_payload.get("canonical_repair_ir"))
+    if not repair_ir.get("program_ops"):
+        repair_ir = _payload(formation_signals.get("canonical_repair_ir"))
+    for op in repair_ir.get("program_ops") or []:
+        op_payload = _payload(op)
+        args = _payload(op_payload.get("arguments") or {})
+        sig = _payload(args.get("operation_signature") or args.get("shared_signature") or {})
+        role_delta = _payload(sig.get("role_delta") or {})
+        for role in role_delta.get("source_output_roles") or []:
+            role_str = str(role).strip().lower()
+            if role_str and role_str not in {"unknown", "other", "value"}:
+                required.append(f"pred.contains_column_role={role_str}")
+    required = sorted(set(required))
     required = _non_broad_trigger_signals(
         _generalize_required_signals_for_variants(
             required,
