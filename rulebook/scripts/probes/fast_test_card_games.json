@@ -1,0 +1,458 @@
+[
+  {
+    "question_id": 340,
+    "db_id": "card_games",
+    "question": "Which are the cards that have incredibly powerful foils.",
+    "evidence": "incredibly poweful foils refers to cardKingdomFoilId is not null AND cardKingdomId is not null",
+    "SQL": "SELECT id FROM cards WHERE cardKingdomFoilId IS NOT NULL AND cardKingdomId IS NOT NULL",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 341,
+    "db_id": "card_games",
+    "question": "What are the borderless cards available without powerful foils?",
+    "evidence": "borderless' refers to borderColor; poweful foils refers to cardKingdomFoilId paired with cardKingdomId AND cardKingdomId is not null",
+    "SQL": "SELECT id FROM cards WHERE borderColor = 'borderless' AND (cardKingdomId IS NULL OR cardKingdomId IS NULL)",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 342,
+    "db_id": "card_games",
+    "question": "List the card names with value that cost more converted mana for the face.",
+    "evidence": "more converted mana for the face refers to Max(faceConvertedManaCost);",
+    "SQL": "SELECT name FROM cards ORDER BY faceConvertedManaCost LIMIT 1",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 343,
+    "db_id": "card_games",
+    "question": "Name all cards with 2015 frame style ranking below 100 on EDHRec.",
+    "evidence": "below 100 on EDHRec refers to EDHRec <100; with 2015 frame style refers to frameVersion = 2015;",
+    "SQL": "SELECT id FROM cards WHERE edhrecRank < 100 AND frameVersion = 2015",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 344,
+    "db_id": "card_games",
+    "question": "List all the mythic rarity print cards banned in gladiator format.",
+    "evidence": "mythic rarity printing refers to rarity = 'mythic'; card banned refers to status = 'Banned'; in gladiator format refers to format = 'gladiator';",
+    "SQL": "SELECT DISTINCT T1.id FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid WHERE T2.format = 'gladiator' AND T2.status = 'Banned' AND T1.rarity = 'mythic'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 346,
+    "db_id": "card_games",
+    "question": "List all the card id and artist with unknown power which are legal for commander play format.",
+    "evidence": "unknown power refers to power = '*' or POWER IS NULL; commander play format refers to format = 'commander'; legal for commander play format refers to format = 'commander' where status = 'Legal'",
+    "SQL": "SELECT T1.id, T1.artist FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid WHERE T2.status = 'Legal' AND T2.format = 'commander' AND (T1.power IS NULL OR T1.power = '*')",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 351,
+    "db_id": "card_games",
+    "question": "Name all the cards which have alternative language in Japanese.",
+    "evidence": "Japanese' is the language;",
+    "SQL": "SELECT T1.name FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T1.uuid = T2.uuid WHERE T2.language = 'Japanese'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 355,
+    "db_id": "card_games",
+    "question": "What is the keyword found on card 'Angel of Mercy'?",
+    "evidence": "Angel of Mercy' is the name of card;",
+    "SQL": "SELECT DISTINCT keywords FROM cards WHERE name = 'Angel of Mercy'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 358,
+    "db_id": "card_games",
+    "question": "What is the border color of card \"Ancestor's Chosen\"?",
+    "evidence": "name of card  = 'Ancestor''s Chosen' ;",
+    "SQL": "SELECT DISTINCT borderColor FROM cards WHERE name = 'Ancestor''s Chosen'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 360,
+    "db_id": "card_games",
+    "question": "cards are not directly linked to language but through table 'set'. you need to add set in covered table & rephrase your question\nWhat are the languages available for the set that card 'Angel of Mercy' is in?",
+    "evidence": "Angel of Mercy' is the name of card;",
+    "SQL": "SELECT language FROM set_translations WHERE id IN ( SELECT id FROM cards WHERE name = 'Angel of Mercy' )",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 361,
+    "db_id": "card_games",
+    "question": "How many cards of legalities whose status is restricted have text boxes?",
+    "evidence": "restricted refers to status = 'restricted'; have text boxes refers to is Textless = 0;",
+    "SQL": "SELECT COUNT(DISTINCT T1.id) FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid WHERE T2.status = 'Restricted' AND T1.isTextless = 0",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 363,
+    "db_id": "card_games",
+    "question": "How many cards of legalities whose status is restricted are found in a starter deck?",
+    "evidence": "restricted refers to status = 'restricted'; found in the starter deck refers to isStarter = 1;",
+    "SQL": "SELECT COUNT(DISTINCT T1.id) FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid WHERE T2.status = 'Restricted' AND T1.isStarter = 1",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 364,
+    "db_id": "card_games",
+    "question": "What is the status of card \"Cloudchaser Eagle\"?",
+    "evidence": "Cloudchaser Eagle is the name of card;",
+    "SQL": "SELECT DISTINCT T2.status FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid WHERE T1.name = 'Cloudchaser Eagle'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 365,
+    "db_id": "card_games",
+    "question": "What is the type of card \"Benalish Knight\"?",
+    "evidence": "Benalish Knight' is the name of card;",
+    "SQL": "SELECT DISTINCT T1.type FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T1.uuid = T2.uuid WHERE T1.name = 'Benalish Knight'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 373,
+    "db_id": "card_games",
+    "question": "Name the cards that were illustrated by Aaron Boyd.",
+    "evidence": "Aaron Boyd' is artist;",
+    "SQL": "SELECT DISTINCT name FROM cards WHERE artist = 'Aaron Boyd'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 376,
+    "db_id": "card_games",
+    "question": "What are the card layout of cards with keyword of flying?",
+    "evidence": "",
+    "SQL": "SELECT layout FROM cards WHERE keywords = 'Flying'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 378,
+    "db_id": "card_games",
+    "question": "What are the foiled cards that are incredibly powerful when paired with non foiled cards? List the IDs.",
+    "evidence": "Incredibly powerful refers to both cardKingdomFoilId and cardKingdomId IS NOT Null;",
+    "SQL": "SELECT id FROM cards WHERE cardKingdomId IS NOT NULL AND cardKingdomFoilId IS NOT NULL",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 382,
+    "db_id": "card_games",
+    "question": "What are the cards that only available in paper and Japanese language?",
+    "evidence": "available in paper refers to availability = 'paper'; 'Japanese is the language;",
+    "SQL": "SELECT T1.name FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T1.uuid = T2.uuid WHERE T1.availability = 'paper' AND T2.language = 'Japanese'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 384,
+    "db_id": "card_games",
+    "question": "List down the uuid for legacy cards and the foreign language of these cards.",
+    "evidence": "legacy card refers to format = 'legacy'; foreign language refers to language in foreign_data",
+    "SQL": "SELECT T1.uuid, T3.language FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid INNER JOIN foreign_data AS T3 ON T1.uuid = T3.uuid WHERE T2.format = 'legacy'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 388,
+    "db_id": "card_games",
+    "question": "What are the cards in set 10E with converted mana of 5 have translation and what are the languages?",
+    "evidence": "set 10E refers to setCode = '10E'; converted mana of 5 refers to convertedManaCost = 5;",
+    "SQL": "SELECT id, language FROM set_translations WHERE id = ( SELECT id FROM cards WHERE convertedManaCost = 5 ) AND setCode = '10E'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 389,
+    "db_id": "card_games",
+    "question": "List down the name of cards with original types of Creature - Elf and the date of rulings for these cards.",
+    "evidence": "Creature - Elf is the originalType;",
+    "SQL": "SELECT T1.id, T2.date FROM cards AS T1 INNER JOIN rulings AS T2 ON T1.uuid = T2.uuid WHERE T1.originalType = 'Creature - Elf'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 391,
+    "db_id": "card_games",
+    "question": "Among the Artifact cards, which are black color and comes with foreign languague translation?",
+    "evidence": "Artifact card refers to originalType = 'Artifact'; black color refers to colors = 'B'; foreign language refers to language in foreign_data",
+    "SQL": "SELECT DISTINCT T1.name FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T1.uuid = T2.uuid WHERE T1.originalType = 'Artifact' AND T1.colors = 'B'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 392,
+    "db_id": "card_games",
+    "question": "Pick 3 cards with rarity of uncommon, list down name these cards according to ascending order of it's ruling date.",
+    "evidence": "uncommon refers to rarity = 'uncommon';",
+    "SQL": "SELECT DISTINCT T1.name FROM cards AS T1 INNER JOIN rulings AS T2 ON T1.uuid = T2.uuid WHERE T1.rarity = 'uncommon' ORDER BY T2.date ASC LIMIT 3",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 397,
+    "db_id": "card_games",
+    "question": "What is the mana cost of cards with a normal layout, a 2003 frame version, with a black border color, and available in paper and mtgo?",
+    "evidence": "available in paper and mtgo refers to availability = 'mtgo,paper'; frameVersion = 2003;borderColor = 'black'",
+    "SQL": "SELECT manaCost FROM cards WHERE availability = 'mtgo,paper' AND borderColor = 'black' AND frameVersion = 2003 AND layout = 'normal'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 400,
+    "db_id": "card_games",
+    "question": "Lists the set code of all cards translated into Spanish.",
+    "evidence": "Spanish refer to language; set code refers to setCode",
+    "SQL": "SELECT setCode FROM set_translations WHERE language = 'Spanish'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 403,
+    "db_id": "card_games",
+    "question": "Calculate the percentage of cards in Spanish. List them by name.",
+    "evidence": "Spanish refer to language; Percentage refer to DIVIDE(SUM(ID where language = 'Spanish'), COUNT(id))*100",
+    "SQL": "SELECT ( SELECT CAST(SUM(CASE WHEN language = 'Spanish' THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(*) FROM foreign_data ), name FROM foreign_data WHERE language = 'Spanish'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 406,
+    "db_id": "card_games",
+    "question": "Lists by ID all Creature-type cards with legal status.",
+    "evidence": "legal status refer to status = 'legal'; Goblin-type cards refer to types = 'Creature';",
+    "SQL": "SELECT T1.id FROM cards AS T1 INNER JOIN rulings AS T2 ON T1.uuid = T2.uuid INNER JOIN legalities AS T3 ON T1.uuid = T3.uuid WHERE T3.status = 'Legal' AND T1.types = 'Creature'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 408,
+    "db_id": "card_games",
+    "question": "How many unknown power cards contain info about the triggered ability",
+    "evidence": "unknown power cards refers to power is null or power = '*';contain info about the triggered ability refers to text contains 'triggered ability'",
+    "SQL": "SELECT T2.text FROM cards AS T1 INNER JOIN rulings AS T2 ON T1.uuid = T2.uuid WHERE (T1.power IS NULL OR T1.power = '*') AND T2.text LIKE '%triggered ability%'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 413,
+    "db_id": "card_games",
+    "question": "How many cards with print rarity have ruling text printed on 01/02/2007?",
+    "evidence": "with print rarity refers to rarity = 'rare'; on 01/02/2007 refers to date = '2007-02-01'",
+    "SQL": "SELECT COUNT(DISTINCT T1.id) FROM cards AS T1 INNER JOIN rulings AS T2 ON T1.uuid = T2.uuid WHERE T1.rarity = 'rare' AND T2.date = '2007-02-01'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 418,
+    "db_id": "card_games",
+    "question": "What kind of printing is on the card that Daren Bader created?",
+    "evidence": "kind of printing refers to availability; Daren Bader created refers to artist = 'Daren Bader'",
+    "SQL": "SELECT DISTINCT availability FROM cards WHERE artist = 'Daren Bader'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 430,
+    "db_id": "card_games",
+    "question": "Please list top two sets of cards with their IDs that have Italian-language cards and are located in the Shadowmoor block in alphabetical order.",
+    "evidence": "",
+    "SQL": "SELECT T1.name, T1.id FROM sets AS T1 INNER JOIN set_translations AS T2 ON T1.code = T2.setCode WHERE T1.block = 'Shadowmoor' AND T2.language = 'Italian' ORDER BY T1.id LIMIT 2",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 431,
+    "db_id": "card_games",
+    "question": "Which set is not available outside of the United States and has foil cards with Japanese writing on them? Please include the set ID in your response.",
+    "evidence": "available outside of the United States refers to isForeignOnly = 1; has foil cards refers to isFoilOnly = 1; with Japanese writing on them refers to language = 'Japanese'",
+    "SQL": "SELECT T1.name, T1.id FROM sets AS T1 INNER JOIN set_translations AS T2 ON T1.code = T2.setCode WHERE T2.language = 'Japanese' AND T1.isFoilOnly = 1 AND T1.isForeignOnly = 0",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 432,
+    "db_id": "card_games",
+    "question": "Which Russian set of cards contains the most cards overall?",
+    "evidence": "Russian refers to language = 'Russian'; contains the most cards overall refers to MAX(baseSetSize)",
+    "SQL": "SELECT T1.id FROM sets AS T1 INNER JOIN set_translations AS T2 ON T1.code = T2.setCode WHERE T2.language = 'Russian' GROUP BY T1.baseSetSize ORDER BY T1.baseSetSize DESC LIMIT 1",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 437,
+    "db_id": "card_games",
+    "question": "Among black card borders, which card has full artwork?",
+    "evidence": "white card borders refers to borderColor = 'white'; has full artwork refers to isFullArt = 1",
+    "SQL": "SELECT id FROM cards WHERE borderColor = 'black' AND isFullArt = 1",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 438,
+    "db_id": "card_games",
+    "question": "Point out the language of set id \"174\"?",
+    "evidence": "",
+    "SQL": "SELECT language FROM set_translations WHERE id = 174",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 444,
+    "db_id": "card_games",
+    "question": "Name the foreign name of the card that has boros watermark? List out the type of this card.",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT T1.name, T1.type FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T2.uuid = T1.uuid WHERE T1.watermark = 'boros'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 446,
+    "db_id": "card_games",
+    "question": "What is percentage of the cards with a converted Mana Cost of 10 in set of Abyssal Horror?",
+    "evidence": "set of Abyssal Horror refers to name = 'Abyssal Horror'; percentage refers to DIVIDE(COUNT(convertedManaCost = 16),COUNT(convertedManaCost))*100",
+    "SQL": "SELECT CAST(SUM(CASE WHEN T1.convertedManaCost = 10 THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(T1.id), T1.name FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T1.name = 'Abyssal Horror'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 452,
+    "db_id": "card_games",
+    "question": "Please list the names of the cards that have a text box.",
+    "evidence": "have a text box refers to isTextless = 0",
+    "SQL": "SELECT DISTINCT name FROM cards WHERE isTextless = 0",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 453,
+    "db_id": "card_games",
+    "question": "What's the unconverted mana cost of the card \"Ancestor's Chosen\"?",
+    "evidence": "card \"Ancestor's Chosen\" refers to name = 'Ancestor`s Chosen'",
+    "SQL": "SELECT DISTINCT manaCost FROM cards WHERE name = 'Ancestor''s Chosen'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 455,
+    "db_id": "card_games",
+    "question": "Which of the cards that are a promotional painting have multiple faces on the same card? Please list their names.",
+    "evidence": "are a promotional painting refers to isPromo = 1; have multiple faces on the same card refers to side is not Null",
+    "SQL": "SELECT DISTINCT name FROM cards WHERE isPromo = 1 AND side IS NOT NULL",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 456,
+    "db_id": "card_games",
+    "question": "What's the list of all types for the card \"Molimo, Maro-Sorcerer\"?",
+    "evidence": "card \"Molimo, Maro-Sorcerer\" refers to name = 'Molimo, Maro-Sorcerer'; list of all types refers to subtypes,supertypes",
+    "SQL": "SELECT DISTINCT subtypes, supertypes FROM cards WHERE name = 'Molimo, Maro-Sorcerer'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 463,
+    "db_id": "card_games",
+    "question": "How many translations are there for the set of cards with \"Angel of Mercy\" in it?",
+    "evidence": "set of cards with \"Angel of Mercy\" in it refers to name = 'Angel of Mercy'",
+    "SQL": "SELECT COUNT(DISTINCT translation) FROM set_translations WHERE setCode IN ( SELECT setCode FROM cards WHERE name = 'Angel of Mercy' ) AND translation IS NOT NULL",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 464,
+    "db_id": "card_games",
+    "question": "Please list the names of the cards in the set \"Hauptset Zehnte Edition\".",
+    "evidence": "card set \"Hauptset Zehnte Edition\" refers to translation = 'Hauptset Zehnte Edition'",
+    "SQL": "SELECT DISTINCT T1.name FROM cards AS T1 INNER JOIN set_translations AS T2 ON T2.setCode = T1.setCode WHERE T2.translation = 'Hauptset Zehnte Edition'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 465,
+    "db_id": "card_games",
+    "question": "For the set of cards with \"Ancestor's Chosen\" in it, is there a Korean version of it?",
+    "evidence": "set of cards with \"Ancestor''s Chosen\" in it refers to name = 'Ancestor''s Chosen'; Korean version refers to language = 'Korean'",
+    "SQL": "SELECT IIF(SUM(CASE WHEN T2.language = 'Korean' AND T2.translation IS NOT NULL THEN 1 ELSE 0 END) > 0, 'YES', 'NO') FROM cards AS T1 INNER JOIN set_translations AS T2 ON T2.setCode = T1.setCode WHERE T1.name = 'Ancestor''s Chosen'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 469,
+    "db_id": "card_games",
+    "question": "Did the set of cards with \"Angel of Mercy\" appear on Magic: The Gathering Online?",
+    "evidence": "card set \"Angel of Mercy\" refers to name = 'Angel of Mercy'; appear on Magic: The Gathering Online refers to mtgoCode is NOT NULL and vice versa",
+    "SQL": "SELECT IIF(T2.mtgoCode IS NOT NULL, 'YES', 'NO') FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T1.name = 'Angel of Mercy'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 470,
+    "db_id": "card_games",
+    "question": "When was the set of cards with \"Ancestor's Chosen\" released?",
+    "evidence": "card set \"Ancestor's Chosen\" refers to name = 'Ancestor''s Chosen'; when released refers to releaseDate",
+    "SQL": "SELECT DISTINCT T2.releaseDate FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T1.name = 'Ancestor''s Chosen'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 473,
+    "db_id": "card_games",
+    "question": "Is the set of cards with Adarkar Valkyrie only available outside the United States?",
+    "evidence": "card set Adarkar Valkyrie refers to name = 'Adarkar Valkyrie'; isForeignOnly = 1 means only available outside the United States;",
+    "SQL": "SELECT IIF(isForeignOnly = 1, 'YES', 'NO') FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T1.name = 'Adarkar Valkyrie'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 477,
+    "db_id": "card_games",
+    "question": "Which of these artists have designed a card in the set Coldsnap, Jeremy Jarvis, Aaron Miller or Chippy?",
+    "evidence": "card set Coldsnap refers to name = 'Coldsnap'; Jeremy Jarvis, Aaron Miller or Chippy are the name of artists which refers to artist IN ('Jeremy Jarvis', 'Aaron Miller','Chippy');",
+    "SQL": "SELECT T1.artist FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE (T2.name = 'Coldsnap' AND T1.artist = 'Chippy') OR (T2.name = 'Coldsnap' AND T1.artist = 'Aaron Miller') OR (T2.name = 'Coldsnap' AND T1.artist = 'Jeremy Jarvis') GROUP BY T1.artist",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 478,
+    "db_id": "card_games",
+    "question": "What is card number 4 in the set Coldsnap?",
+    "evidence": "card set Coldsnap refers to name = 'Coldsnap'; card number 4 refers to number = 4",
+    "SQL": "SELECT T1.name FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T2.name = 'Coldsnap' AND T1.number = 4",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 482,
+    "db_id": "card_games",
+    "question": "What's the German type of the card \"Ancestor's Chosen\"?",
+    "evidence": "German refers to language = 'German'; \"Ancestor's Chosen\" refers to name = 'Ancestor''s Chosen'",
+    "SQL": "SELECT DISTINCT T1.type FROM cards AS T1 INNER JOIN foreign_data AS T2 ON T2.uuid = T1.uuid WHERE T1.name = 'Ancestor''s Chosen' AND T2.language = 'German'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 483,
+    "db_id": "card_games",
+    "question": "Please list the Italian text ruling of all the cards in the set Coldsnap.",
+    "evidence": "card set Coldsnap refers to name = 'Coldsnap'; Italian refers to language = 'Italian'",
+    "SQL": "SELECT DISTINCT T1.text FROM foreign_data AS T1 INNER JOIN cards AS T2 ON T2.uuid = T1.uuid INNER JOIN sets AS T3 ON T3.code = T2.setCode WHERE T3.name = 'Coldsnap' AND T1.language = 'Italian'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 495,
+    "db_id": "card_games",
+    "question": "What was the release date for the set which card \"Evacuation\" in it?",
+    "evidence": "\"Evacuation\" refers to name = 'Evacuation'; release date refers to releaseDate",
+    "SQL": "SELECT T2.releaseDate FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T1.name = 'Evacuation'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 500,
+    "db_id": "card_games",
+    "question": "Tell the Japanese name of the set which card \"Fellwar Stone\" is in it.",
+    "evidence": "Japanese name refers to language = 'Japanese'; card \"Fellwar Stone\" refers to name = 'Fellwar Stone'",
+    "SQL": "SELECT T2.translation FROM cards AS T1 INNER JOIN set_translations AS T2 ON T2.setCode = T1.setCode WHERE T1.name = 'Fellwar Stone' AND T2.language = 'Japanese' AND T2.translation IS NOT NULL",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 501,
+    "db_id": "card_games",
+    "question": "Which card name in the set 'Journey into Nyx Hero's Path' has the highest converted mana cost.",
+    "evidence": "set 'Journey into Nyx Hero's Path' refers to name = 'Journey into Nyx Hero''s Path'",
+    "SQL": "SELECT T1.name FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T2.name = 'Journey into Nyx Hero''s Path' ORDER BY T1.convertedManaCost DESC LIMIT 1",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 503,
+    "db_id": "card_games",
+    "question": "What was the expansion type for the set which card \"Samite Pilgrim\" in it?",
+    "evidence": "expansion type refers to type; card \"Samite Pilgrim\" refers to name = 'Samite Pilgrim'",
+    "SQL": "SELECT type FROM sets WHERE code IN ( SELECT setCode FROM cards WHERE name = 'Samite Pilgrim' )",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 508,
+    "db_id": "card_games",
+    "question": "What are the available printing types of the cards that doesn't have a text box created by Aleksi Briclot?",
+    "evidence": "created by Aleksi Briclot refers to artist = 'Aleksi Briclot'; doesn't have a text box refers to isTextless = 1; available printing types refers to availability",
+    "SQL": "SELECT DISTINCT availability FROM cards WHERE artist = 'Aleksi Briclot' AND isTextless = 1",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 528,
+    "db_id": "card_games",
+    "question": "List the names of all the cards in the set Hour of Devastation and find the formats in which these cards are legal.",
+    "evidence": "the set Hour of Devastation refers to set.name = 'Hour of Devastation'; names of all the cards in the set refers to cards.name; legal cards refers to status = 'Legal'; the formats refers to format",
+    "SQL": "SELECT DISTINCT T2.name , CASE WHEN T1.status = 'Legal' THEN T1.format ELSE NULL END FROM legalities AS T1 INNER JOIN cards AS T2 ON T2.uuid = T1.uuid WHERE T2.setCode IN ( SELECT code FROM sets WHERE name = 'Hour of Devastation' )",
+    "difficulty": "challenging"
+  }
+]

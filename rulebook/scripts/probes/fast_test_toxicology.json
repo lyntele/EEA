@@ -1,0 +1,402 @@
+[
+  {
+    "question_id": 198,
+    "db_id": "toxicology",
+    "question": "On average how many carcinogenic molecules are single bonded?",
+    "evidence": "carcinogenic molecules refers to label = '+'; single-bonded refers to bond_type = '-'; average = DIVIDE(SUM(bond_type = '-'), COUNT(atom_id))",
+    "SQL": "SELECT AVG(single_bond_count) FROM (SELECT T3.molecule_id, COUNT(T1.bond_type) AS single_bond_count FROM bond AS T1  INNER JOIN atom AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN molecule AS T3 ON T3.molecule_id = T2.molecule_id WHERE T1.bond_type = '-' AND T3.label = '+' GROUP BY T3.molecule_id) AS subquery",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 201,
+    "db_id": "toxicology",
+    "question": "What is the percentage of carbon in double-bond molecules?",
+    "evidence": "carbon refers to element = 'c'; double-bond molecules refers to bond_type = '='; percentage = DIVIDE(SUM(element = 'c'), COUNT(atom_id))",
+    "SQL": "SELECT CAST(COUNT(DISTINCT CASE WHEN T1.element = 'c' THEN T1.atom_id ELSE NULL END) AS REAL) * 100 / COUNT(DISTINCT T1.atom_id) FROM atom AS T1 INNER JOIN bond AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.bond_type = '='",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 205,
+    "db_id": "toxicology",
+    "question": "Identify by their ID the molecules in which there is carbon.",
+    "evidence": "carbon refers to element = 'c';",
+    "SQL": "SELECT T.molecule_id FROM atom AS T WHERE T.element = 'c'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 206,
+    "db_id": "toxicology",
+    "question": "What elements are in the TR004_8_9 bond atoms?",
+    "evidence": "TR004_8_9 bond atoms refers to bond_id = 'TR004_8_9';",
+    "SQL": "SELECT DISTINCT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T2.bond_id = 'TR004_8_9'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 207,
+    "db_id": "toxicology",
+    "question": "What elements are in a double type bond?",
+    "evidence": "double type bond refers to bond_type = '=';",
+    "SQL": "SELECT DISTINCT T1.element FROM atom AS T1 INNER JOIN bond AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN connected AS T3 ON T1.atom_id = T3.atom_id WHERE T2.bond_type = '='",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 210,
+    "db_id": "toxicology",
+    "question": "What atoms are connected in single type bonds?",
+    "evidence": "single type bond refers to bond_type = '-';",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id WHERE T1.bond_type = '-'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 211,
+    "db_id": "toxicology",
+    "question": "Indicate which atoms are connected in non-carcinogenic type molecules.",
+    "evidence": "label = '-' means molecules are non-carcinogenic",
+    "SQL": "SELECT DISTINCT T1.atom_id FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN connected AS T3 ON T1.atom_id = T3.atom_id WHERE T2.label = '-'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 214,
+    "db_id": "toxicology",
+    "question": "What type of label is not on molecules with atoms with tin?",
+    "evidence": "tin refers to element ! = 'sn'; label = '+' mean molecules are carcinogenic; label = '-' means molecules are non-carcinogenic",
+    "SQL": "SELECT DISTINCT T2.label FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.element != 'sn'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 215,
+    "db_id": "toxicology",
+    "question": "How many atoms with iodine and with sulfur type elements are there in single bond molecules?",
+    "evidence": "with iodine element refer to element = 'i'; with sulfur element refers to element = 's'; single type bond refers to bond_type = '-'; Should consider the distinct atoms when counting;",
+    "SQL": "SELECT COUNT(DISTINCT CASE WHEN T1.element = 'i' THEN T1.atom_id ELSE NULL END) AS iodine_nums , COUNT(DISTINCT CASE WHEN T1.element = 's' THEN T1.atom_id ELSE NULL END) AS sulfur_nums FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id INNER JOIN bond AS T3 ON T2.bond_id = T3.bond_id WHERE T3.bond_type = '-'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 216,
+    "db_id": "toxicology",
+    "question": "Identify all connected atoms with a triple bond.",
+    "evidence": "triple bond refers to bond_type = '#';",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id WHERE T1.bond_type = '#'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 217,
+    "db_id": "toxicology",
+    "question": "Identify all the atoms that are connected to the atoms of the TR181 molecule.",
+    "evidence": "TR181 molecule refers to molecule_id = 'TR181'",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM atom AS T1 INNER JOIN connected AS T2 ON T2.atom_id = T1.atom_id WHERE T1.molecule_id = 'TR181'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 218,
+    "db_id": "toxicology",
+    "question": "What percentage of carcinogenic-type molecules does not contain fluorine?",
+    "evidence": "label = '+' mean molecules are carcinogenic; contain fluorine refers to element = 'f'; percentage = DIVIDE(SUM(element = 'f') * 100, COUNT(molecule_id)) where label = '+'; Should consider the distinct atoms when counting;",
+    "SQL": "SELECT CAST(COUNT(DISTINCT CASE WHEN T1.element <> 'f' THEN T2.molecule_id ELSE NULL END) AS REAL) * 100 / COUNT(DISTINCT T2.molecule_id) FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.label = '+'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 219,
+    "db_id": "toxicology",
+    "question": "What is the percentage of carcinogenic molecules in triple type bonds?",
+    "evidence": "label = '+' mean molecules are carcinogenic; triple bond refers to bond_type = '#'; percentage = DIVIDE(SUM(bond_type = '#') * 100, COUNT(bond_id)) as percent where label = '+'",
+    "SQL": "SELECT CAST(COUNT(DISTINCT CASE WHEN T2.label = '+' THEN T2.molecule_id ELSE NULL END) AS REAL) * 100 / COUNT(DISTINCT T2.molecule_id) FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN bond AS T3 ON T2.molecule_id = T3.molecule_id WHERE T3.bond_type = '#'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 220,
+    "db_id": "toxicology",
+    "question": "Please list top three elements of the toxicology of the molecule TR000 in alphabetical order.",
+    "evidence": "TR000 is the molecule id;",
+    "SQL": "SELECT DISTINCT T.element FROM atom AS T WHERE T.molecule_id = 'TR000' ORDER BY T.element LIMIT 3",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 221,
+    "db_id": "toxicology",
+    "question": "What are the atoms that are bonded in the molecule TR001 with the bond ID of TR001_2_6?",
+    "evidence": "TR001 is the molecule id; TR001_2_6 is the bond id",
+    "SQL": "SELECT SUBSTR(T.bond_id, 1, 7) AS atom_id1 , T.molecule_id || SUBSTR(T.bond_id, 8, 2) AS atom_id2 FROM bond AS T WHERE T.molecule_id = 'TR001' AND T.bond_id = 'TR001_2_6'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 223,
+    "db_id": "toxicology",
+    "question": "What are the atom IDs of the bond TR000_2_5?",
+    "evidence": "TR000_2_5 is the bond id",
+    "SQL": "SELECT T.atom_id FROM connected AS T WHERE T.bond_id = 'TR000_2_5'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 225,
+    "db_id": "toxicology",
+    "question": "Please list top five molecules that have double bonds in alphabetical order.",
+    "evidence": "double bond refers to bond_type = ' = ';",
+    "SQL": "SELECT DISTINCT T.molecule_id FROM bond AS T WHERE T.bond_type = '=' ORDER BY T.molecule_id LIMIT 5",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 231,
+    "db_id": "toxicology",
+    "question": "Which bond type accounted for the majority of the bonds found in molecule TR010 and state whether or not this molecule is carcinogenic?",
+    "evidence": "TR010 is the molecule id; majority of the bond found refers to MAX(COUNT(bond_type)); ",
+    "SQL": "SELECT T.bond_type FROM ( SELECT T1.bond_type, COUNT(T1.molecule_id) FROM bond AS T1  WHERE T1.molecule_id = 'TR010' GROUP BY T1.bond_type ORDER BY COUNT(T1.molecule_id) DESC LIMIT 1 ) AS T",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 234,
+    "db_id": "toxicology",
+    "question": "How many bonds which involved atom 12 does molecule TR009 have?",
+    "evidence": "TR009 is the molecule id;  involved atom 12 refers to atom_id = 'TR009_12' or atom_id2 = 'TR009_12'",
+    "SQL": "SELECT COUNT(T2.bond_id) FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id WHERE T1.molecule_id = 'TR009' AND T2.atom_id = T1.molecule_id || '_1' AND T2.atom_id2 = T1.molecule_id || '_2'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 237,
+    "db_id": "toxicology",
+    "question": "Which molecule does the atom TR001_10 belong to? Please state whether this molecule is carcinogenic or not.",
+    "evidence": "TR001_10 is the atom id; label = '+' mean molecules are carcinogenic",
+    "SQL": "SELECT T2.molecule_id , IIF(T2.label = '+', 'YES', 'NO') AS flag_carcinogenic FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.atom_id = 'TR001_10'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 239,
+    "db_id": "toxicology",
+    "question": "How many connections does the atom 19 have?",
+    "evidence": "connections refers to bond_id; atom 19 refers to atom_id like 'TR%_19';",
+    "SQL": "SELECT COUNT(T.bond_id) FROM connected AS T WHERE SUBSTR(T.atom_id, -2) = '19'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 247,
+    "db_id": "toxicology",
+    "question": "List all the elements of atoms that can not bond with any other atoms.",
+    "evidence": " atoms cannot bond with other atoms means atom_id NOT in connected table;",
+    "SQL": "SELECT DISTINCT T.element FROM atom AS T WHERE T.element NOT IN ( SELECT DISTINCT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id )",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 248,
+    "db_id": "toxicology",
+    "question": "What are the atoms of the triple bond with the molecule \"TR041\"?",
+    "evidence": "TR041 is the molecule id; triple bond refers to bond_type = '#';",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id INNER JOIN bond AS T3 ON T2.bond_id = T3.bond_id WHERE T3.bond_type = '#' AND T3.molecule_id = 'TR041'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 249,
+    "db_id": "toxicology",
+    "question": "What are the elements of the atoms of TR144_8_19?",
+    "evidence": "TR144_8_19 is the bond id; ",
+    "SQL": "SELECT T2.element FROM connected AS T1 INNER JOIN atom AS T2 ON T1.atom_id = T2.atom_id WHERE T1.bond_id = 'TR144_8_19'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 251,
+    "db_id": "toxicology",
+    "question": "What is the least common element of all carcinogenic molecules?",
+    "evidence": "label = '+' mean molecules are carcinogenic",
+    "SQL": "SELECT T.element FROM ( SELECT T2.element, COUNT(DISTINCT T2.molecule_id) FROM molecule AS T1 INNER JOIN atom AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.label = '+' GROUP BY T2.element ORDER BY COUNT(DISTINCT T2.molecule_id) LIMIT 1 ) t",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 252,
+    "db_id": "toxicology",
+    "question": "What are the atoms that can bond with the atom that has the element lead?",
+    "evidence": "atom that has the element lead refers to atom_id where element = 'pb'",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T1.element = 'pb'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 253,
+    "db_id": "toxicology",
+    "question": "List the elements of all the triple bonds.",
+    "evidence": "triple bond refers to bond_type = '#';",
+    "SQL": "SELECT DISTINCT T3.element FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id INNER JOIN atom AS T3 ON T2.atom_id = T3.atom_id WHERE T1.bond_type = '#'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 254,
+    "db_id": "toxicology",
+    "question": "What percentage of bonds have the most common combination of atoms' elements?",
+    "evidence": "DIVIDE(COUNT(bond_id), COUNT(atom_id where MAX(COUNT(atom_id)) ))",
+    "SQL": "SELECT CAST((SELECT COUNT(T1.atom_id) FROM connected AS T1 INNER JOIN bond AS T2 ON T1.bond_id = T2.bond_id GROUP BY T2.bond_type ORDER BY COUNT(T2.bond_id) DESC LIMIT 1 ) AS REAL) * 100 / ( SELECT COUNT(atom_id) FROM connected )",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 257,
+    "db_id": "toxicology",
+    "question": "List down atom id2 for atoms with element sulfur.",
+    "evidence": "element sulfur refers to element = 's'",
+    "SQL": "SELECT DISTINCT T2.atom_id2 FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T1.element = 's'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 261,
+    "db_id": "toxicology",
+    "question": "Write down bond id for molecules that are carcinogenic.",
+    "evidence": "label = '+' mean molecules are carcinogenic",
+    "SQL": "SELECT DISTINCT T1.bond_id FROM bond AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.label = '+'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 263,
+    "db_id": "toxicology",
+    "question": "What is the composition of element chlorine in percentage among the single bond molecules?",
+    "evidence": "element chlorine refers to element = 'cl'; single bond refers to bond_type = '-'; percentage = DIVIDE(SUM(element = 'cl'), COUNT(atom_id)) as percent where bond_type = '-'",
+    "SQL": "SELECT CAST(COUNT(CASE WHEN T.element = 'cl' THEN T.atom_id ELSE NULL END) AS REAL) * 100 / COUNT(T.atom_id) FROM ( SELECT T1.atom_id, T1.element FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN bond AS T3 ON T2.molecule_id = T3.molecule_id WHERE T3.bond_type = '-' ) AS T",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 264,
+    "db_id": "toxicology",
+    "question": "What are the labels for TR000, TR001 and TR002?",
+    "evidence": "TR000, TR001 and TR002 are molecule id; label = '+' mean molecules are carcinogenic; label = '-' means molecules are non-carcinogenic",
+    "SQL": "SELECT molecule_id, T.label FROM molecule AS T WHERE T.molecule_id IN ('TR000', 'TR001', 'TR002')",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 267,
+    "db_id": "toxicology",
+    "question": "List down the bond type for molecules from molecule id TR000 to TR050.",
+    "evidence": "double bond refers to bond_type = ' = '; single bond refers to bond_type = '-'; triple bond refers to bond_type = '#';",
+    "SQL": "SELECT T2.molecule_id, T2.bond_type FROM molecule AS T1 INNER JOIN bond AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.molecule_id BETWEEN 'TR000' AND 'TR050'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 268,
+    "db_id": "toxicology",
+    "question": "What are the elements for bond id TR001_10_11?",
+    "evidence": "TR001_10_11 is the bond id;",
+    "SQL": "SELECT T2.element FROM connected AS T1 INNER JOIN atom AS T2 ON T1.atom_id = T2.atom_id WHERE T1.bond_id = 'TR001_10_11'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 269,
+    "db_id": "toxicology",
+    "question": "How many bond id have element iodine?",
+    "evidence": "iodine refers to element = 'i'",
+    "SQL": "SELECT COUNT(T3.bond_id) FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id INNER JOIN bond AS T3 ON T2.molecule_id = T3.molecule_id WHERE T1.element = 'i'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 271,
+    "db_id": "toxicology",
+    "question": "Does bond id TR001_1_8 have both element of chlorine and carbon?",
+    "evidence": "chlorine refers to element = 'cl'; carbon refers to element = 'c'",
+    "SQL": "SELECT T2.bond_id, T2.atom_id2, T1.element AS flag_have_CaCl FROM atom AS T1 INNER JOIN connected AS T2 ON T2.atom_id = T1.atom_id WHERE T2.bond_id = 'TR001_1_8' AND (T1.element = 'c1' OR T1.element = 'c')",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 276,
+    "db_id": "toxicology",
+    "question": "Write down the atom IDs of the first and second atoms of triple bond type molecules.",
+    "evidence": "first atom refers to atom_id; second atom refers to atom_id2; triple bond refers to bond_type = '#';",
+    "SQL": "SELECT T2.atom_id, T2.atom_id2 FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id WHERE T1.bond_type = '#'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 277,
+    "db_id": "toxicology",
+    "question": "What are the toxicology elements associated with bond ID TR000_1_2?",
+    "evidence": "TR000_1_2 is the bond id;",
+    "SQL": "SELECT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T2.bond_id = 'TR000_1_2'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 281,
+    "db_id": "toxicology",
+    "question": "Tally the toxicology element of the 4th atom of each molecule that was carcinogenic.",
+    "evidence": "label = '+' means molecules are carcinogenic; 4th atom of each molecule refers to substr(atom_id, 7, 1) = '4'; ",
+    "SQL": "SELECT DISTINCT T1.element FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.label = '+' AND SUBSTR(T1.atom_id, -1) = '4' AND LENGTH(T1.atom_id) = 7",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 285,
+    "db_id": "toxicology",
+    "question": "Name chemical elements that form a bond TR001_10_11.",
+    "evidence": "element = 'cl' means Chlorine; element = 'c' means Carbon; element = 'h' means Hydrogen; element = 'o' means Oxygen, element = 's' means Sulfur; element = 'n' means Nitrogen, element = 'p' means Phosphorus, element = 'na' means Sodium, element = 'br' means Bromine, element = 'f' means Fluorine; element = 'i' means Iodine; element = 'sn' means Tin; element = 'pb' means Lead; element = 'te' means Tellurium; element = 'ca' means Calcium; TR001_10_11 is the bond id; molecule id refers to SUBSTR(bond_id, 1, 5); atom 1 refers to SUBSTR(bond_id, 7, 2); atom 2 refers to SUBSTR(bond_id, 10, 2)",
+    "SQL": "SELECT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id INNER JOIN bond AS T3 ON T2.bond_id = T3.bond_id WHERE T3.bond_id = 'TR001_10_11'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 286,
+    "db_id": "toxicology",
+    "question": "Among all chemical compounds identified in the database, what percent of compounds form a triple-bond.",
+    "evidence": "triple bond refers to bond_type = '#';",
+    "SQL": "SELECT CAST(COUNT(CASE WHEN T.bond_type = '#' THEN T.bond_id ELSE NULL END) AS REAL) * 100 / COUNT(T.bond_id) FROM bond AS T",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 294,
+    "db_id": "toxicology",
+    "question": "Which bond ids are double-bond with carcinogenic compound?",
+    "evidence": "label = '+' mean molecules are carcinogenic; double bond refers to bond_type = ' = ';",
+    "SQL": "SELECT T1.bond_id FROM bond AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.label = '+' AND T1.bond_type = '='",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 296,
+    "db_id": "toxicology",
+    "question": "Indicate the molecule id is belonging to the TR000_1_2 bond that has the first atom named TR000_1.",
+    "evidence": "",
+    "SQL": "SELECT T2.molecule_id, T2.bond_id, T1.atom_id FROM connected AS T1 INNER JOIN bond AS T2 ON T1.bond_id = T2.bond_id WHERE T1.atom_id = 'TR000_1' AND T2.bond_id = 'TR000_1_2'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 297,
+    "db_id": "toxicology",
+    "question": "Among the atoms that contain element carbon, which one does not contain compound carcinogenic?",
+    "evidence": "label = '-' means molecules are non-carcinogenic; carbon refers to element = 'c'",
+    "SQL": "SELECT T1.atom_id FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.element = 'c' AND T2.label = '-'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 298,
+    "db_id": "toxicology",
+    "question": "Calculate the percentage of molecules containing carcinogenic compounds that element is hydrogen.",
+    "evidence": "hydrogen refers to element = 'h'; label = '+' mean molecules are carcinogenic; percentage = DIVIDE(SUM(label = '+' and element = 'h'), COUNT(molecule_id)) * 100.0",
+    "SQL": "SELECT CAST(COUNT(CASE WHEN T1.element = 'h' AND T2.label = '+' THEN T2.molecule_id ELSE NULL END) AS REAL) * 100 / COUNT(T2.molecule_id) FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 302,
+    "db_id": "toxicology",
+    "question": "Name the elements that comprise the atoms of bond TR001_2_4.",
+    "evidence": "element = 'cl' means Chlorine; element = 'c' means Carbon; element = 'h' means Hydrogen; element = 'o' means Oxygen, element = 's' means Sulfur; element = 'n' means Nitrogen, element = 'p' means Phosphorus, element = 'na' means Sodium, element = 'br' means Bromine, element = 'f' means Fluorine; element = 'i' means Iodine; element = 'sn' means Tin; element = 'pb' means Lead; element = 'te' means Tellurium; element = 'ca' means Calcium",
+    "SQL": "SELECT DISTINCT T1.element FROM atom AS T1 INNER JOIN connected AS T2 ON T1.atom_id = T2.atom_id WHERE T2.bond_id = 'TR001_2_4'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 304,
+    "db_id": "toxicology",
+    "question": "List all carcinogenic molecules and their elements.",
+    "evidence": "label = '+' mean molecules are carcinogenic; element = 'cl' means Chlorine; element = 'c' means Carbon; element = 'h' means Hydrogen; element = 'o' means Oxygen, element = 's' means Sulfur; element = 'n' means Nitrogen, element = 'p' means Phosphorus, element = 'na' means Sodium, element = 'br' means Bromine, element = 'f' means Fluorine; element = 'i' means Iodine; element = 'sn' means Tin; element = 'pb' means Lead; element = 'te' means Tellurium; element = 'ca' means Calcium",
+    "SQL": "SELECT DISTINCT T2.molecule_id, T1.element FROM atom AS T1 INNER JOIN molecule AS T2 ON T1.molecule_id = T2.molecule_id WHERE T2.label = '+'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 305,
+    "db_id": "toxicology",
+    "question": "Name all bonds with single bond types and what atoms are connected to the molecules.",
+    "evidence": "single bond refers to bond_type = '-';",
+    "SQL": "SELECT T1.bond_id, T2.atom_id, T2.atom_id2 FROM bond AS T1 INNER JOIN connected AS T2 ON T1.bond_id = T2.bond_id WHERE T1.bond_type = '-'",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 306,
+    "db_id": "toxicology",
+    "question": "Which molecules have triple bonds and list all the elements they contain.",
+    "evidence": "triple bond refers to bond_type = '#'; element = 'cl' means Chlorine; element = 'c' means Carbon; element = 'h' means Hydrogen; element = 'o' means Oxygen, element = 's' means Sulfur; element = 'n' means Nitrogen, element = 'p' means Phosphorus, element = 'na' means Sodium, element = 'br' means Bromine, element = 'f' means Fluorine; element = 'i' means Iodine; element = 'sn' means Tin; element = 'pb' means Lead; element = 'te' means Tellurium; element = 'ca' means Calcium",
+    "SQL": "SELECT DISTINCT T1.molecule_id, T2.element FROM bond AS T1 INNER JOIN atom AS T2 ON T1.molecule_id = T2.molecule_id WHERE T1.bond_type = '#'",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 307,
+    "db_id": "toxicology",
+    "question": "Name the atoms' elements that form bond TR000_2_3.",
+    "evidence": "element = 'cl' means Chlorine; element = 'c' means Carbon; element = 'h' means Hydrogen; element = 'o' means Oxygen, element = 's' means Sulfur; element = 'n' means Nitrogen, element = 'p' means Phosphorus, element = 'na' means Sodium, element = 'br' means Bromine, element = 'f' means Fluorine; element = 'i' means Iodine; element = 'sn' means Tin; element = 'pb' means Lead; element = 'te' means Tellurium; element = 'ca' means Calcium",
+    "SQL": "SELECT T2.element FROM connected AS T1 INNER JOIN atom AS T2 ON T1.atom_id = T2.atom_id WHERE T1.bond_id = 'TR000_2_3'",
+    "difficulty": "challenging"
+  }
+]
