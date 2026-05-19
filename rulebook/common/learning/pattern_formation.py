@@ -3958,9 +3958,42 @@ def _branch_spec_required_signals(
         if signals:
             signal_sets.append(signals)
     if not signal_sets:
-        return []
-    common = set.intersection(*signal_sets)
+        common: Set[str] = set()
+    else:
+        common = set.intersection(*signal_sets)
+    role_signal_sets = [
+        role_signals for group in branch_groups if (role_signals := _repair_output_role_required_signals(group))
+    ]
+    if role_signal_sets:
+        common.update(set.intersection(*role_signal_sets))
     return sorted(common)
+
+
+def _repair_output_role_required_signals(group: GroupSummary) -> Set[str]:
+    """Project repair source output roles into runtime-visible pred role signals."""
+    signals = _signal_payload(group)
+    ir = dict((signals.get("canonical_repair_ir") or {}) or {})
+    primary_roles: Set[str] = set()
+    fallback_roles: Set[str] = set()
+    for op in ir.get("program_ops") or []:
+        payload = _model_dump(op)
+        args = _model_dump(payload.get("arguments") or {})
+        signature = _model_dump(args.get("operation_signature") or args.get("shared_signature") or {})
+        role_delta = _model_dump(signature.get("role_delta") or {})
+        roles = list(role_delta.get("source_output_roles") or []) or list(
+            role_delta.get("target_output_roles") or []
+        )
+        if not roles:
+            continue
+        is_dependency = bool(signature.get("is_dependency") or payload.get("is_dependency") or False)
+        required = bool(signature.get("required", payload.get("required", True)))
+        target = fallback_roles if is_dependency or not required else primary_roles
+        for raw_role in roles:
+            role = " ".join(str(raw_role or "").strip().lower().split())
+            if not role or role in {"unknown", "none", "null"}:
+                continue
+            target.add(f"pred.contains_column_role={role}")
+    return primary_roles or fallback_roles
 
 
 def _merge_branch_rows_for_admission_spec(
