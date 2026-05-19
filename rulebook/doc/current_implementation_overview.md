@@ -142,10 +142,42 @@ Responsibilities:
     `PatternRecognitionContract`; on match, runtime opens the path for
     **both pattern and singleton** memories (P0c, commit ee3dc87,
     runtime.py:2405-2421)
+  - **route_evidence_fast_track** (runtime.py:2440-2577): patterns whose
+    `formation_signals.retrieval_evidence` contains `gold_only_tables` or
+    `gold_join_edges` can bypass multiple gates through a deterministic
+    structural match. `_route_evidence_match_reasons` (runtime.py:534-585)
+    compares the pattern's learned evidence against S0's `tables_used`,
+    join graph signatures, and `target_output_role`. Three match types:
+    `gold_only_tables_missing`, `gold_join_edges_missing`,
+    `target_output_role_mismatch`. When match reasons exist AND group is
+    PATTERN,
+    `route_evidence_fast_track=True`. This:
+    - forces `variant_required_match=True` (line 2549)
+    - forces `generalized_canonical_gate_passed=True` (line 2550)
+    - clears `required_misses` (line 2551)
+    - defers `source_fact_misses` instead of hard-failing (line 2553-2557)
+    - skips `pre_condition` Q/S LLM judge entirely (line 2562)
+    - defers branch `required_signals` misses (line 1928-1932)
+    **Known gap (2026-05-18):** this validates that the PATTERN has
+    structural knowledge (gold uses a table S0 doesn't have), but does not
+    validate that the CURRENT CASE needs that repair. For join_bridge
+    patterns this causes cross-pattern misfires: e.g., a driverStandings
+    pattern fires on cases that correctly use results because both have the
+    same S0 table set. The deferred `source_state_facts` and skipped Q/S
+    judge would otherwise filter these cases.
+    **Known gap (2026-05-18):** `_source_antipattern_failures`
+    (runtime.py:987-1058) processes `output_path_delta`,
+    `predicate_scope_delta`, `grain_delta`, but does NOT process
+    `relation_delta`. Pattern branches carry `relation_delta.removed` /
+    `.added` (the join edges to remove/add), but this is only checked at
+    compiler level (`_variant_requires_relation_reroute`,
+    action_compiler.py:3492-3508), not at the gate level.
   - applicability checks driven by `program_envelope`
     (`_program_envelope_applicability`, runtime.py:984-1049)
     - `program_envelope.source_antipatterns`
-    - `program_envelope.target_invariants`
+    - `program_envelope.target_invariants` (skip `target_added_relation_equality`
+      and `target_output_roles` when pattern adds new tables — commit 1860d36,
+      0b922a6)
     - `program_envelope.required_role_slots`
     - `program_envelope.negative_guards`
   - branch-level runtime selection for `pattern` memories
@@ -387,6 +419,35 @@ WUv2-2 binding-contract hard gate:
   (`_runtime_binding_contract_payload`) and writes it onto every canonical op
   via `learning/shared_program_synthesizer.py::attach_binding_contract_to_program`.
   Without admission-level wiring, the compiler refuses to bind seed targets.
+
+REROUTE_FACT / INSERT_BRIDGE contract precision (known gap, 2026-05-18):
+
+- `_enumerate_reroute_fact` (action_compiler.py:3511-3575) produces candidates
+  with `target_relation_edges` (the joins to ADD) and uses
+  `_variant_requires_relation_reroute` (action_compiler.py:3492-3508) to verify
+  S0 has the source join and lacks the target join. The compiler also produces
+  bridge hint candidates from `target_added_relation_equality` invariants
+  (commit 7d2b57a, `_bridge_hint_candidates_from_target_edges`).
+- The `raw_hint` constructed from REROUTE_FACT carries `target_relation_edges`
+  as JSON plus preserve-invariant tags. It specifies what to ADD but does NOT
+  specify: (a) which join(s) in S0 to REMOVE, (b) which column references to
+  REMAP (e.g., `res.position` → `ds.position`). The `relation_delta.removed`
+  edges are present in the branch `source_antipatterns` but are not propagated
+  to the rewrite contract.
+- `run_hint_instantiation` LLM compresses the raw_hint to natural language
+  ("Join X with Y, preserve existing filter"), further losing the precise
+  add/remove/remap specification.
+- Contrast with DROP_SIDE / DROP_SELECT_SLOT: their rewrite contracts are
+  precise subtractions ("drop column X, drop JOIN Y ON Z") that the rewrite LLM
+  can execute reliably. toxicology achieves 67% conversion (6/9 ready→helped)
+  with these precise contracts. formula_1 achieves 0% conversion (0/11) with
+  the imprecise REROUTE_FACT contract.
+- To close this gap, the contract builder needs to: (1) read
+  `relation_delta.removed` from the branch antipattern and identify the
+  corresponding join clause in S0, (2) compute column-reference remapping from
+  the removed table to the added table, (3) emit these as explicit
+  `required_removal_edits` and `required_remap_edits` alongside the existing
+  `target_relation_edges`.
 
 ### `common/llm/nodes.py`
 
