@@ -1075,6 +1075,10 @@ def _taxonomy_from_blockers(
         labels.add("branch_axis_pair")
     if "grain_treated_as_branch_axis" in blocker_text:
         labels.add("grain_branch_axis_downgrade")
+    if "lowering_family_treated_as_branch_axis" in blocker_text:
+        labels.add("lowering_branch_axis_downgrade")
+    if "legacy_basis_treated_as_root_effect_backed" in blocker_text:
+        labels.add("root_effect_backed_legacy_basis")
     if not program_compatible and not labels:
         labels.add("compat_too_strict")
     if program_compatible and effect_signature_count <= 0:
@@ -1085,24 +1089,31 @@ def _taxonomy_from_blockers(
 def _shared_program_pair_compatibility(
     left: GroupSummary,
     right: GroupSummary,
+    *,
+    allow_lowering_branch_axis: bool = False,
 ) -> Tuple[bool, Tuple[str, ...], bool, bool, int, str]:
     left_lowering = _canonical_lowering_families(left)
     right_lowering = _canonical_lowering_families(right)
+    non_fatal_blockers: Tuple[str, ...] = ()
     if left_lowering and right_lowering and not (left_lowering & right_lowering):
-        return (
-            False,
-            ("lowering_family_incompatible",),
-            False,
-            False,
-            0,
-            "lowering_family_prefilter",
-        )
+        if allow_lowering_branch_axis:
+            non_fatal_blockers = ("lowering_family_treated_as_branch_axis",)
+        else:
+            return (
+                False,
+                ("lowering_family_incompatible",),
+                False,
+                False,
+                0,
+                "lowering_family_prefilter",
+            )
     result = synthesize_shared_program([left, right], require_effect_program=True)
     coverage = result.coverage
     blockers = tuple(str(item) for item in (coverage.blockers or []) if str(item))
     effect_signature_count = len(_program_effect_candidates(result.program))
     if result.program is not None and effect_signature_count <= 0:
         blockers = (*blockers, "shared_program_lost_effect")
+    returned_blockers = (*non_fatal_blockers, *blockers)
     compatible = bool(
         result.program is not None
         and float(coverage.compile_coverage or 0.0) >= 1.0
@@ -1121,12 +1132,24 @@ def _shared_program_pair_compatibility(
     )
     return (
         compatible,
-        blockers,
+        returned_blockers,
         spans_output_grain,
         has_substantive_target_contract,
         effect_signature_count,
         result.synthesis_basis,
     )
+
+
+def _root_alignment_reasons(broad_retrieval_reasons: Sequence[str]) -> Set[str]:
+    """Route-level evidence that a pair shares one repair root, even with branch-axis deltas."""
+    root_reasons = {
+        "shared_target_route",
+        "shared_gold_only_table",
+        "shared_target_role",
+        "shared_target_invariant_family",
+        "shared_root_effect_axis_with_same_target_invariant_family",
+    }
+    return root_reasons & {str(reason) for reason in broad_retrieval_reasons or []}
 
 
 def _output_grain_compatible(left: GroupSummary, right: GroupSummary) -> bool:
@@ -1230,15 +1253,9 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
             )
         else:
             program_blockers = (*program_blockers, "signal_missing")
+    root_alignment_reasons = _root_alignment_reasons(broad_retrieval_reasons)
     if _is_direct_merge_only_veto(veto):
-        route_strong_reasons = {
-            "shared_target_route",
-            "shared_gold_only_table",
-            "shared_target_role",
-            "shared_target_invariant_family",
-            "shared_root_effect_axis_with_same_target_invariant_family",
-        }
-        if route_strong_reasons & set(broad_retrieval_reasons):
+        if root_alignment_reasons:
             # B2: grain mismatch blocks direct family merge, but route-level
             # root evidence can still make it a branch axis inside one pattern.
             program_blockers = (
@@ -1255,7 +1272,11 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
             program_has_substantive_target_contract,
             effect_signature_count,
             shared_program_basis,
-        ) = _shared_program_pair_compatibility(left, right)
+        ) = _shared_program_pair_compatibility(
+            left,
+            right,
+            allow_lowering_branch_axis=bool(root_alignment_reasons),
+        )
         if grain_branch_axis_downgrade:
             program_blockers = (
                 grain_branch_axis_downgrade,
@@ -1263,8 +1284,14 @@ def score_pair(left: GroupSummary, right: GroupSummary) -> PairScore:
                 *program_blockers,
             )
         if program_compatible and shared_program_basis != "effect":
-            program_compatible = False
-            program_blockers = (*program_blockers, "missing_effect_backed_shared_program")
+            if root_alignment_reasons and effect_signature_count > 0:
+                program_blockers = (
+                    *program_blockers,
+                    "legacy_basis_treated_as_root_effect_backed",
+                )
+            else:
+                program_compatible = False
+                program_blockers = (*program_blockers, "missing_effect_backed_shared_program")
         if program_compatible and _program_core_signature(left) != _program_core_signature(right):
             # Direct family merging still requires one executable core package,
             # but root-aligned memories can still form a branched pattern.
